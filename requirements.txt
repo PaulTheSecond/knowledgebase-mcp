@@ -1,0 +1,7 @@
+mcp
+pydantic
+pathspec
+fastapi
+uvicorn
+sqlite-vec
+httpx
