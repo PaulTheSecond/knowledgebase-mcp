@@ -146,6 +146,14 @@ class KnowledgeDB:
         cursor.execute("DELETE FROM files WHERE id = ?", (file_id,))
         self.conn.commit()
 
+    def delete_repo(self, repo_id: str) -> int:
+        """Удаляет все файлы и чанки (каскадно), связанные с репозиторием."""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM files WHERE repo_id = ?", (repo_id,))
+        deleted_count = cursor.rowcount
+        self.conn.commit()
+        return deleted_count
+
     def clear_file_chunks(self, file_id: int):
         """Удаляет все чанки, привязанные к заданному файлу (перед реиндексацией 'грязного' файла)."""
         cursor = self.conn.cursor()

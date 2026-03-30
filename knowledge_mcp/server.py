@@ -75,6 +75,29 @@ async def list_tools() -> list[types.Tool]:
                 },
                 "required": ["chunk_id"]
             }
+        ),
+        types.Tool(
+            name="knowledge_delete_repo",
+            description="Delete all knowledge base data associated with a specific repository ID. This removes all scanned files, chunks, and embeddings for that repository.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo_id": {"type": "string", "description": "The unique ID of the repository to delete."}
+                },
+                "required": ["repo_id"]
+            }
+        ),
+        types.Tool(
+            name="knowledge_sync_repo",
+            description="Force an immediate delta-sync (update) of the local knowledge base for a specific repository. Use this after you have made code changes to ensure the knowledge base is up to date.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo_id": {"type": "string", "description": "The unique ID of the repository."},
+                    "repo_path": {"type": "string", "description": "The absolute local path to the repository root directory."}
+                },
+                "required": ["repo_id", "repo_path"]
+            }
         )
     ]
 
@@ -156,6 +179,50 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         except Exception as e:
             logger.error(f"Get chunk failed: {e}")
             return [types.TextContent(type="text", text=f"Database query error: {e}")]
+            
+    elif name == "knowledge_delete_repo":
+        repo_id = arguments.get("repo_id")
+        if not repo_id:
+            return [types.TextContent(type="text", text="Error: 'repo_id' argument is required.")]
+            
+        try:
+            deleted_files = db.delete_repo(repo_id)
+            if deleted_files > 0:
+                return [types.TextContent(type="text", text=f"Successfully deleted all data for repository '{repo_id}' ({deleted_files} files removed from index).")]
+            else:
+                return [types.TextContent(type="text", text=f"Repository '{repo_id}' not found or already empty.")]
+        except Exception as e:
+            logger.error(f"Delete repo failed: {e}")
+            return [types.TextContent(type="text", text=f"Database error while deleting repository: {e}")]
+            
+    elif name == "knowledge_sync_repo":
+        repo_id = arguments.get("repo_id")
+        repo_path = arguments.get("repo_path")
+        if not repo_id or not repo_path:
+            return [types.TextContent(type="text", text="Error: 'repo_id' and 'repo_path' arguments are required.")]
+            
+        try:
+            from .indexer import Indexer
+            import sys
+            
+            def _run_sync():
+                # КРИТИЧЕСКИ ВАЖНО: перенаправляем stdout -> stderr, 
+                # чтобы torch и progress bars не сломали MCP JSON-RPC
+                original_stdout = sys.stdout
+                sys.stdout = sys.stderr
+                try:
+                    indexer = Indexer(db, use_embeddings=use_embeddings)
+                    indexer.sync_repo(repo_id, repo_path, allowed_top_level=None)
+                finally:
+                    sys.stdout = original_stdout
+
+            logger.info(f"Triggering background sync for '{repo_id}' at '{repo_path}'")
+            # Ждём завершения синхронизации, чтобы агент имел актуальные данные сразу после ответа
+            await asyncio.to_thread(_run_sync)
+            return [types.TextContent(type="text", text=f"Successfully synchronized repository '{repo_id}'. The knowledge base is now up to date.")]
+        except Exception as e:
+            logger.error(f"Sync failed: {e}")
+            return [types.TextContent(type="text", text=f"Failed to synchronize repository: {e}")]
         
     else:
         raise ValueError(f"Unknown tool: {name}")
