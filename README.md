@@ -8,6 +8,14 @@ A local knowledge base server (RAG) for integrating your codebase with Model Con
 2. **Context-aware parsing**: Extracts source code and Markdown documentation, assigning rigorous trust levels: `verified` for code and `hint` for docs.
 3. **Autonomous Embeddings**: In-process embedding generation using built-in `sentence-transformers` ML models (vector search works natively without relying on external services like Ollama).
 4. **Hybrid Search**: Fuses Full-Text Search (FTS5) and Semantic Vector Search (`sqlite-vec`) through Reciprocal Rank Fusion, exposed via the MCP protocol (`knowledge_search` tool).
+5. **Dynamic Knowledge Management**: Delete (`knowledge_delete_repo`) or interactively re-sync (`knowledge_sync_repo`) repositories directly from the MCP AI client.
+
+## Available MCP Tools
+
+- **`knowledge_search`**: Search the knowledge base using hybrid search (FTS5 + semantic embeddings) to find code and docs.
+- **`knowledge_get_chunk`**: Fetch the raw content of a specific code chunk by its ID.
+- **`knowledge_sync_repo`**: Force a background index update for a repository right from your AI agent, keeping context current after you save codebase changes.
+- **`knowledge_delete_repo`**: Delete all indexed files, chunks, and embeddings for a specific repository.
 
 ## Requirements
 
