@@ -37,12 +37,17 @@ class Indexer:
                 
         return pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, patterns)
 
-    def _walk_files(self, root_path: Path, spec: pathspec.PathSpec) -> Generator[Path, None, None]:
+    def _walk_files(self, root_path: Path, spec: pathspec.PathSpec, allowed_top_level: list[str] = None) -> Generator[Path, None, None]:
         """Генератор, рекурсивно обходящий файлы с исключением путей по gitignore."""
         for dirpath, dirnames, filenames in os.walk(root_path):
             dir_rel_path = os.path.relpath(dirpath, root_path)
             if dir_rel_path == '.':
                 dir_rel_path = ''
+                
+            # Если мы в корне и задан список top-level, оставляем только их
+            if dir_rel_path == '' and allowed_top_level is not None:
+                dirnames[:] = [d for d in dirnames if d in allowed_top_level]
+                filenames = [f for f in filenames if f in allowed_top_level]
                 
             # Исключаем директории, соответствующие паттернам, чтобы os.walk внутрь не заходил
             dirnames[:] = [d for d in dirnames if not spec.match_file((os.path.join(dir_rel_path, d) + '/').replace('\\', '/'))]
@@ -52,7 +57,7 @@ class Indexer:
                 if not spec.match_file(file_rel_path):
                     yield Path(dirpath) / f
 
-    def sync_repo(self, repo_id: str, repo_path: str | Path):
+    def sync_repo(self, repo_id: str, repo_path: str | Path, allowed_top_level: list[str] = None):
         """
         Инкрементальная синхронизация репозитория (дельта-скан).
         Сравнивает mtime и hash, удаляет старые файлы, парсит новые/измененные.
@@ -73,7 +78,7 @@ class Indexer:
         unchanged_count = 0
         deleted_count = 0
         
-        for filepath in self._walk_files(repo_path, spec):
+        for filepath in self._walk_files(repo_path, spec, allowed_top_level):
             if not filepath.is_file():
                 continue
                 

@@ -78,10 +78,30 @@ class KnowledgeDB:
                         INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
                     END;
                     CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-                        INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+                        DELETE FROM chunks_fts WHERE rowid = old.rowid;
+                        DELETE FROM chunks_vec WHERE rowid = old.rowid;
                     END;
                     CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
-                        INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+                        DELETE FROM chunks_fts WHERE rowid = old.rowid;
+                        DELETE FROM chunks_vec WHERE rowid = old.rowid;
+                        INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+                    END;
+                """
+            },
+            {
+                "id": "20260326_03_fix_triggers",
+                "up": """
+                    DROP TRIGGER IF EXISTS chunks_ad;
+                    DROP TRIGGER IF EXISTS chunks_au;
+
+                    CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
+                        DELETE FROM chunks_fts WHERE rowid = old.rowid;
+                        DELETE FROM chunks_vec WHERE rowid = old.rowid;
+                    END;
+
+                    CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
+                        DELETE FROM chunks_fts WHERE rowid = old.rowid;
+                        DELETE FROM chunks_vec WHERE rowid = old.rowid;
                         INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
                     END;
                 """
@@ -158,6 +178,13 @@ class KnowledgeDB:
         """Полнотекстовый поиск по чанкам."""
         cursor = self.conn.cursor()
         
+        # Санитизация запроса: удаляем кавычки и оборачиваем каждое слово,
+        # чтобы FTS5 не падал на спецсимволах типа '.' или '-'
+        safe_terms = [f'"{term}"' for term in query.replace('"', ' ').split() if term]
+        safe_query = ' '.join(safe_terms)
+        if not safe_query:
+            return []
+
         sql = '''
             SELECT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
                    f.repo_id, f.path, bm25(chunks_fts) as rank
@@ -166,7 +193,7 @@ class KnowledgeDB:
             JOIN files f ON c.file_id = f.id
             WHERE chunks_fts MATCH ?
         '''
-        params = [query]
+        params = [safe_query]
         
         if repo_ids:
             placeholders = ','.join('?' for _ in repo_ids)

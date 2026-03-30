@@ -5,3 +5,4 @@ fastapi
 uvicorn
 sqlite-vec
 sentence-transformers
+questionary

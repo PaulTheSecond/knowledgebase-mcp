@@ -7,14 +7,38 @@ from mcp.server.stdio import stdio_server
 import mcp.types as types
 
 from .db import KnowledgeDB
-from .embeddings import LocalEmbedder
+# НЕ импортируем LocalEmbedder на верхнем уровне!
+# embeddings.py -> sentence_transformers -> torch (~30 сек на импорт).
+# Импортируем лениво, только при первом вызове knowledge_search.
 
 logger = logging.getLogger(__name__)
 
 server = Server("knowledge-mcp")
 db: KnowledgeDB = None
-embedder: LocalEmbedder = None
+embedder = None  # Будет LocalEmbedder, загруженный лениво
 use_embeddings = True
+
+
+def _init_embedder_sync():
+    """Синхронная инициализация модели (вызывается в отдельном потоке).
+    
+    КРИТИЧЕСКИ ВАЖНО: перенаправляем stdout -> stderr на время загрузки!
+    torch и sentence_transformers печатают progress bars и warnings в stdout,
+    что ломает MCP JSON-RPC протокол (MCP общается через stdout).
+    """
+    import sys
+    original_stdout = sys.stdout
+    sys.stdout = sys.stderr  # Всё что хочет напечатать torch — уйдёт в stderr
+    try:
+        from .embeddings import LocalEmbedder
+        return LocalEmbedder()
+    finally:
+        sys.stdout = original_stdout  # Восстанавливаем stdout для MCP
+
+
+def _embed_text_sync(emb, text: str):
+    """Синхронный вызов inference (вызывается в отдельном потоке)."""
+    return emb.embed_text(text)
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
@@ -67,8 +91,15 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         
         try:
             results = []
-            if use_embeddings and embedder:
-                vector = embedder.embed_text(query)
+            if use_embeddings:
+                global embedder
+                if embedder is None:
+                    logger.info("Lazy loading LocalEmbedder in background thread (~30s first time)...")
+                    # asyncio.to_thread: не блокируем event loop, MCP-протокол остаётся живым
+                    embedder = await asyncio.to_thread(_init_embedder_sync)
+                    logger.info("Embedder ready!")
+                # Inference тоже в отдельном потоке (CPU-bound операция)
+                vector = await asyncio.to_thread(_embed_text_sync, embedder, query)
                 if vector:
                     results = db.search_chunks_hybrid(query, vector, repo_ids=repo_ids, limit=limit)
                 else:
@@ -131,12 +162,12 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 async def start_mcp_server(db_path: str, enable_embeddings: bool = True):
     """Инициализация БД и запуск MCP-сервера по STDIO (стандарт для локальных агентов)."""
-    global db, embedder, use_embeddings
+    global db, use_embeddings
     
     db = KnowledgeDB(db_path)
     use_embeddings = enable_embeddings
-    if use_embeddings:
-        embedder = LocalEmbedder()
+    # Ленивая загрузка embedder = LocalEmbedder() перенесена внутрь call_tool, 
+    # чтобы избежать 10-секундного таймаута при инициализации (handshake) протокола MCP.
         
     # MCP-протокол общения через потоки stdin/stdout
     async with stdio_server() as (read_stream, write_stream):
