@@ -1,9 +1,13 @@
 import sqlite3
 import logging
+from collections import deque
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import sqlite_vec
+
+# Константа алгоритма Reciprocal Rank Fusion
+RRF_K = 60
 
 logger = logging.getLogger(__name__)
 
@@ -350,15 +354,16 @@ class KnowledgeDB:
         """
         Рекурсивный поиск зависимостей (кто сломается, если изменить этот символ).
         Возвращает список словарей с найденными символами и их 'depth'.
+        Использует deque для BFS — O(1) popleft вместо O(n) pop(0).
         """
         cursor = self.conn.cursor()
         
         visited = set()
-        queue = [(symbol_id, 1)] # (id, depth)
+        queue: deque = deque([(symbol_id, 1)])  # (id, depth)
         impacted = []
         
         while queue:
-            current_id, depth = queue.pop(0)
+            current_id, depth = queue.popleft()  # O(1)
             if depth > max_depth:
                 continue
                 
@@ -381,7 +386,7 @@ class KnowledgeDB:
                         'depth': depth,
                         'edge_kind': r['edge_kind']
                     })
-                    queue.append((caller_id, depth + 1))
+                    queue.append((caller_id, depth + 1))  # O(1)
                     
         return impacted
 
@@ -405,7 +410,7 @@ class KnowledgeDB:
             INSERT INTO chunks_vec(rowid, embedding)
             VALUES (?, ?)
         """, (chunk_rowid, sqlite_vec.serialize_float32(vector)))
-        self.conn.commit()
+        self._auto_commit()
 
     def add_embeddings_batch(self, records: List[tuple[int, List[float]]]):
         """Пакетно добавляет векторные представления для группы чанков (существенное ускорение)."""
@@ -435,6 +440,17 @@ class KnowledgeDB:
             WHERE f.repo_id = ? AND c.rowid NOT IN (SELECT rowid FROM chunks_vec)
         ''', (repo_id,))
         return [(row[0], row[1], row[2]) for row in cursor.fetchall()]
+
+    def get_chunk_by_id(self, chunk_id: str) -> Optional[sqlite3.Row]:
+        """Возвращает чанк вместе с данными файла по chunk_id. None если не найден."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT c.*, f.repo_id, f.path
+            FROM chunks c
+            JOIN files f ON c.file_id = f.id
+            WHERE c.id = ?
+        ''', (chunk_id,))
+        return cursor.fetchone()
         
     def search_chunks_fts(self, query: str, repo_ids: Optional[List[str]] = None, limit: int = 10) -> List[sqlite3.Row]:
         """Полнотекстовый поиск по чанкам."""
@@ -528,7 +544,7 @@ class KnowledgeDB:
         vec_res = cursor.fetchall()
         
         # Reciprocal Rank Fusion алгоритм
-        K = 60
+        K = RRF_K
         scores = {}
         chunks_map = {}
         
