@@ -65,11 +65,11 @@ def main():
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
     
     # Режим MCP-сервера (Codex, Claude, Gemini)
-    # По умолчанию эмбеддинги ОТКЛЮЧЕНЫ: загрузка torch (~30 сек) блокирует Python GIL,
-    # что убивает MCP-протокол. FTS5 прекрасно справляется с поиском по коду.
+    # По умолчанию эмбеддинги ОТКЛЮЧЕНЫ для мгновенного старта.
+    # Новая модель (e5-small) в 2-3 раза быстрее и компактнее старой.
     mcp_parser = subparsers.add_parser("mcp", help="Start the MCP stdio server")
     mcp_parser.add_argument("--with-embeddings", action="store_true",
-                            help="Enable vector search (WARNING: loads ~400MB model, blocks for ~30s)")
+                            help="Enable vector search (loads ~150MB model, high quality RAG)")
 
     args = parser.parse_args()
 

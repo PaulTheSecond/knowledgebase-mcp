@@ -24,7 +24,7 @@ class KnowledgeDB:
         sqlite_vec.load(self.conn)
         self.conn.enable_load_extension(False)
         
-        self.vec_dim = 768  # Утвержден для Ollama nomic-embed-text
+        self.vec_dim = 384  # Обновлено: размерность для multilingual-e5-small
         self._in_transaction = False  # Флаг: внутри явной транзакции (skip individual commits)
         self._apply_migrations()
 
@@ -156,6 +156,17 @@ class KnowledgeDB:
                 CREATE INDEX IF NOT EXISTS idx_edges_source ON symbol_edges(source_id);
                 CREATE INDEX IF NOT EXISTS idx_edges_target ON symbol_edges(target_id);
                 CREATE INDEX IF NOT EXISTS idx_edges_kind ON symbol_edges(kind);
+            """
+        })
+
+        migrations.append({
+            "id": "20260420_05_upgrade_to_e5_small",
+            "up": f"""
+                -- Полный сброс векторного индекса из-за смены модели и размерности
+                DROP TABLE IF EXISTS chunks_vec;
+                CREATE VIRTUAL TABLE chunks_vec USING vec0(
+                    embedding float[{self.vec_dim}]
+                );
             """
         })
 

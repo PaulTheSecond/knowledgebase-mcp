@@ -29,8 +29,8 @@ def hash_file(filepath: Path, chunk_size: int = 8192) -> str:
     return hasher.hexdigest()
 
 
-# Размер суб-батча для обработки эмбеддингов порциями (строгая экономия RAM для 2GB WSL)
-EMBED_SUB_BATCH_SIZE = 16
+# Размер суб-батча для обработки эмбеддингов порциями (оптимизировано для баланса RAM/скорость)
+EMBED_SUB_BATCH_SIZE = 128
 # Максимальное количество потоков для параллельного хэширования
 MAX_HASH_WORKERS = 8
 
@@ -559,6 +559,10 @@ class Indexer:
             self.db.rollback_transaction()
             logger.error(f"Transaction failed during sync of '{repo_id}': {e}")
             raise
+
+        # Очищаем тяжелый кэш семантики перед самой ресурсоемкой фазой векторизации
+        self.csharp_cache = {}
+        gc.collect()
 
         # Батч-векторизация + recovery потерянных эмбеддингов
         if self.use_embeddings and self.embedder:

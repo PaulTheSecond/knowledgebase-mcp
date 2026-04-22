@@ -206,7 +206,7 @@ async def _handle_search(arguments: dict) -> list[types.TextContent]:
                 embedder = await asyncio.to_thread(_init_embedder_sync)
                 logger.info("Embedder ready!")
             # Inference тоже в отдельном потоке (CPU-bound операция)
-            vector = await asyncio.to_thread(_embed_text_sync, embedder, query)
+            vector = await asyncio.to_thread(_embed_text_sync, embedder, query, is_query=True)
             if vector:
                 results = db.search_chunks_hybrid(query, vector, repo_ids=repo_ids, limit=limit)
             else:
