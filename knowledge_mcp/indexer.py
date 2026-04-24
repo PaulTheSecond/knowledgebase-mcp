@@ -511,8 +511,7 @@ class Indexer:
         """
         Инкрементальная синхронизация репозитория (дельта-скан).
         Сравнивает mtime и hash, удаляет старые файлы, парсит новые/измененные.
-        Парсинг AST выполняется параллельно в ThreadPoolExecutor,
-        запись в БД — только в главном потоке батчевыми операциями.
+        Хэширование выполняется параллельно, а парсинг AST — в главном потоке.
         """
         repo_path = Path(repo_path).resolve()
         logger.info(f"Starting sync for repo '{repo_id}' at {repo_path}")
@@ -544,12 +543,10 @@ class Indexer:
                 files_to_check.append((filepath, rel_path))
                 current_files.add(rel_path)
 
-        def check_and_parse(item):
+        def check_file(item):
             """
-            Параллельная задача: хэширует файл и, если он изменился,
-            сразу парсит его AST. Не делает никаких обращений к БД.
-            Возвращает: (rel_path, filepath, mtime, file_hash, status, old_id, parsed)
-              parsed = (chunks_raw, symbols_raw, edges_raw) | None
+            Параллельная задача: хэширует файл. Не делает никаких обращений к БД.
+            Возвращает: (rel_path, filepath, mtime, file_hash, status, old_id)
             """
             filepath, rel_path = item
             try:
@@ -557,20 +554,16 @@ class Indexer:
                 if rel_path in known_files:
                     known = known_files[rel_path]
                     if known['mtime'] == mtime:
-                        return (rel_path, filepath, mtime, None, 'unchanged', None, None)
+                        return (rel_path, filepath, mtime, None, 'unchanged', None)
                     file_hash = hash_file(filepath)
                     if known['hash'] == file_hash:
-                        return (rel_path, filepath, mtime, file_hash, 'touch', None, None)
-                    # Файл изменился — парсим сразу
-                    parsed = self._parse_file_pure(filepath, rel_path)
-                    return (rel_path, filepath, mtime, file_hash, 'updated', known['id'], parsed)
+                        return (rel_path, filepath, mtime, file_hash, 'touch', None)
+                    return (rel_path, filepath, mtime, file_hash, 'updated', known['id'])
                 else:
                     file_hash = hash_file(filepath)
-                    # Новый файл — парсим сразу
-                    parsed = self._parse_file_pure(filepath, rel_path)
-                    return (rel_path, filepath, mtime, file_hash, 'added', None, parsed)
+                    return (rel_path, filepath, mtime, file_hash, 'added', None)
             except Exception as e:
-                return (rel_path, filepath, None, None, 'error', str(e), None)
+                return (rel_path, filepath, None, None, 'error', str(e))
 
         sync_buffer = {rel_path: 'pending' for _, rel_path in files_to_check}
         chunks_to_embed = []
@@ -578,11 +571,11 @@ class Indexer:
         # Оборачиваем весь цикл в одну транзакцию вместо тысяч отдельных commit()
         self.db.begin_transaction()
         try:
-            # Хэширование + AST парсинг параллельно
+            # Хэширование файлов параллельно
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_HASH_WORKERS) as executor:
                 total_files = len(files_to_check)
                 logger.info(f"Found {total_files} files to check. Starting content hashing and AST parsing...")
-                results = executor.map(check_and_parse, files_to_check)
+                results = executor.map(check_file, files_to_check)
 
                 processed = 0
                 log_step = max(1, total_files // 10) if total_files > 0 else 1
@@ -592,7 +585,7 @@ class Indexer:
                     if processed % log_step == 0 or processed == total_files:
                         logger.info(f"Scan progress: {processed}/{total_files} files ({int(processed/total_files*100)}%)")
 
-                    rel_path, filepath, mtime, file_hash, status, old_id, parsed = res
+                    rel_path, filepath, mtime, file_hash, status, old_id = res
                     if status == 'error':
                         logger.error(f"Error processing {rel_path}: {old_id}")
                         sync_buffer[rel_path] = 'error'
@@ -611,6 +604,10 @@ class Indexer:
                         file_id = self.db.upsert_file(repo_id, rel_path, mtime, file_hash)
                         self.db.clear_file_chunks(file_id)
                         self.db.clear_file_symbols(file_id)
+
+                        # Парсинг AST в главном потоке, чтобы избежать блокировок GIL
+                        # и конфликтов внутреннего состояния Tree-sitter Parser
+                        parsed = self._parse_file_pure(filepath, rel_path)
 
                         if parsed is None:
                             # Ошибка парсинга
