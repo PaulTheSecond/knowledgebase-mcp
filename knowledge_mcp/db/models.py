@@ -196,6 +196,29 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20260701_07_sync_queue_and_indexed_commits",
+            "up": """
+                CREATE TABLE IF NOT EXISTS sync_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repo_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+                    attempts INTEGER DEFAULT 0,
+                    error_message TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_queue_status_created ON sync_queue(status, created_at);
+
+                CREATE TABLE IF NOT EXISTS indexed_commits (
+                    repo_id TEXT PRIMARY KEY,
+                    git_sha TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+            """
+        })
+
 
         for migration in migrations:
             if migration["id"] not in applied_migrations:
@@ -686,5 +709,77 @@ class KnowledgeDB:
                 SET status = ?, last_error = ?, updated_at = datetime('now', 'localtime')
                 WHERE id = 1
             """, (status, last_error))
+        self._auto_commit()
+
+    def add_to_queue(self, repo_id: str) -> int:
+        """Добавляет репозиторий в очередь на синхронизацию."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO sync_queue (repo_id, status)
+            VALUES (?, 'pending')
+        """, (repo_id,))
+        self._auto_commit()
+        return cursor.lastrowid
+
+    def fetch_next_job(self) -> Optional[Dict[str, Any]]:
+        """Извлекает следующую pending задачу по принципу FIFO и переводит ее в processing в IMMEDIATE транзакции."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE TRANSACTION;")
+            cursor.execute("""
+                SELECT id, repo_id, attempts
+                FROM sync_queue
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+            if row:
+                job_id, repo_id, attempts = row[0], row[1], row[2]
+                cursor.execute("""
+                    UPDATE sync_queue
+                    SET status = 'processing', updated_at = datetime('now', 'localtime')
+                    WHERE id = ?
+                """, (job_id,))
+                self.conn.commit()
+                return {"id": job_id, "repo_id": repo_id, "attempts": attempts}
+            self.conn.commit()
+            return None
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Error fetching next job from queue: {e}")
+            raise e
+
+    def update_job_status(self, job_id: int, status: str, attempts: Optional[int] = None, error_message: Optional[str] = None) -> None:
+        """Обновляет статус и параметры задачи в очереди."""
+        cursor = self.conn.cursor()
+        if attempts is not None:
+            cursor.execute("""
+                UPDATE sync_queue
+                SET status = ?, attempts = ?, error_message = ?, updated_at = datetime('now', 'localtime')
+                WHERE id = ?
+            """, (status, attempts, error_message, job_id))
+        else:
+            cursor.execute("""
+                UPDATE sync_queue
+                SET status = ?, error_message = ?, updated_at = datetime('now', 'localtime')
+                WHERE id = ?
+            """, (status, error_message, job_id))
+        self._auto_commit()
+
+    def get_indexed_commit(self, repo_id: str) -> Optional[str]:
+        """Возвращает хеш последнего проиндексированного коммита для репозитория."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT git_sha FROM indexed_commits WHERE repo_id = ?", (repo_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    def update_indexed_commit(self, repo_id: str, git_sha: str) -> None:
+        """Обновляет хеш последнего проиндексированного коммита."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO indexed_commits (repo_id, git_sha, updated_at)
+            VALUES (?, ?, datetime('now', 'localtime'))
+        """, (repo_id, git_sha))
         self._auto_commit()
 
