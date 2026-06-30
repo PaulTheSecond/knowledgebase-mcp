@@ -97,14 +97,13 @@ _TOOL_SCHEMAS = [
     ),
     types.Tool(
         name="knowledge_sync_repo",
-        description="Force an immediate delta-sync (update) of the local knowledge base for a specific repository. Use this after you have made code changes to ensure the knowledge base is up to date.",
+        description="Queue a sync (update) of the local knowledge base for a specific repository. The request is delegated to the Daemon API which manages the sync queue.",
         inputSchema={
             "type": "object",
             "properties": {
-                "repo_id": {"type": "string", "description": "The unique ID of the repository."},
-                "repo_path": {"type": "string", "description": "The absolute path to the repository root directory INSIDE the Docker container (e.g. '/repos/ImpactOS.Core.Lib'). Do not use Windows paths here."}
+                "repo_id": {"type": "string", "description": "The unique ID of the repository (as defined in config.yaml)."}
             },
-            "required": ["repo_id", "repo_path"]
+            "required": ["repo_id"]
         }
     ),
     types.Tool(
@@ -258,49 +257,63 @@ async def _handle_get_chunk(arguments: dict) -> list[types.TextContent]:
 
 
 async def _handle_delete_repo(arguments: dict) -> list[types.TextContent]:
-    """knowledge_delete_repo: удалить все данные репозитория из индекса."""
+    """knowledge_delete_repo: делегирует удаление репозитория Daemon-процессу через HTTP.
+
+    MCP-сервер работает в Read-Only режиме и не может выполнять записи в SQLite.
+    Запрос на удаление отправляется Daemon API.
+    """
     repo_id = arguments.get("repo_id")
     if not repo_id:
         return _err("Error: 'repo_id' argument is required.")
 
     try:
-        deleted_files = db.delete_repo(repo_id)
-        if deleted_files > 0:
-            return [types.TextContent(type="text", text=f"Successfully deleted all data for repository '{repo_id}' ({deleted_files} files removed from index).")]
-        else:
-            return [types.TextContent(type="text", text=f"Repository '{repo_id}' not found or already empty.")]
+        import urllib.request
+        import urllib.error
+
+        url = f"http://127.0.0.1:8000/api/repo/{repo_id}"
+        req = urllib.request.Request(url, method="DELETE")
+
+        def _trigger_delete():
+            with urllib.request.urlopen(req) as response:
+                return response.read()
+
+        logger.info(f"Delegating delete of '{repo_id}' to Daemon API via DELETE {url}")
+        await asyncio.to_thread(_trigger_delete)
+
+        return [types.TextContent(type="text", text=f"Successfully requested deletion of repository '{repo_id}' via Daemon API.")]
     except Exception as e:
-        logger.error(f"Delete repo failed: {e}")
-        return _err(f"Database error while deleting repository: {e}")
+        logger.error(f"Delete repo delegation failed: {e}")
+        return _err(f"Failed to delegate repository deletion to Daemon: {e}")
 
 
 async def _handle_sync_repo(arguments: dict) -> list[types.TextContent]:
-    """knowledge_sync_repo: немедленный дельта-sync репозитория."""
+    """knowledge_sync_repo: делегирует синхронизацию репозитория Daemon-процессу через HTTP.
+
+    MCP-сервер работает в Read-Only режиме. Задача добавляется в DB-очередь
+    через Daemon API, а не через прямую запись в SQLite.
+    """
     repo_id = arguments.get("repo_id")
-    repo_path = arguments.get("repo_path")
-    if not repo_id or not repo_path:
-        return _err("Error: 'repo_id' and 'repo_path' arguments are required.")
+    if not repo_id:
+        return _err("Error: 'repo_id' argument is required.")
 
     try:
         import urllib.request
         import urllib.error
-        import json
 
-        data = json.dumps({"repo_id": repo_id, "repo_path": repo_path}).encode("utf-8")
-        req = urllib.request.Request("http://127.0.0.1:8000/sync", data=data, headers={"Content-Type": "application/json"})
-        
-        # Делаем неблокирующий для MCP запрос к локальному Uvicorn-серверу (он крутится в том же контейнере)
-        def _trigger():
+        url = f"http://127.0.0.1:8000/api/sync/{repo_id}"
+        req = urllib.request.Request(url, method="POST", data=b"", headers={"Content-Type": "application/json"})
+
+        def _trigger_sync():
             with urllib.request.urlopen(req) as response:
                 return response.read()
 
-        logger.info(f"Triggering background sync for '{repo_id}' at '{repo_path}' via HTTP API")
-        await asyncio.to_thread(_trigger)
-        
-        return [types.TextContent(type="text", text=f"Successfully triggered background sync for repository '{repo_id}'. Check docker logs for progress. The knowledge base will be updated shortly.")]
+        logger.info(f"Delegating sync of '{repo_id}' to Daemon API via POST {url}")
+        await asyncio.to_thread(_trigger_sync)
+
+        return [types.TextContent(type="text", text=f"Successfully queued sync for repository '{repo_id}' via Daemon API. The background worker will process it shortly.")]
     except Exception as e:
         logger.error(f"Sync trigger failed: {e}")
-        return _err(f"Failed to trigger repository sync: {e}")
+        return _err(f"Failed to delegate repository sync to Daemon: {e}")
 
 
 async def _handle_find_symbol(arguments: dict) -> list[types.TextContent]:
