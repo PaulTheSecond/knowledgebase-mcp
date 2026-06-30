@@ -101,9 +101,3 @@ flowchart TD
 - Graph-based MCP tools (`knowledge_get_callers`, `knowledge_impact_analysis`, etc.).
 
 ---
-
-## References
-
-- [db.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/db.py) — RRF implementation and graph queries.
-- [indexer.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/indexer.py) — Parser orchestration and parallelization logic.
-- [RoslynParser/](file:///c:/Repos/knowledgebase-mcp/RoslynParser/) — C# project for deep semantic analysis.

@@ -1,0 +1,72 @@
+```mermaid
+flowchart TD
+    subgraph ORCHESTRATOR["🎯 ОРКЕСТРАТОР (родительский контекст)"]
+        direction TB
+        O1[Инициализация] --> O2[Очередь историй]
+        O2 --> O3{Есть история?}
+        O3 -->|"Да<br/>(backlog → ready-for-dev)"| O4[Запуск субагента]
+        O3 -->|Нет| O5[Завершение эпика]
+        O4 --> O6[Получить результат]
+        O6 --> O7{Анализ результата}
+        O7 -->|SUCCESS| O8[Следующая фаза/история]
+        O7 -->|FAILURE/HALT| O9[Обработка ошибки]
+        O8 --> O3
+        O9 --> O10{Можно продолжить?}
+        O10 -->|Да| O4
+        O10 -->|Нет| O11[HALT: Эскалация]
+    end
+
+    subgraph SUBAGENT_DEV["📦 Субагент: DEV (изолированный)"]
+        DEV1[Читать инструкцию] --> DEV2[Читать историю]
+        DEV2 --> DEV3[Реализация задач]
+        DEV3 --> DEV4[Build & Test]
+        DEV4 --> DEV5[Dev Agent Record]
+        DEV5 --> DEV6[Git commit]
+        DEV6 --> DEV7[Return: result YAML]
+    end
+
+    subgraph SUBAGENT_CR["📦 Субагент: Code Reviewer + Workflow Validator (Dev)"]
+        CR1[Читать инструкцию] --> CR2[Читать историю]
+        CR2 --> CR_A[BLOCK A: Workflow Validation<br/>Dev Agent Record / File List / build]
+        CR_A --> CR_B[BLOCK B: Code Review<br/>стандарты / security / perf / арх.]
+        CR_B --> CR4{PASS / NEEDS_WORK}
+        CR4 -->|PASS| CR5[Review+Validation Results — PASS]
+        CR4 -->|NEEDS_WORK| CR6[workflow_issues + code_issues]
+        CR5 --> CR7[Return: result YAML]
+        CR6 --> CR7
+    end
+
+    subgraph SUBAGENT_QA["📦 Субагент: QA"]
+        QA1[Читать инструкцию] --> QA2[Читать историю]
+        QA2 --> QA3[Тестирование AC]
+        QA3 --> QA4{PASS/FAIL}
+        QA4 --> QA5[QA Results]
+        QA5 --> QA6[Return: result YAML]
+    end
+
+    subgraph SUBAGENT_QAVAL["📦 Субагент: QA Validator (Victor)"]
+        VAL1[Читать инструкцию] --> VAL2[Читать QA Results]
+        VAL2 --> VAL3[Проверка полноты отчёта]
+        VAL3 --> VAL6{PASS/FAIL}
+        VAL6 --> VAL7[Return: result YAML]
+    end
+
+    subgraph EPIC_FINISH["🏆 Завершение эпика"]
+        E1[Все истории Done] --> E2[Обновить эпик]
+        E2 --> E3[Субагент PO]
+        E3 --> E4[Субагент Architect]
+        E4 --> E5[Финальный коммит docs]
+        E5 --> E6[🎉 Эпик завершён!]
+    end
+
+    O4 -.->|"Agent tool"| SUBAGENT_DEV
+    O4 -.->|"Agent tool"| SUBAGENT_CR
+    O4 -.->|"Agent tool"| SUBAGENT_QA
+    O4 -.->|"Agent tool"| SUBAGENT_QAVAL
+    SUBAGENT_DEV -.->|"result"| O6
+    SUBAGENT_CR -.->|"result"| O6
+    SUBAGENT_QA -.->|"result"| O6
+    SUBAGENT_QAVAL -.->|"result"| O6
+
+    O5 --> E1
+```

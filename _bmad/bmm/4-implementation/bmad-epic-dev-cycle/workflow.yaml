@@ -1,0 +1,519 @@
+# Epic Development Cycle Orchestrator
+# Powered by BMAD™ Core
+
+workflow:
+  id: epic-dev-cycle
+  name: Epic Development Cycle
+  version: 3.2
+  description: Автоматизированный цикл разработки историй с ориентацией на sprint-status.yaml, изолированными субагентами, code review и workflow validation
+
+## ИНТЕГРАЦИЯ СО SPRINT PLAN / SPRINT STATUS
+
+sprint_plan_integration:
+  description: |
+    Оркестратор ориентируется на документы спринта как на ИСТОЧНИК ИСТИНЫ для очереди и
+    статусов историй. В BMad поддерживается конвенция ОДИН sprint-plan / ОДИН sprint-status
+    на ОДИН эпик. Оркестратор работает с одним эпиком за запуск, но может принимать
+    несколько sprint-status-файлов — тогда он последовательно обрабатывает каждый эпик.
+
+  documents:
+    sprint_plan:
+      filename_pattern: "docs/{activeLibrary}/sprint-plan-epic-{N}.md"
+      role: "Задаёт ПОРЯДОК выполнения историй (волны/зависимости) и контекст спринта (цель, риски, DoD)"
+      authored_by: "SM (Bob) через bmad-sprint-planning"
+      orchestrator_reads: true
+      orchestrator_writes: false
+
+    sprint_status:
+      filename_pattern: "docs/{activeLibrary}/sprint-status-epic-{N}.yaml"
+      role: "Единый ИСТОЧНИК ИСТИНЫ для текущего статуса эпика и его историй"
+      authored_by: "SM (Bob) через bmad-sprint-planning"
+      orchestrator_reads: true
+      orchestrator_writes: true
+      structure: |
+        # Плоский map в секции development_status:
+        development_status:
+          epic-{N}: backlog | in-progress | done
+          {N}-{M}-{slug}: backlog | ready-for-dev | in-progress | review | done
+          epic-{N}-retrospective: optional | done
+      example: |
+        # docs/infrastructure/sprint-status-epic-3.yaml
+        epic_id: epic-3
+        sprint_plan_path: docs/infrastructure/sprint-plan-epic-3.md
+        last_updated: 2026-05-03
+        development_status:
+          epic-3: in-progress
+          3-1-ambient-user-context-provider: done
+          3-2-correlation-id-middleware: in-progress
+          3-3-error-handling-middleware: backlog
+          3-4-graceful-shutdown: backlog
+          epic-3-retrospective: optional
+      generated_by: "Файл генерируется skill `bmad-sprint-planning` из epic-файла; вручную создавать не нужно."
+
+  canonical_statuses:
+    epic: ["backlog", "in-progress", "done"]
+    story: ["backlog", "ready-for-dev", "in-progress", "review", "done"]
+    retrospective: ["optional", "done"]
+
+  status_ownership:
+    description: |
+      Дублирование статусов — это осознанная конвенция BMad:
+      - Story-файл (## Status в markdown) — видимость для человека/dev-агента в контексте одной истории
+      - sprint-status.yaml — машинно-читаемый источник истины для оркестратора и sprint-status skill
+      Субагенты (Dev / Code Reviewer / QA / QA Validator) правят ## Status в story-файле.
+      Оркестратор после каждой фазы атомарно синхронизирует sprint-status.yaml.
+
+    story_file_status:
+      owner: "субагенты Dev / QA / Code Reviewer"
+      updated_when: "Внутри фазы (как часть инструкции субагента)"
+
+    sprint_status_yaml:
+      owner: "оркестратор"
+      updated_when: "После возврата управления от субагента, перед переходом к следующей фазе"
+
+  multi_epic_support:
+    description: |
+      Шаблона sprint-plan на несколько эпиков в BMad нет — каждый эпик имеет свой
+      sprint-plan-epic-{N}.md и sprint-status-epic-{N}.yaml.
+      Для «общего» запуска оркестратор принимает несколько sprint-status-файлов
+      (список или glob) и обрабатывает их ПОСЛЕДОВАТЕЛЬНО: эпик за эпиком,
+      используя соответствующий sprint-plan каждого из них.
+    execution_order: sequential
+    example_glob: "docs/infrastructure/sprint-status-epic-*.yaml"
+
+## АРХИТЕКТУРА СУБАГЕНТОВ
+
+subagent_architecture:
+  description: |
+    Каждая фаза выполняется через РЕАЛЬНЫЙ изолированный субагент текущего runtime.
+    Оркестратор (родительский контекст) НЕ видит детали выполнения — только финальный
+    результат, возвращённый субагентом. Это обеспечивает:
+    - Экономию контекста родительского агента
+    - Полную изоляцию деталей реализации
+    - Субагент имеет собственный контекст с доступом ко всем инструментам (Read, Edit, Write, Bash, Grep, Glob и др.)
+    - Чистые точки принятия решений для оркестратора
+
+  execution_model:
+    tool: Agent
+    description: |
+      Оркестратор ОБЯЗАН запускать каждую фазу через механизм изолированных субагентов текущего runtime (НЕ inline), если такой механизм доступен.
+      В Claude Code это Agent tool; в Codex это spawn_agent при явном разрешении пользователя на агентскую/параллельную работу.
+      Такой механизм создаёт НАСТОЯЩИЙ изолированный субагент с собственным контекстом.
+      Субагент получает промпт и самостоятельно читает файлы, пишет код, запускает тесты.
+      Результат работы возвращается оркестратору как строка.
+
+    orchestrator:
+      role: "Координатор цикла"
+      responsibilities:
+        - Инициализация очереди историй
+        - "Запуск субагентов через механизм текущего runtime для каждой фазы"
+        - Получение и анализ результатов от Agent
+        - Принятие решений о переходах
+        - "Обновление sprint-status.yaml между фазами"
+        - Обработка ошибок и эскалаций
+
+    subagents:
+      description: "Изолированные агенты, запускаемые через Agent tool"
+      types:
+        - story-dev: "Субагент Developer для реализации истории"
+        - story-code-reviewer: "Объединённый субагент Code Review + Workflow Validation (dev-phase) в одном проходе"
+        - story-qa: "Субагент QA для тестирования истории"
+        - story-qa-validator: "Субагент Victor для валидации качества QA Results (QA-phase only)"
+        - epic-po: "Субагент Product Owner для обновления документации по завершению эпика"
+        - epic-architect: "Субагент Architect для обновления архитектурных документов"
+
+      mandatory_behavior:
+        - "Каждый субагент запускается через механизм текущего runtime — НЕ inline в контексте оркестратора, если изоляция доступна"
+        - "ОБЯЗАТЕЛЬНО прочитать _bmad/bmm/4-implementation/bmad-epic-dev-cycle/workflow.yaml в начале"
+        - "ОБЯЗАТЕЛЬНО прочитать инструкцию своей роли из subagents/"
+        - "СТРОГО следовать инструкциям своей фазы"
+        - "Dev-субагент ОБЯЗАН перед собственной реализацией искать готовые решения в knowledge-mcp и использовать/адаптировать найденное; новая реализация допустима только если готового решения нет или оно явно не подходит"
+        - "Code Review субагент ОБЯЗАН использовать knowledge-mcp перед MEDIUM/HIGH/CRITICAL findings и перед рекомендациями новой реализации; findings должны ссылаться на найденные паттерны или фиксировать отсутствие готового решения"
+        - "Code Review решение: CRITICAL/HIGH/MEDIUM-block замечания возвращают историю на доработку; MEDIUM-advise/LOW/INFO остаются рекомендациями и не блокируют переход в QA. См. subagents/code-reviewer.md для определения MEDIUM-block vs MEDIUM-advise"
+        - "Вернуть ТОЛЬКО структурированный результат"
+        - "НЕ общаться с пользователем напрямую"
+
+## STATE MACHINE ОРКЕСТРАТОРА
+
+orchestrator_state_machine:
+  description: |
+    Конечный автомат для управления переходами между фазами.
+
+    ВАЖНО ДЛЯ ОРКЕСТРАТОРА:
+    - Следуй СТРОГО переходам между состояниями
+    - После epic_complete ОБЯЗАТЕЛЬНО выполни фазы 7, 8, 9
+    - Эпик завершён ТОЛЬКО в состоянии "completed"
+    - НЕ останавливайся преждевременно
+
+  initial_state: "init"
+
+  final_state: "completed"
+
+  states:
+    init:
+      action: |
+        1. Определить список sprint-status файлов из аргументов команды
+           (--sprint <path> | --sprint <glob> | по умолчанию: docs/{activeLibrary}/sprint-status-epic-*.yaml).
+        2. Для каждого sprint-status yaml выполнить чтение:
+           - epic_id = ключ вида "epic-{N}" из development_status
+           - sprint_plan_path = ../sprint-plan-epic-{N}.md (рядом)
+        3. Если sprint-status не найден → HALT с подсказкой запустить bmad-sprint-planning.
+        4. Выбрать ПЕРВЫЙ эпик из списка со статусом != "done" → текущий эпик.
+        5. Прочитать sprint-plan-epic-{N}.md текущего эпика — извлечь порядок историй (секция «Состав спринта» + «Волны выполнения»).
+        6. Сформировать очередь: все stories с development_status != "done", отсортированные по порядку из sprint-plan (sequential-fallback по умолчанию).
+        7. Сохранить в состояние оркестратора: epic_id, sprint_status_path, sprint_plan_path, stories_queue, current_story.
+        8. Если epic-{N} имеет статус "backlog" в sprint-status → обновить на "in-progress" и сохранить yaml.
+        9. Для current_story: если статус "backlog" → обновить на "ready-for-dev" в sprint-status.yaml (SM-фаза удалена; story проверена пользователем на этапе sprint-planning).
+      transition: "development"
+
+    development:
+      agent: "dev"
+      instruction: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/developer.md"
+      required_gate: "knowledge-mcp solution search before implementation; evidence must be recorded in Dev Agent Record"
+      on_enter_action: "Обновить sprint-status.yaml: {current_story} → in-progress (если ещё не in-progress)"
+      on_success_post_action: "Обновить sprint-status.yaml: {current_story} → review"
+      on_success: "code_review"
+      on_blocked: "halt_dev_blocked"
+      on_failure: "halt_user_help"
+
+    code_review:
+      agent: "code-reviewer"
+      instruction: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/code-reviewer.md"
+      note: "Объединённая фаза: Code Review + Workflow Validation (dev) в одном субагенте"
+      required_gate: "knowledge-mcp pattern/evidence search before CRITICAL/HIGH/MEDIUM findings or custom implementation recommendations"
+      on_pass: "qa_testing"
+      on_needs_work: "development"
+
+    qa_testing:
+      agent: "qa"
+      instruction: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/qa-engineer.md"
+      on_success: "validation_qa"
+      on_failure: "reopen_check"
+
+    validation_qa:
+      agent: "validator"
+      instruction: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/validator.md"
+      note: "QA Validator (Victor) — только QA-phase; dev-phase валидирует Code Reviewer"
+      on_pass: "story_complete"
+      on_fail: "qa_testing"
+
+    reopen_check:
+      action: "Проверить reopen_count < max_reopens (3)"
+      on_true: "development"
+      on_false: "escalate"
+
+    story_complete:
+      action: |
+        1. Обновить sprint-status.yaml: {current_story} → done (ИСТОЧНИК ИСТИНЫ).
+        2. Убедиться, что в story-файле ## Status = Done (проставлено QA в своей фазе).
+        3. Удалить историю из stories_queue оркестратора.
+      transition: "next_story_check"
+
+    next_story_check:
+      action: |
+        Проверить stories_queue оркестратора.
+        Альтернативная проверка (на случай потери состояния): перечитать sprint-status.yaml,
+        найти первую story с development_status != "done" по порядку из sprint-plan.
+        Для выбранной current_story: если статус "backlog" → обновить на "ready-for-dev".
+      on_true: "development"
+      on_false: "epic_complete"
+
+    epic_complete:
+      action: |
+        1. Обновить sprint-status.yaml: epic-{N} → done.
+        2. Обновить статус в файле эпика (Epic Completion Summary).
+      note: "ВАЖНО: После этого ОБЯЗАТЕЛЬНО перейти к po_documentation"
+      transition: "po_documentation"
+
+    po_documentation:
+      agent: "po"
+      instruction: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/product-owner.md"
+      note: "ОБЯЗАТЕЛЬНАЯ ФАЗА: Обновление документации по результатам эпика"
+      on_success: "architect_documentation"
+
+    architect_documentation:
+      agent: "architect"
+      instruction: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/architect.md"
+      note: "ОБЯЗАТЕЛЬНАЯ ФАЗА: Обновление архитектурных документов"
+      on_success: "final_commit"
+
+    final_commit:
+      action: |
+        Создать финальный git commit для документации эпика (изменения от PO/Architect).
+        ВАЖНО (см. CLAUDE.md / AGENTS.md):
+        - НЕ добавлять подпись `Generated with Claude Code`.
+        - НЕ добавлять trailer `Co-Authored-By: Claude <noreply@anthropic.com>`.
+        - НЕ добавлять никакие auto-generated подписи и AI-trailer'ы.
+        Сообщение коммита: только бизнес-смысл, формат `docs(epic-{N}): update README/PRD/architecture after epic close`.
+      note: "ОБЯЗАТЕЛЬНАЯ ФАЗА: Фиксация всех изменений документации"
+      transition: "next_epic_check"
+
+    next_epic_check:
+      action: |
+        1. Очистить состояние оркестратора, специфичное для завершённого эпика:
+           обнулить `stories_queue`, `current_story`, `current_phase`, `last_result`.
+           Поля `sprint_status_list` и `total_reopens` сохраняются между эпиками.
+        2. Если при init было передано несколько sprint-status файлов,
+           проверить наличие следующего эпика со статусом != "done" в `sprint_status_list`.
+      on_true: "init"
+      on_false: "completed"
+      note: "Переход к следующему эпику из списка sprint-status; при одиночном эпике сразу completed. После очистки состояния init начинает следующий эпик с чистого листа."
+
+    completed:
+      action: "HALT - Все эпики успешно завершены"
+      note: "Достигнуто ТОЛЬКО после выполнения фаз 7, 8, 9 для ВСЕХ запрошенных эпиков"
+
+    halt_dev_blocked:
+      action: "HALT - Разработка заблокирована (требуется вмешательство)"
+
+    halt_user_help:
+      action: "HALT - Запросить помощь пользователя"
+
+    escalate:
+      action: "HALT - ESCALATE (история отклонена max_reopens раз)"
+
+## ИНСТРУКЦИИ СУБАГЕНТОВ
+
+subagent_instructions:
+  description: |
+    Детальные инструкции для каждого субагента вынесены в отдельные файлы.
+    При запуске субагента, оркестратор должен включить содержимое соответствующего файла в промпт.
+
+  files:
+    developer: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/developer.md"
+    code_reviewer: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/code-reviewer.md"  # Code Review + Workflow Validation (dev)
+    qa_engineer: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/qa-engineer.md"
+    qa_validator: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/validator.md"  # QA Results validator (Victor)
+    product_owner: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/product-owner.md"
+    architect: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/architect.md"
+
+## РОЛИ И АГЕНТЫ
+
+roles:
+  developer:
+    agent: dev
+    name: James
+    instruction_file: _bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/developer.md
+    responsibility: Реализация кода, тестирование; обязательный поиск готового решения через knowledge-mcp перед собственной реализацией
+
+  code_reviewer:
+    agent: code-reviewer
+    name: CodeReview
+    instruction_file: _bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/code-reviewer.md
+    responsibility: Объединённая роль — Code Review (стандарты/безопасность/производительность/архитектура) + Workflow Validation Dev (Dev Agent Record, File List, build). Один проход, одно решение PASS|NEEDS_WORK.
+
+  qa_validator:
+    agent: validator
+    name: Victor
+    instruction_file: _bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/validator.md
+    responsibility: Валидация качества QA Results (только QA-phase)
+
+  qa_engineer:
+    agent: qa
+    name: Quinn
+    instruction_file: _bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/qa-engineer.md
+    responsibility: Тестирование, верификация качества
+
+  product_owner:
+    agent: po
+    name: Sarah
+    instruction_file: _bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/product-owner.md
+    responsibility: Обновление документации (README, PRD) по завершению эпика
+
+  architect:
+    agent: architect
+    name: Alex
+    instruction_file: _bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/architect.md
+    responsibility: Обновление архитектурных документов (source-tree, shared-standards, architecture)
+
+## СТАТУСЫ ИСТОРИЙ
+
+# Канонический набор статусов определён в `sprint_plan_integration.canonical_statuses`
+# (epic / story / retrospective). Эта секция намеренно оставлена без перечисления значений,
+# чтобы избежать рассинхрона. Историческая (v3.0) сетка статусов удалена.
+
+## ЗАПУСК СУБАГЕНТОВ
+
+subagent_invocation:
+  tool: runtime-isolated-subagent
+  subagent_type: "general-purpose"
+  description: |
+    Оркестратор запускает каждую фазу как РЕАЛЬНЫЙ субагент через механизм текущего runtime.
+    Субагент работает в изолированном контексте — не видит историю оркестратора,
+    получает только промпт. Результат возвращается оркестратору как строка.
+
+  prompt_template: |
+    # {phase} Subagent
+
+    ## ОБЯЗАТЕЛЬНЫЕ ДЕЙСТВИЯ В НАЧАЛЕ
+    1. Прочитать инструкцию: {instruction_file} — ВСЕ шаги обязательны
+    2. Прочитать историю: {story_path}
+
+    ## КОНТЕКСТ (передан оркестратором)
+    - story_id: {story_id}
+    - sprint_status_path: {sprint_status_path}  # read-only для субагента
+    {optional_context}
+
+    ## КРИТИЧЕСКИ ВАЖНО
+    - Следуй СТРОГО инструкциям из {instruction_file}
+    - Для dev-фазы: перед собственной реализацией ОБЯЗАТЕЛЬНО выполни поиск готового решения через knowledge-mcp и зафиксируй evidence в Dev Agent Record
+    - НЕ пропускай обновление Change Log
+    - Обновляй ТОЛЬКО ## Status в story-файле; sprint-status.yaml правит оркестратор
+    - Верни результат в формате YAML как указано в инструкции
+
+  optional_context_per_role:
+    dev: "- devLoadAlwaysFiles: см. _bmad/core/config.yaml → devLoadAlwaysFiles"
+    code_reviewer: ""
+    qa: ""
+    qa_validator: ""
+    po: "- epic_file: {epic_file_path}"
+    architect: "- architecture_path: docs/{activeLibrary}/architecture/"
+
+  usage_example: |
+    # Dev субагент (первая фаза цикла story):
+    Agent(
+      subagent_type: "general-purpose",
+      description: "Dev implementation for story 3.1",
+      prompt: """
+        # Developer Subagent
+
+        ## ОБЯЗАТЕЛЬНЫЕ ДЕЙСТВИЯ В НАЧАЛЕ
+        1. Прочитать инструкцию: _bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/developer.md
+        2. Прочитать историю: docs/infrastructure/stories/epic-3/3.1.ambient-user-context-provider.story.md
+
+        ## КОНТЕКСТ
+        - story_id: 3-1-ambient-user-context-provider
+        - sprint_status_path: docs/infrastructure/sprint-status-epic-3.yaml
+        - devLoadAlwaysFiles: см. _bmad/core/config.yaml → devLoadAlwaysFiles
+
+        ## КРИТИЧЕСКИ ВАЖНО
+        Следуй СТРОГО всем шагам из инструкции. Верни YAML результат.
+      """
+    )
+
+## КОМАНДЫ ОРКЕСТРАТОРА
+
+commands:
+  - start-epic: |
+      Начать цикл разработки. Форматы:
+        start-epic --sprint docs/{activeLibrary}/sprint-status-epic-{N}.yaml   # один эпик (явный путь)
+        start-epic --sprint "docs/{activeLibrary}/sprint-status-epic-*.yaml"    # несколько эпиков последовательно (glob)
+        start-epic --epic {N}                                                   # удобный алиас → docs/{activeLibrary}/sprint-status-epic-{N}.yaml
+      Если параметры не переданы — оркестратор подставляет glob по умолчанию
+      `docs/{activeLibrary}/sprint-status-epic-*.yaml` и пользователь подтверждает выбор.
+
+      Раскрытие glob: оркестратор использует Glob tool с указанным pattern относительно
+      project-root (НЕ shell-expand). Результирующий список сортируется лексикографически
+      и обрабатывается последовательно. Кавычки вокруг glob обязательны, чтобы shell
+      не пытался раскрыть его раньше времени.
+  - recover: "Восстановить контекст из sprint-status.yaml (см. guides/context-recovery.md)"
+  - status: "Показать текущий статус цикла (из sprint-status.yaml + состояние оркестратора)"
+  - pause: "Приостановить цикл"
+  - resume: "Продолжить цикл"
+  - skip-story: "Пропустить текущую историю (sprint-status: → done вручную, с подтверждением)"
+  - force-pass: "Принудительно пропустить QA (с подтверждением)"
+  - summary: "Показать сводку по эпику на основе sprint-status.yaml"
+
+## СПРАВОЧНАЯ ДОКУМЕНТАЦИЯ
+
+documentation:
+  workflow_guides:
+    - context_recovery: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/guides/context-recovery.md"
+    - orchestrator_logic: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/guides/orchestrator-logic.md"
+    - story_flow: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/guides/story-flow.md"
+    - phases: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/guides/phases.md"
+    - error_handling: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/guides/error-handling.md"
+
+  diagrams:
+    - architecture: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/diagrams/epic-dev-cycle.mmd"
+
+  subagent_instructions:
+    - developer: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/developer.md"
+    - code_reviewer: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/code-reviewer.md"
+    - qa_engineer: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/qa-engineer.md"
+    - qa_validator: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/validator.md"
+    - product_owner: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/product-owner.md"
+    - architect: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/subagents/architect.md"
+
+## КРАТКИЙ ОБЗОР ПРОЦЕССА
+
+process_overview:
+  description: |
+    Полный цикл разработки эпика через все фазы.
+    Детальное описание см. в docs/workflow-guides/phases.md
+
+  phases_summary:
+    phase_1: "Инициализация → Создание очереди историй (story переводится в ready-for-dev автоматически; SM-фаза удалена — истории проверяются пользователем на этапе sprint-planning)"
+    phase_2: "Development → Реализация задач"
+    phase_2_5: "Code Review + Workflow Validation → Объединённая проверка (код + Dev Agent Record, один субагент)"
+    phase_3: "QA Testing → Тестирование функциональности"
+    phase_3_5: "Validation (QA) → Проверка QA Results (Victor)"
+    phase_4: "Next Story → Переход к следующей истории или завершение"
+    phase_5: "Epic Completion → Обновление статуса эпика"
+    phase_6: "⚠️ ОБЯЗАТЕЛЬНАЯ → PO Documentation (обновление README, PRD)"
+    phase_7: "⚠️ ОБЯЗАТЕЛЬНАЯ → Architect Documentation (обновление архитектуры)"
+    phase_8: "⚠️ ОБЯЗАТЕЛЬНАЯ → Final Commit (git commit документации)"
+
+    important_note: |
+      КРИТИЧЕСКИ ВАЖНО: Фазы 6, 7, 8 являются ОБЯЗАТЕЛЬНЫМИ для завершения эпика.
+      Эпик считается завершённым ТОЛЬКО после выполнения всех трёх финальных фаз.
+      НЕ останавливайся после phase_5, ВСЕГДА продолжай до phase_8 и completed.
+
+  decision_points:
+    development: "SUCCESS → Code Review | BLOCKED → HALT"
+    code_review: "PASS → QA only when no workflow issues and no CRITICAL/HIGH/MEDIUM-block code issues | NEEDS_WORK → return_to_dev (workflow_issues + CRITICAL/HIGH/MEDIUM-block code_issues); MEDIUM-advise/LOW/INFO stay recommendations"
+    qa_testing: "PASS → Validation(QA) | FAIL → return_to_dev"
+    validation_qa: "PASS → Next Story | FAIL → return_to_qa"
+
+  error_handling:
+    max_reopens: 3
+    on_max_reopens: "ESCALATE к пользователю"
+    dev_blocked: "HALT с описанием блокера"
+    details: "См. docs/workflow-guides/error-handling.md"
+
+## ВОССТАНОВЛЕНИЕ КОНТЕКСТА
+
+context_recovery:
+  summary: "После сжатия контекста оркестратор восстанавливает состояние из sprint-status.yaml"
+  documentation: "_bmad/bmm/4-implementation/bmad-epic-dev-cycle/guides/context-recovery.md"
+
+  quick_reference:
+    step_1: "Перечитать _bmad/core/config.yaml"
+    step_2: "Перечитать _bmad/bmm/4-implementation/bmad-epic-dev-cycle/workflow.yaml"
+    step_3: "Найти все sprint-status файлы (по умолчанию glob docs/{activeLibrary}/sprint-status-epic-*.yaml)"
+    step_4: "Выбрать первый epic-{N} со статусом != done → текущий эпик"
+    step_5: "Найти текущую историю: первая story в sprint-plan order со статусом != done"
+    step_6: "Определить фазу по статусу истории в sprint-status и содержимому story-файла (Change Log, Dev Agent Record, QA Results)"
+    step_7: "Продолжить с правильной фазы"
+
+  critical_check_after_recovery:
+    description: "ОБЯЗАТЕЛЬНАЯ проверка после восстановления контекста"
+    steps:
+      - "Если ВСЕ истории эпика имеют development_status: done → проверить epic-{N} статус"
+      - "Если epic-{N}: done → проверить наличие документации от PO/Architect в Change Log эпика"
+      - "Если документация отсутствует → выполнить фазы 7, 8, 9"
+      - "Только после фаз 7, 8, 9 → next_epic_check → completed"
+
+  state_determination:
+    all_stories_done_but_epic_pending:
+      all_story_status: "done (в sprint-status.yaml)"
+      epic_status_in_yaml: "in-progress"
+      next_state: "epic_complete"
+
+    epic_done_but_no_po_docs:
+      epic_status_in_yaml: "done"
+      check: "Есть ли запись 'PO Documentation' в Change Log эпика?"
+      if_no: "next_state = po_documentation"
+      if_yes: "check Architect"
+
+    epic_done_but_no_architect_docs:
+      epic_status_in_yaml: "done"
+      check: "Есть ли запись 'Architect Documentation' в Change Log эпика?"
+      if_no: "next_state = architect_documentation"
+      if_yes: "check final commit"
+
+    epic_done_but_no_final_commit:
+      epic_status_in_yaml: "done"
+      check: "Есть ли git commit с документацией после последней истории?"
+      if_no: "next_state = final_commit"
+      if_yes: "next_state = next_epic_check"

@@ -7,7 +7,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
 
-from .db import KnowledgeDB
+from knowledge_mcp.db.models import KnowledgeDB
 # НЕ импортируем Indexer на верхнем уровне!
 # Indexer -> embeddings.py -> sentence_transformers -> torch (~30 сек импорт).
 # Для MCP-команды Indexer не нужен вообще, поэтому импортируем лениво.
@@ -27,7 +27,7 @@ class SyncRequest(BaseModel):
 
 def init_components(db_path: str):
     global db, indexer
-    from .indexer import Indexer  # Ленивый импорт — только для sync/serve
+    from knowledge_mcp.core.indexer import Indexer  # Ленивый импорт — только для sync/serve
     db = KnowledgeDB(db_path)
     indexer = Indexer(db)
 
@@ -81,7 +81,7 @@ def main():
         # MCP-сервер имеет собственную лёгкую инициализацию (без Indexer/LocalEmbedder),
         # чтобы handshake проходил мгновенно и не блокировался загрузкой ML-модели.
         import asyncio
-        from .server import start_mcp_server
+        from knowledge_mcp.mcp.server import start_mcp_server
         
         # Проверка: если БД не существует, MCP сервер может запуститься вхолостую
         if not os.path.exists(args.db_path):

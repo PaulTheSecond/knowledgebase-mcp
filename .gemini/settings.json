@@ -3,5 +3,19 @@
         "shell": {
             "enableInteractiveShell": false
         }
+    },
+    "mcpServers": {
+        "knowledge-mcp": {
+            "command": "docker",
+            "args": [
+                "exec",
+                "-i",
+                "knowledge-mcp",
+                "python",
+                "-m",
+                "knowledge_mcp.main",
+                "mcp"
+            ]
+        }
     }
 }
