@@ -52,7 +52,7 @@ development_status:
   1-2-git-manager-sessions: done
   1-3-db-queue-and-worker: done
   1-4-error-retries-and-worker-halts: done
-  1-5-webhook-validation-and-cron-triggers: ready-for-dev
+  1-5-webhook-validation-and-cron-triggers: done
   1-6-mcp-server-read-only-adaptation: ready-for-dev
   epic-1-retrospective: optional
 
