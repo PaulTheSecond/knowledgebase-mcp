@@ -219,6 +219,12 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20260701_08_sync_queue_run_at",
+            "up": """
+                ALTER TABLE sync_queue ADD COLUMN run_at DATETIME;
+            """
+        })
 
         for migration in migrations:
             if migration["id"] not in applied_migrations:
@@ -722,7 +728,10 @@ class KnowledgeDB:
         return cursor.lastrowid
 
     def fetch_next_job(self) -> Optional[Dict[str, Any]]:
-        """Извлекает следующую pending задачу по принципу FIFO и переводит ее в processing в IMMEDIATE транзакции."""
+        """Извлекает следующую pending задачу по принципу FIFO и переводит ее в processing в IMMEDIATE транзакции.
+
+        Учитывает колонку run_at: задачи с run_at в будущем пропускаются (экспоненциальный бэк-офф).
+        """
         cursor = self.conn.cursor()
         try:
             cursor.execute("BEGIN IMMEDIATE TRANSACTION;")
@@ -730,6 +739,7 @@ class KnowledgeDB:
                 SELECT id, repo_id, attempts
                 FROM sync_queue
                 WHERE status = 'pending'
+                  AND (run_at IS NULL OR run_at <= datetime('now', 'localtime'))
                 ORDER BY created_at ASC
                 LIMIT 1
             """)
@@ -783,3 +793,23 @@ class KnowledgeDB:
         """, (repo_id, git_sha))
         self._auto_commit()
 
+    def reschedule_job(self, job_id: int, attempts: int, delay_seconds: int, error_message: str) -> None:
+        """Возвращает задачу в pending с заданной задержкой (run_at) для экспоненциального бэк-оффа.
+
+        Args:
+            job_id: ID задачи.
+            attempts: Текущее число попыток.
+            delay_seconds: Задержка в секундах до следующей попытки.
+            error_message: Текст ошибки.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE sync_queue
+            SET status = 'pending',
+                attempts = ?,
+                error_message = ?,
+                run_at = datetime('now', 'localtime', '+' || ? || ' seconds'),
+                updated_at = datetime('now', 'localtime')
+            WHERE id = ?
+        """, (attempts, error_message, delay_seconds, job_id))
+        self._auto_commit()

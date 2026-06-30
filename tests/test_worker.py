@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import tempfile
-import time
 from pathlib import Path
 
 from knowledge_mcp.db.models import KnowledgeDB
@@ -113,6 +112,102 @@ class TestDaemonWorker(unittest.TestCase):
         # Задача 2 сразу помечена как completed
         cursor.execute("SELECT status FROM sync_queue WHERE id = ?", (job_id_2,))
         self.assertEqual(cursor.fetchone()[0], "completed")
+        worker.db.close()
+
+    @patch("knowledge_mcp.daemon.worker.get_repository_config")
+    @patch("knowledge_mcp.daemon.worker.GitManager")
+    @patch("knowledge_mcp.daemon.worker.Indexer")
+    def test_retry_backoff_reschedules_with_delay(self, mock_indexer_class, mock_git_mgr_class, mock_get_config):
+        """Проверяет, что при ошибке задача возвращается в pending с run_at задержкой."""
+        mock_get_config.return_value = {
+            "id": "test-repo",
+            "url": "https://github.com/mock/repo.git",
+            "branch": "master",
+            "auth": {"type": "pat", "token_env": "GITHUB_PAT"}
+        }
+        os.environ["GITHUB_PAT"] = "ghp_testtoken"
+
+        mock_git_mgr = MagicMock()
+        mock_git_mgr_class.return_value = mock_git_mgr
+        # Git clone выбрасывает исключение — имитация сетевой ошибки
+        mock_git_mgr.clone.side_effect = RuntimeError("Connection refused")
+
+        mock_indexer = MagicMock()
+        mock_indexer_class.return_value = mock_indexer
+
+        worker = DaemonWorker(self.db_path)
+        worker.indexer = mock_indexer
+
+        # Добавляем задачу
+        job_id = self.db.add_to_queue("test-repo")
+
+        # Забираем и обрабатываем задачу (попытка 1 — ошибка)
+        job = self.db.fetch_next_job()
+        self.assertIsNotNone(job)
+        worker.run_job(job)
+
+        # Задача должна быть возвращена в pending с run_at
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT status, attempts, run_at FROM sync_queue WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "pending")  # статус = pending
+        self.assertEqual(row[1], 1)          # attempts = 1
+        self.assertIsNotNone(row[2])         # run_at установлен
+
+        # Система не должна быть halted
+        sys_status = self.db.get_system_status()
+        self.assertNotEqual(sys_status["status"], "halted")
+
+        worker.db.close()
+
+    @patch("knowledge_mcp.daemon.worker.get_repository_config")
+    @patch("knowledge_mcp.daemon.worker.GitManager")
+    @patch("knowledge_mcp.daemon.worker.Indexer")
+    def test_halted_after_max_attempts(self, mock_indexer_class, mock_git_mgr_class, mock_get_config):
+        """Проверяет, что после 3 неудачных попыток задача = failed и воркер = halted."""
+        mock_get_config.return_value = {
+            "id": "test-repo",
+            "url": "https://github.com/mock/repo.git",
+            "branch": "master",
+            "auth": {"type": "pat", "token_env": "GITHUB_PAT"}
+        }
+        os.environ["GITHUB_PAT"] = "ghp_testtoken"
+
+        mock_git_mgr = MagicMock()
+        mock_git_mgr_class.return_value = mock_git_mgr
+        mock_git_mgr.clone.side_effect = RuntimeError("Persistent failure")
+
+        mock_indexer = MagicMock()
+        mock_indexer_class.return_value = mock_indexer
+
+        worker = DaemonWorker(self.db_path)
+        worker.indexer = mock_indexer
+
+        # Имитируем задачу, у которой уже 2 попытки (третья будет последней)
+        job_id = self.db.add_to_queue("test-repo")
+        # Устанавливаем 2 попытки напрямую, чтобы следующая была третьей
+        cursor = self.db.conn.cursor()
+        cursor.execute("UPDATE sync_queue SET attempts = 2 WHERE id = ?", (job_id,))
+        self.db.conn.commit()
+
+        # Забираем и обрабатываем задачу (попытка 3 — финальная)
+        job = self.db.fetch_next_job()
+        self.assertIsNotNone(job)
+        # job["attempts"] = 2, run_job инкрементирует до 3
+        worker.run_job(job)
+
+        # Задача должна быть в failed
+        cursor.execute("SELECT status, attempts, error_message FROM sync_queue WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "failed")
+        self.assertEqual(row[1], 3)
+        self.assertIn("Persistent failure", row[2])
+
+        # Воркер должен быть halted
+        sys_status = self.db.get_system_status()
+        self.assertEqual(sys_status["status"], "halted")
+        self.assertIn("Persistent failure", sys_status["last_error"])
+
         worker.db.close()
 
 if __name__ == "__main__":

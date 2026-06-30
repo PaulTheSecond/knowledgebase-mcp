@@ -131,9 +131,29 @@ class DaemonWorker:
         except Exception as e:
             logger.exception(f"Error processing job {job_id} for repo '{repo_id}': {e}")
             err_msg = str(e)
-            # В Story 1.3 выставляем failed. Ретраи и экспоненциальный back-off будут в Story 1.4
-            self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err_msg)
-            self.db.update_system_status("idle", last_error=err_msg)
+
+            # Расчёт задержки для экспоненциального бэк-оффа
+            # Попытка 1: 60 сек, Попытка 2: 300 сек, Попытка 3: 900 сек
+            retry_delays = {1: 60, 2: 300, 3: 900}
+            max_attempts = 3
+
+            if attempts < max_attempts:
+                # Есть ещё попытки — возвращаем задачу в pending с задержкой
+                delay = retry_delays.get(attempts, 900)
+                logger.warning(
+                    f"Job {job_id} failed (attempt {attempts}/{max_attempts}). "
+                    f"Rescheduling with {delay}s delay."
+                )
+                self.db.reschedule_job(job_id, attempts, delay, err_msg)
+                self.db.update_system_status("idle", last_error=err_msg)
+            else:
+                # Все попытки исчерпаны — переводим задачу в failed и воркер в halted
+                logger.error(
+                    f"Job {job_id} failed after {max_attempts} attempts. "
+                    f"Halting worker. Error: {err_msg}"
+                )
+                self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err_msg)
+                self.db.update_system_status("halted", last_error=err_msg)
 
     def start(self):
         """Запускает бесконечный цикл обработки очереди."""
