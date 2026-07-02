@@ -292,6 +292,43 @@ class KnowledgeDB:
         self._auto_commit()
         return deleted_count
 
+    def get_repo_stats(self, repo_id: str) -> dict:
+        """Возвращает метрики проиндексированных данных для конкретного репозитория."""
+        cursor = self.conn.cursor()
+        
+        # Кол-во файлов
+        cursor.execute("SELECT COUNT(*) as cnt FROM files WHERE repo_id = ?", (repo_id,))
+        files_count = cursor.fetchone()['cnt']
+        
+        # Кол-во чанков
+        cursor.execute(
+            "SELECT COUNT(*) as cnt FROM chunks WHERE file_id IN (SELECT id FROM files WHERE repo_id = ?)",
+            (repo_id,)
+        )
+        chunks_count = cursor.fetchone()['cnt']
+        
+        # Кол-во векторов
+        cursor.execute(
+            "SELECT COUNT(*) as cnt FROM chunks_vec WHERE rowid IN (SELECT rowid FROM chunks WHERE file_id IN (SELECT id FROM files WHERE repo_id = ?))",
+            (repo_id,)
+        )
+        vectors_count = cursor.fetchone()['cnt']
+        
+        return {
+            "files_count": files_count,
+            "chunks_count": chunks_count,
+            "vectors_count": vectors_count
+        }
+
+    def get_queue_jobs(self, limit: int = 50) -> list:
+        """Возвращает последние N задач из очереди синхронизации."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id, repo_id, status, attempts, last_error, run_at, created_at, updated_at FROM sync_queue ORDER BY created_at DESC LIMIT ?",
+            (limit,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
     def clear_file_chunks(self, file_id: int):
         """Удаляет все чанки, привязанные к заданному файлу (перед реиндексацией 'грязного' файла)."""
         cursor = self.conn.cursor()

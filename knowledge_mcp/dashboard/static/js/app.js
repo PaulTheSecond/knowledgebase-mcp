@@ -67,55 +67,220 @@ function initRouter() {
     
     // Запускаем первый раз при загрузке
     handleRoute();
+
+    // Настраиваем кнопку обновления
+    document.getElementById('btn-refresh').addEventListener('click', () => {
+        const hash = window.location.hash || '#repositories';
+        if (hash === '#repositories') {
+            loadRepositories();
+        } else if (hash === '#queue') {
+            loadQueue();
+        }
+        updateSystemStatusIndicator();
+    });
 }
 
 /**
  * Обновляет индикатор системного статуса в футере сайдбара.
  */
-function updateSystemStatusIndicator() {
+async function updateSystemStatusIndicator() {
     const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
+    const workerBadge = document.getElementById('worker-state-badge');
     
-    // Временная заглушка, реальные данные будут в Story 2.3 и 2.4
-    statusDot.className = 'status-dot green';
-    statusText.innerText = 'Система готова';
+    try {
+        const response = await fetch('/api/status');
+        if (!response.ok) throw new Error('Auth or API error');
+        
+        const data = await response.json();
+        
+        // Мапим статус воркера
+        if (data.status === 'idle') {
+            statusDot.className = 'status-dot green';
+            statusText.innerText = 'Воркер: Ожидание';
+            if (workerBadge) {
+                workerBadge.className = 'badge-status success';
+                workerBadge.innerText = 'Воркер: Ожидание';
+            }
+        } else if (data.status === 'processing') {
+            statusDot.className = 'status-dot green animate-pulse'; // пульсирующий эффект
+            statusText.innerText = 'Воркер: Индексация';
+            if (workerBadge) {
+                workerBadge.className = 'badge-status info';
+                workerBadge.innerText = 'Воркер: Индексация';
+            }
+        } else if (data.status === 'halted') {
+            statusDot.className = 'status-dot red';
+            statusText.innerText = 'Воркер: Остановлен';
+            if (workerBadge) {
+                workerBadge.className = 'badge-status danger';
+                workerBadge.innerText = 'Воркер: Остановлен (Критическая ошибка)';
+            }
+        } else {
+            statusDot.className = 'status-dot yellow';
+            statusText.innerText = `Воркер: ${data.status}`;
+            if (workerBadge) {
+                workerBadge.className = 'badge-status warning';
+                workerBadge.innerText = `Воркер: ${data.status}`;
+            }
+        }
+    } catch (err) {
+        statusDot.className = 'status-dot red';
+        statusText.innerText = 'Ошибка соединения';
+    }
 }
 
 /**
- * Загрузка списка репозиториев (заглушка для Story 2.3).
+ * Загрузка списка репозиториев.
  */
-function loadRepositories() {
+async function loadRepositories() {
     const tbody = document.getElementById('repos-table-body');
-    // Заглушка, наполнение будет в 2.3
-    tbody.innerHTML = `
-        <tr>
-            <td>test-repo</td>
-            <td>https://github.com/PaulTheSecond/knowledgebase-mcp.git</td>
-            <td>master</td>
-            <td><span class="text-muted">Нет данных</span></td>
-            <td>
-                <button class="btn btn-primary btn-sm" onclick="triggerSync('test-repo')">Синхронизировать</button>
-            </td>
-        </tr>
-    `;
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center">Загрузка...</td></tr>';
+    
+    try {
+        const response = await fetch('/api/status');
+        if (!response.ok) throw new Error('API request failed');
+        
+        const data = await response.json();
+        const repos = data.repositories || [];
+        
+        if (repos.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Нет настроенных репозиториев</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = '';
+        repos.forEach(repo => {
+            const tr = document.createElement('tr');
+            
+            // Защита от XSS через textContent
+            const tdId = document.createElement('td');
+            tdId.textContent = repo.id;
+            
+            const tdUrl = document.createElement('td');
+            tdUrl.textContent = repo.url;
+            
+            const tdBranch = document.createElement('td');
+            tdBranch.textContent = repo.branch;
+            
+            const tdStats = document.createElement('td');
+            tdStats.innerHTML = `<span class="badge-status info">Файлов: ${repo.files_count}</span> <span class="badge-status success">Чанков: ${repo.chunks_count}</span>`;
+            
+            const tdActions = document.createElement('td');
+            const syncBtn = document.createElement('button');
+            syncBtn.className = 'btn btn-primary btn-sm';
+            syncBtn.textContent = 'Синхронизировать';
+            syncBtn.addEventListener('click', () => triggerSync(repo.id));
+            tdActions.appendChild(syncBtn);
+            
+            tr.appendChild(tdId);
+            tr.appendChild(tdUrl);
+            tr.appendChild(tdBranch);
+            tr.appendChild(tdStats);
+            tr.appendChild(tdActions);
+            
+            tbody.appendChild(tr);
+        });
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">Не удалось загрузить данные: ${err.message}</td></tr>`;
+    }
 }
 
 /**
- * Загрузка очереди задач (заглушка для Story 2.3).
+ * Загрузка очереди задач.
  */
-function loadQueue() {
+async function loadQueue() {
     const tbody = document.getElementById('queue-table-body');
-    // Заглушка, наполнение будет в 2.3
-    tbody.innerHTML = `
-        <tr>
-            <td colspan="6" class="text-center text-muted">Очередь задач пуста</td>
-        </tr>
-    `;
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center">Загрузка...</td></tr>';
+    
+    try {
+        const response = await fetch('/api/queue');
+        if (!response.ok) throw new Error('API request failed');
+        
+        const data = await response.json();
+        const jobs = data.jobs || [];
+        
+        // Обновляем бейдж в боковом меню
+        const queueBadge = document.getElementById('queue-badge');
+        const activeJobsCount = jobs.filter(j => j.status === 'pending' || j.status === 'processing').length;
+        if (activeJobsCount > 0) {
+            queueBadge.textContent = activeJobsCount;
+            queueBadge.style.display = 'inline-block';
+        } else {
+            queueBadge.style.display = 'none';
+        }
+        
+        if (jobs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Очередь задач пуста</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = '';
+        jobs.forEach(job => {
+            const tr = document.createElement('tr');
+            
+            const tdId = document.createElement('td');
+            tdId.textContent = `#${job.id}`;
+            
+            const tdRepo = document.createElement('td');
+            tdRepo.textContent = job.repo_id;
+            
+            const tdStatus = document.createElement('td');
+            let statusClass = 'info';
+            if (job.status === 'completed') statusClass = 'success';
+            if (job.status === 'failed') statusClass = 'danger';
+            if (job.status === 'processing') statusClass = 'warning';
+            tdStatus.innerHTML = `<span class="badge-status ${statusClass}">${job.status}</span>`;
+            
+            const tdAttempts = document.createElement('td');
+            tdAttempts.textContent = `${job.attempts}/3`;
+            
+            const tdError = document.createElement('td');
+            if (job.last_error) {
+                // Выводим ошибку безопасно
+                const errorSpan = document.createElement('span');
+                errorSpan.className = 'text-danger';
+                errorSpan.style.cursor = 'help';
+                errorSpan.title = job.last_error;
+                errorSpan.textContent = job.last_error.length > 30 ? job.last_error.substring(0, 30) + '...' : job.last_error;
+                tdError.appendChild(errorSpan);
+            } else {
+                tdError.innerHTML = '<span class="text-muted">—</span>';
+            }
+            
+            const tdTime = document.createElement('td');
+            tdTime.textContent = new Date(job.created_at).toLocaleString();
+            
+            tr.appendChild(tdId);
+            tr.appendChild(tdRepo);
+            tr.appendChild(tdStatus);
+            tr.appendChild(tdAttempts);
+            tr.appendChild(tdError);
+            tr.appendChild(tdTime);
+            
+            tbody.appendChild(tr);
+        });
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">Не удалось загрузить очередь: ${err.message}</td></tr>`;
+    }
 }
 
 /**
- * Запуск синхронизации (заготовка для Story 2.3).
+ * Запуск синхронизации.
  */
-function triggerSync(repoId) {
-    console.log(`Triggering sync for ${repoId}...`);
+async function triggerSync(repoId) {
+    try {
+        const response = await fetch(`/api/sync/${repoId}`, {
+            method: 'POST'
+        });
+        if (!response.ok) throw new Error('Failed to trigger sync');
+        
+        const data = await response.json();
+        alert(`Синхронизация репозитория ${repoId} успешно запущена! Задача #${data.job_id} добавлена в очередь.`);
+        
+        // Перенаправляем на вкладку очереди
+        window.location.hash = '#queue';
+    } catch (err) {
+        alert(`Ошибка при запуске синхронизации: ${err.message}`);
+    }
 }

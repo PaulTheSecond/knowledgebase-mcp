@@ -71,17 +71,48 @@ async def get_token(username: str = Depends(verify_basic_auth)):
 
 @app.get("/api/status")
 async def get_status(username: str = Depends(verify_basic_auth)):
-    """Возвращает статус системы и телеметрию (очередь, воркер)."""
+    """Возвращает статус системы и расширенную телеметрию репозиториев."""
     if not db:
         raise HTTPException(status_code=500, detail="Components not initialized")
     row = db.get_system_status()
-    if not row:
-        return {"status": "unknown", "last_error": None, "last_indexed_at": None}
+    
+    from knowledge_mcp.core.config import load_config
+    config = load_config()
+    repos_data = []
+    for repo in config.get("repositories", []):
+        repo_id = repo.get("id")
+        stats = db.get_repo_stats(repo_id)
+        repos_data.append({
+            "id": repo_id,
+            "url": repo.get("url"),
+            "branch": repo.get("branch", "master"),
+            "files_count": stats["files_count"],
+            "chunks_count": stats["chunks_count"],
+            "vectors_count": stats["vectors_count"]
+        })
+
+    sys_status = "idle"
+    last_error = None
+    last_indexed_at = None
+    if row:
+        sys_status = row["status"]
+        last_error = row["last_error"]
+        last_indexed_at = row["last_indexed_at"]
+
     return {
-        "status": row["status"],
-        "last_error": row["last_error"],
-        "last_indexed_at": row["last_indexed_at"]
+        "status": sys_status,
+        "last_error": last_error,
+        "last_indexed_at": last_indexed_at,
+        "repositories": repos_data
     }
+
+@app.get("/api/queue")
+async def api_get_queue(username: str = Depends(verify_basic_auth)):
+    """Возвращает последние 50 задач из очереди синхронизации."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Components not initialized")
+    jobs = db.get_queue_jobs(limit=50)
+    return {"jobs": jobs}
 
 @app.post("/api/sync/{repo_id}")
 async def api_trigger_sync(repo_id: str, username: str = Depends(verify_basic_auth)):

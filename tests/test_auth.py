@@ -119,9 +119,37 @@ class TestAuthAPI(unittest.TestCase):
             "last_error": None,
             "last_indexed_at": "2026-07-02 12:00:00"
         }
+        self.mock_db.get_repo_stats.return_value = {
+            "files_count": 5,
+            "chunks_count": 10,
+            "vectors_count": 10
+        }
         response = self.client.get("/api/status", auth=("admin", "secret"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "idle")
+        data = response.json()
+        self.assertEqual(data["status"], "idle")
+        self.assertTrue(len(data["repositories"]) > 0)
+        self.assertEqual(data["repositories"][0]["files_count"], 5)
+
+    def test_api_queue(self):
+        os.environ["DASHBOARD_PASSWORD"] = "secret"
+        self.mock_db.get_queue_jobs.return_value = [
+            {
+                "id": 1,
+                "repo_id": "test-repo",
+                "status": "completed",
+                "attempts": 1,
+                "last_error": None,
+                "run_at": "2026-07-02 12:00:00",
+                "created_at": "2026-07-02 12:00:00",
+                "updated_at": "2026-07-02 12:00:00"
+            }
+        ]
+        response = self.client.get("/api/queue", auth=("admin", "secret"))
+        self.assertEqual(response.status_code, 200)
+        jobs = response.json()["jobs"]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["repo_id"], "test-repo")
 
     def test_api_get_token(self):
         os.environ["DASHBOARD_PASSWORD"] = "secret"
