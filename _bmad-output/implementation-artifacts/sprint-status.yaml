@@ -58,7 +58,7 @@ development_status:
 
   epic-2: in-progress
   2-1-basic-auth-and-token-generation: done
-  2-2-dashboard-ui-shell: ready-for-dev
+  2-2-dashboard-ui-shell: in-progress
   2-3-rest-api-telemetry-and-queue-view: ready-for-dev
   2-4-websockets-realtime-monitoring: ready-for-dev
   epic-2-retrospective: optional

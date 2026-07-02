@@ -4,6 +4,8 @@ import sys
 import logging
 import uvicorn
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
@@ -19,6 +21,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Knowledge Base Sync Trigger")
+
+# Монтируем статические файлы для Dashboard
+static_dir = Path(__file__).parent / "dashboard" / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+@app.get("/", response_class=HTMLResponse)
+async def get_dashboard():
+    """Возвращает основную страницу Dashboard UI."""
+    index_path = static_dir / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="Dashboard index.html not found")
+    return index_path.read_text(encoding="utf-8")
 
 db = None
 indexer = None

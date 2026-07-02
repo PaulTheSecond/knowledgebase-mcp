@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knowledge Base Dashboard</title>
+    <!-- Подключаем современный шрифт Outfit из Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Стили -->
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Боковая панель навигации (Sidebar) -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">⚡</span>
+                    <span class="logo-text">Knowledgebase <span class="accent-text">MCP</span></span>
+                </div>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#repositories" class="nav-item active" id="nav-repositories">
+                    <span class="nav-icon">📦</span>
+                    <span class="nav-label">Репозитории</span>
+                </a>
+                <a href="#queue" class="nav-item" id="nav-queue">
+                    <span class="nav-icon">⏳</span>
+                    <span class="nav-label">Очередь задач</span>
+                    <span class="badge" id="queue-badge" style="display: none;">0</span>
+                </a>
+                <a href="#chat" class="nav-item" id="nav-chat">
+                    <span class="nav-icon">💬</span>
+                    <span class="nav-label">RAG Чат</span>
+                </a>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="system-status-indicator">
+                    <span class="status-dot green" id="status-dot"></span>
+                    <span class="status-text" id="status-text">Инициализация...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Главный контейнер содержимого (Main Content Container) -->
+        <main class="main-content">
+            <!-- Верхняя панель (Header) -->
+            <header class="content-header">
+                <div class="header-title">
+                    <h1 id="page-title">Управление репозиториями</h1>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-secondary" id="btn-refresh">Обновить данные</button>
+                </div>
+            </header>
+
+            <!-- Секции содержимого (SPA Views) -->
+            <div class="view-container">
+                <!-- Секция: Репозитории -->
+                <section id="repositories-view" class="view-section active">
+                    <div class="section-card">
+                        <h2>Подключенные репозитории</h2>
+                        <p class="text-secondary">Управление списком индексируемых исходных кодов.</p>
+                        
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID репозитория</th>
+                                        <th>URL источника</th>
+                                        <th>Ветка</th>
+                                        <th>Последний коммит</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="repos-table-body">
+                                    <!-- Заполняется динамически через JS -->
+                                    <tr>
+                                        <td colspan="5" class="text-center">Загрузка репозиториев...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Секция: Очередь -->
+                <section id="queue-view" class="view-section">
+                    <div class="section-card">
+                        <div class="card-header-flex">
+                            <div>
+                                <h2>Очередь синхронизации</h2>
+                                <p class="text-secondary">Текущие задачи и история запусков индексатора.</p>
+                            </div>
+                            <div>
+                                <span class="badge-status info" id="worker-state-badge">Воркер: Активен</span>
+                            </div>
+                        </div>
+                        
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID задачи</th>
+                                        <th>Репозиторий</th>
+                                        <th>Статус</th>
+                                        <th>Попытки</th>
+                                        <th>Ошибка</th>
+                                        <th>Время</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="queue-table-body">
+                                    <!-- Заполняется динамически через JS -->
+                                    <tr>
+                                        <td colspan="6" class="text-center">Загрузка очереди...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Секция: Чат -->
+                <section id="chat-view" class="view-section">
+                    <div class="chat-container section-card">
+                        <div class="chat-messages" id="chat-messages">
+                            <div class="message system">
+                                <p>Добро пожаловать в RAG Чат базы знаний! Задайте любой вопрос по исходному коду подключенных репозиториев.</p>
+                            </div>
+                        </div>
+                        <div class="chat-input-area">
+                            <input type="text" id="chat-input" placeholder="Задайте вопрос по коду..." autocomplete="off">
+                            <button class="btn btn-primary" id="btn-send-chat">Отправить</button>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

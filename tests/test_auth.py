@@ -147,6 +147,17 @@ class TestAuthAPI(unittest.TestCase):
         self.assertEqual(response.json()["files_deleted"], 10)
         self.mock_db.delete_repo.assert_called_once_with("test-repo")
 
+    def test_static_dashboard_rendering(self):
+        # Проверяем, что корень возвращает страницу Dashboard
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Knowledge Base Dashboard", response.text)
+
+        # Проверяем раздачу статических CSS стилей
+        response = self.client.get("/static/css/styles.css")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("accent-color", response.text)
+
 
 if __name__ == "__main__":
     unittest.main()
