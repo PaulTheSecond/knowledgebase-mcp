@@ -256,11 +256,23 @@ async def _handle_get_chunk(arguments: dict) -> list[types.TextContent]:
         return _err(f"Database query error: {e}")
 
 
+def _get_auth_headers() -> dict[str, str]:
+    """Возвращает заголовок Authorization для Basic Auth, если установлен DASHBOARD_PASSWORD."""
+    import os
+    import base64
+    password = os.environ.get("DASHBOARD_PASSWORD")
+    if not password:
+        return {}
+    creds = f"admin:{password}"
+    b64_creds = base64.b64encode(creds.encode("utf-8")).decode("utf-8")
+    return {"Authorization": f"Basic {b64_creds}"}
+
+
 async def _handle_delete_repo(arguments: dict) -> list[types.TextContent]:
     """knowledge_delete_repo: делегирует удаление репозитория Daemon-процессу через HTTP.
 
     MCP-сервер работает в Read-Only режиме и не может выполнять записи в SQLite.
-    Запрос на удаление отправляется Daemon API.
+    Запрос на удаление отправляется Daemon API с поддержкой Basic Auth.
     """
     repo_id = arguments.get("repo_id")
     if not repo_id:
@@ -271,7 +283,8 @@ async def _handle_delete_repo(arguments: dict) -> list[types.TextContent]:
         import urllib.error
 
         url = f"http://127.0.0.1:8000/api/repo/{repo_id}"
-        req = urllib.request.Request(url, method="DELETE")
+        headers = _get_auth_headers()
+        req = urllib.request.Request(url, method="DELETE", headers=headers)
 
         def _trigger_delete():
             with urllib.request.urlopen(req) as response:
@@ -290,7 +303,7 @@ async def _handle_sync_repo(arguments: dict) -> list[types.TextContent]:
     """knowledge_sync_repo: делегирует синхронизацию репозитория Daemon-процессу через HTTP.
 
     MCP-сервер работает в Read-Only режиме. Задача добавляется в DB-очередь
-    через Daemon API, а не через прямую запись в SQLite.
+    через Daemon API с авторизацией Basic Auth.
     """
     repo_id = arguments.get("repo_id")
     if not repo_id:
@@ -301,7 +314,9 @@ async def _handle_sync_repo(arguments: dict) -> list[types.TextContent]:
         import urllib.error
 
         url = f"http://127.0.0.1:8000/api/sync/{repo_id}"
-        req = urllib.request.Request(url, method="POST", data=b"", headers={"Content-Type": "application/json"})
+        headers = _get_auth_headers()
+        headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, method="POST", data=b"", headers=headers)
 
         def _trigger_sync():
             with urllib.request.urlopen(req) as response:

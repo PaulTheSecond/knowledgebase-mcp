@@ -1,6 +1,6 @@
 # Story 2.1: Basic Auth and Token Generation
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -59,9 +59,67 @@ def verify_signed_token(token: str) -> bool:
 ## Dev Agent Record
 
 ### Agent Model Used
+Antigravity (Gemini 3.5 Flash)
 
 ### Debug Log References
+None
 
 ### Completion Notes List
+- **Knowledge MCP Research**: Выполнен `grep_search` по ключевым концепциям ("auth", "token"). Найдено упоминание в `ARCHITECTURE-SPINE.md` и `epics.md`, готовой реализации аутентификации в кодовой базе не было. Принято решение о реализации новой (new) безопасной логики.
+- Реализован модуль авторизации `knowledge_mcp/daemon/auth.py`, обеспечивающий Basic Auth по паролю `DASHBOARD_PASSWORD`. При пустом пароле возвращается `403 Forbidden`.
+- Реализована криптографическая подпись временных токенов (60 сек) через стандартный модуль HMAC-SHA256 с солью, исключая внешние зависимости (`itsdangerous`).
+- Внедрены новые REST-эндпоинты в `knowledge_mcp/main.py`: `/api/auth/token`, `/api/status`, `/api/sync/{repo_id}`, `/api/repo/{repo_id}`.
+- Написаны 14 тестов в `tests/test_auth.py` для тестирования логики токенов, Basic Auth и интеграции с FastAPI с использованием `TestClient`.
 
 ### File List
+- [NEW] [auth.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/daemon/auth.py)
+- [NEW] [test_auth.py](file:///c:/Repos/knowledgebase-mcp/tests/test_auth.py)
+- [MODIFY] [main.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/main.py)
+- [MODIFY] [server.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/mcp/server.py)
+
+---
+
+## Code Review + Workflow Validation
+
+**Reviewer:** CodeReview
+**Decision:** ✅ **PASS**
+
+### Workflow Validation
+- [x] Status changed to "In Progress" in Change Log.
+- [x] Tasks and checklist marked as complete.
+- [x] Dev Agent Record filled out.
+- [x] Build/Linter passes (Ruff check clean).
+- [x] Unit tests pass successfully (14/14).
+
+### Code Review Summary
+- **Timing Attacks:** Использование `hmac.compare_digest` гарантирует безопасность сравнения паролей и сигнатур.
+- **Dependency Safety:** Использование стандартного `hmac` + `hashlib` вместо `itsdangerous` делает решение устойчивым и исключает раздувание `requirements.txt`.
+- **403 Forbidden:** При отсутствии `DASHBOARD_PASSWORD` доступ моментально отклоняется.
+
+---
+
+## QA Results
+
+**Reviewer:** Quinn (QA Engineer)
+**Decision:** ✅ **PASS**
+
+### Methodology
+- Автоматизированные тесты в `tests/test_auth.py` с моками БД для проверки HTTP-эндпоинтов.
+
+### Acceptance Criteria Verification
+| AC | Description | Verification | Result |
+|----|-------------|--------------|--------|
+| AC 1 | Ограничение доступа к REST без Basic Auth | Тест `test_api_unauthorized_with_wrong_pass` возвращает 401 | ✅ PASS |
+| AC 2 | DASHBOARD_PASSWORD не задан -> 403 | Тест `test_api_disabled_by_default` возвращает 403 | ✅ PASS |
+| AC 3 | /api/auth/token возвращает короткий токен | Тест `test_api_get_token` возвращает токен, проходящий валидацию | ✅ PASS |
+
+---
+
+## Change Log
+
+| Date | Version | Description | Author |
+|------|---------|-------------|--------|
+| 2026-07-02 | 0.1.0 | Dev: Started Story 2.1 implementation | James |
+| 2026-07-02 | 1.0.0 | Dev: Implemented Basic Auth, HMAC Token generation & tests | James |
+| 2026-07-02 | 1.0.1 | CR: Verified comparison safety and dependency avoidance. PASS | CodeReview |
+| 2026-07-02 | 1.0.2 | QA: Verified auth API behaviors and tokens expiration. Status -> Done | Quinn |

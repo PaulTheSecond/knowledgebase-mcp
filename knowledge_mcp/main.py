@@ -3,11 +3,13 @@ import os
 import sys
 import logging
 import uvicorn
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends
 from pydantic import BaseModel
 from pathlib import Path
 
 from knowledge_mcp.db.models import KnowledgeDB
+from knowledge_mcp.daemon.auth import verify_basic_auth, generate_temp_token
+
 # НЕ импортируем Indexer на верхнем уровне!
 # Indexer -> embeddings.py -> sentence_transformers -> torch (~30 сек импорт).
 # Для MCP-команды Indexer не нужен вообще, поэтому импортируем лениво.
@@ -30,6 +32,10 @@ def init_components(db_path: str):
     from knowledge_mcp.core.indexer import Indexer  # Ленивый импорт — только для sync/serve
     db = KnowledgeDB(db_path)
     indexer = Indexer(db)
+    
+    # Инициализируем и подключаем роутер вебхуков (Story 1.5)
+    from knowledge_mcp.daemon.routes.webhooks import init_webhook_router
+    app.include_router(init_webhook_router(db))
 
 @app.post("/sync")
 async def sync_endpoint(req: SyncRequest, background_tasks: BackgroundTasks):
@@ -42,6 +48,42 @@ async def sync_endpoint(req: SyncRequest, background_tasks: BackgroundTasks):
     
     background_tasks.add_task(indexer.sync_repo, req.repo_id, req.repo_path)
     return {"status": "Sync queued", "repo_id": req.repo_id, "background": True}
+
+@app.post("/api/auth/token")
+async def get_token(username: str = Depends(verify_basic_auth)):
+    """Выпускает временный короткоживущий токен для WebSockets/SSE."""
+    token = generate_temp_token(username)
+    return {"token": token}
+
+@app.get("/api/status")
+async def get_status(username: str = Depends(verify_basic_auth)):
+    """Возвращает статус системы и телеметрию (очередь, воркер)."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Components not initialized")
+    row = db.get_system_status()
+    if not row:
+        return {"status": "unknown", "last_error": None, "last_indexed_at": None}
+    return {
+        "status": row["status"],
+        "last_error": row["last_error"],
+        "last_indexed_at": row["last_indexed_at"]
+    }
+
+@app.post("/api/sync/{repo_id}")
+async def api_trigger_sync(repo_id: str, username: str = Depends(verify_basic_auth)):
+    """Ставит задачу синхронизации в очередь."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Components not initialized")
+    job_id = db.add_to_queue(repo_id)
+    return {"status": "queued", "repo_id": repo_id, "job_id": job_id}
+
+@app.delete("/api/repo/{repo_id}")
+async def api_delete_repo(repo_id: str, username: str = Depends(verify_basic_auth)):
+    """Удаляет все данные репозитория из индекса."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Components not initialized")
+    deleted_files = db.delete_repo(repo_id)
+    return {"status": "deleted", "repo_id": repo_id, "files_deleted": deleted_files}
 
 def main():
     parser = argparse.ArgumentParser(description="Knowledge MCP - Indexer & Trigger Server")
