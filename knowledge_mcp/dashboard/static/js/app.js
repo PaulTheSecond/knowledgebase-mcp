@@ -100,6 +100,16 @@ async function updateSystemStatusIndicator() {
         
         const data = await response.json();
         
+        // Скрытие / показ чата в сайдбаре (Story 3.3)
+        const navChat = document.getElementById('nav-chat');
+        if (navChat) {
+            if (data.chat_enabled === false) {
+                navChat.style.display = 'none';
+            } else {
+                navChat.style.display = '';
+            }
+        }
+        
         // Мапим статус воркера
         if (data.status === 'idle') {
             statusDot.className = 'status-dot green';

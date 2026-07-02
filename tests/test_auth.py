@@ -131,6 +131,7 @@ class TestAuthAPI(unittest.TestCase):
         self.assertEqual(data["status"], "idle")
         self.assertTrue(len(data["repositories"]) > 0)
         self.assertEqual(data["repositories"][0]["files_count"], 5)
+        self.assertIn("chat_enabled", data)
 
     def test_api_queue(self):
         os.environ["DASHBOARD_PASSWORD"] = "secret"

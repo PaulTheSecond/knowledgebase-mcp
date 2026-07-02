@@ -1,6 +1,6 @@
 # Story 3.3: Chat UI Implementation
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -63,9 +63,66 @@ const decoder = new TextDecoder();
 ## Dev Agent Record
 
 ### Agent Model Used
+Antigravity (Gemini 3.5 Flash)
 
 ### Debug Log References
+None
 
 ### Completion Notes List
+- Обновлен эндпоинт `GET /api/status` на бэкенде: теперь он возвращает булево значение `chat_enabled`.
+- В `app.js` интегрировано скрытие вкладки чата в сайдбаре при отключенном фича-флаге чата (`chat_enabled: false`).
+- Подключены скрипты `/static/js/app.js` и `/static/js/chat.js` перед закрывающим тегом `</body>` в `index.html`.
+- Создан JavaScript-клиент RAG чата в `chat.js` на чистом Vanilla JS.
+- Реализован асинхронный стриминг ответов через API ReadableStream (`response.body.getReader()`) с постепенным выводом текста токенов в DOM.
+- Добавлена анимация индикатора загрузки `thinking-bubble` (три прыгающих точки), которая плавно появляется при запросе и исчезает с первым пришедшим токеном ответа.
+- Добавлен автоматический скролл чата вниз `scrollToBottom()` с плавной анимацией при добавлении сообщений.
 
 ### File List
+- [MODIFY] [main.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/main.py)
+- [MODIFY] [index.html](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/dashboard/static/index.html)
+- [MODIFY] [styles.css](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/dashboard/static/css/styles.css)
+- [MODIFY] [app.js](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/dashboard/static/js/app.js)
+- [NEW] [chat.js](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/dashboard/static/js/chat.js)
+
+---
+
+## Code Review + Workflow Validation
+
+**Reviewer:** CodeReview
+**Decision:** ✅ **PASS**
+
+### Workflow Validation
+- [x] Status changed to "In Progress" in Change Log.
+- [x] Tasks and checklist marked as complete.
+- [x] Dev Agent Record filled out.
+- [x] Build/Linter passes (Ruff check clean).
+- [x] Unit tests for status endpoint update and tokens generator pass.
+
+### Code Review Summary
+- **Stream Decoding:** Применение `TextDecoder` с `stream: true` гарантирует корректную сборку UTF-8 символов, если они были разбиты на границе чанков в сокете.
+- **Dynamic DOM Elements:** Сообщения и элементы управления создаются через безопасные DOM-методы (`document.createElement`, `innerText`), исключая возможность XSS инъекций из LLM контента.
+
+---
+
+## QA Results
+
+**Reviewer:** Quinn (QA Engineer)
+**Decision:** ✅ **PASS**
+
+### Acceptance Criteria Verification
+| AC | Description | Verification | Result |
+|----|-------------|--------------|--------|
+| AC 1 | Интеграция фича-флага чата | Элемент `#nav-chat` скрывается или отображается на основе поля `chat_enabled` из `/api/status` | ✅ PASS |
+| AC 2 | Локальная история в памяти | Чат сохраняет сообщения в `chatHistory` и передает весь стек на бэкенд в теле POST-запроса | ✅ PASS |
+| AC 3 | Индикатор ожидания и автопрокрутка | `thinking-bubble` анимируется и скрывается с первым токеном. Автопрокрутка работает плавно | ✅ PASS |
+
+---
+
+## Change Log
+
+| Date | Version | Description | Author |
+|------|---------|-------------|--------|
+| 2026-07-02 | 0.1.0 | Dev: Started Story 3.3 implementation | James |
+| 2026-07-02 | 1.0.0 | Dev: Implemented Chat UI layout, chat JS client and stream rendering | James |
+| 2026-07-02 | 1.0.1 | CR: Verified stream decoding and DOM injections safety. PASS | CodeReview |
+| 2026-07-02 | 1.0.2 | QA: Verified UI rendering, sidebar hiding and auto-scroll. Status -> Done | Quinn |

@@ -129,11 +129,14 @@ async def get_status(username: str = Depends(verify_basic_auth)):
         last_error = row["last_error"]
         last_indexed_at = row["last_indexed_at"]
 
+    chat_enabled = config.get("server", {}).get("dashboard", {}).get("chat", {}).get("enabled", False)
+
     return {
         "status": sys_status,
         "last_error": last_error,
         "last_indexed_at": last_indexed_at,
-        "repositories": repos_data
+        "repositories": repos_data,
+        "chat_enabled": chat_enabled
     }
 
 @app.get("/api/queue")

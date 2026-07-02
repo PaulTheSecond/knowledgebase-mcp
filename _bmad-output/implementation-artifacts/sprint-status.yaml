@@ -65,7 +65,7 @@ development_status:
 
   epic-3: in-progress
   3-1-omniroute-client-and-context-search: done
-  3-2-sse-streaming-backend: in-progress
-  3-3-chat-ui-implementation: ready-for-dev
+  3-2-sse-streaming-backend: done
+  3-3-chat-ui-implementation: in-progress
   3-4-markdown-highlighting-and-sources: ready-for-dev
   epic-3-retrospective: optional
