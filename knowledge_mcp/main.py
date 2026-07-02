@@ -3,7 +3,8 @@ import os
 import sys
 import logging
 import uvicorn
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends
+import asyncio
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -21,6 +22,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Knowledge Base Sync Trigger")
+
+event_loop = None
+
+@app.on_event("startup")
+async def startup_event():
+    global event_loop
+    event_loop = asyncio.get_running_loop()
+
+@app.websocket("/ws/status")
+async def websocket_status_endpoint(websocket: WebSocket):
+    """WebSocket канал для обновления статуса синхронизации в реальном времени."""
+    token = websocket.query_params.get("token")
+    from knowledge_mcp.daemon.auth import verify_temp_token
+    if not token or not verify_temp_token(token):
+        await websocket.close(code=4001)
+        return
+        
+    from knowledge_mcp.daemon.status_ws import manager
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Ожидаем данных от клиента, чтобы держать соединение открытым
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 # Монтируем статические файлы для Dashboard
 static_dir = Path(__file__).parent / "dashboard" / "static"

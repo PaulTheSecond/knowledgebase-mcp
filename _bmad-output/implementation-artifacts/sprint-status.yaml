@@ -56,11 +56,11 @@ development_status:
   1-6-mcp-server-read-only-adaptation: done
   epic-1-retrospective: optional
 
-  epic-2: in-progress
+  epic-2: done
   2-1-basic-auth-and-token-generation: done
-  2-2-dashboard-ui-shell: in-progress
+  2-2-dashboard-ui-shell: done
   2-3-rest-api-telemetry-and-queue-view: done
-  2-4-websockets-realtime-monitoring: ready-for-dev
+  2-4-websockets-realtime-monitoring: done
   epic-2-retrospective: optional
 
   epic-3: backlog

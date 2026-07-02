@@ -516,6 +516,16 @@ class Indexer:
         repo_path = Path(repo_path).resolve()
         logger.info(f"Starting sync for repo '{repo_id}' at {repo_path}")
 
+        from knowledge_mcp.daemon.status_ws import broadcast_sync
+        broadcast_sync({
+            "type": "sync_progress",
+            "data": {
+                "repo_id": repo_id,
+                "progress": 5,
+                "status": "scanning"
+            }
+        })
+
         if not repo_path.exists():
             logger.error(f"Path does not exist: {repo_path}")
             return
@@ -584,6 +594,16 @@ class Indexer:
                     processed += 1
                     if processed % log_step == 0 or processed == total_files:
                         logger.info(f"Scan progress: {processed}/{total_files} files ({int(processed/total_files*100)}%)")
+                        current_progress = 10 + int(processed / total_files * 70)
+                        from knowledge_mcp.daemon.status_ws import broadcast_sync
+                        broadcast_sync({
+                            "type": "sync_progress",
+                            "data": {
+                                "repo_id": repo_id,
+                                "progress": current_progress,
+                                "status": "syncing"
+                            }
+                        })
 
                     rel_path, filepath, mtime, file_hash, status, old_id = res
                     if status == 'error':
@@ -637,6 +657,15 @@ class Indexer:
 
         # Батч-векторизация + recovery потерянных эмбеддингов
         if self.use_embeddings and self.embedder:
+            from knowledge_mcp.daemon.status_ws import broadcast_sync
+            broadcast_sync({
+                "type": "sync_progress",
+                "data": {
+                    "repo_id": repo_id,
+                    "progress": 80,
+                    "status": "embedding"
+                }
+            })
             self._embed_pending_chunks(repo_id, chunks_to_embed, sync_buffer)
 
         # Финальная верификация: отчёт о проблемных файлах
@@ -650,5 +679,14 @@ class Indexer:
         except Exception as e:
             logger.error(f"Error resolving pending references: {e}")
 
+        from knowledge_mcp.daemon.status_ws import broadcast_sync
+        broadcast_sync({
+            "type": "sync_progress",
+            "data": {
+                "repo_id": repo_id,
+                "progress": 100,
+                "status": "completed"
+            }
+        })
         logger.info(f"Sync complete for '{repo_id}': +{added_count} ~{updated_count} -{deleted_count} (={unchanged_count} unchanged)")
 

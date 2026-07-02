@@ -1,11 +1,17 @@
 // SPA Маршрутизатор панели управления (Story 2.2)
 
+let activeProgresses = {};
+let wsConn = null;
+
 document.addEventListener('DOMContentLoaded', () => {
     // Настраиваем SPA маршрутизацию
     initRouter();
     
     // Подгружаем первоначальные статусы
     updateSystemStatusIndicator();
+
+    // Подключаемся к WebSocket для обновлений в реальном времени
+    connectWebSocket();
 });
 
 /**
@@ -152,6 +158,7 @@ async function loadRepositories() {
         tbody.innerHTML = '';
         repos.forEach(repo => {
             const tr = document.createElement('tr');
+            tr.id = `repo-row-${repo.id}`;
             
             // Защита от XSS через textContent
             const tdId = document.createElement('td');
@@ -164,7 +171,19 @@ async function loadRepositories() {
             tdBranch.textContent = repo.branch;
             
             const tdStats = document.createElement('td');
-            tdStats.innerHTML = `<span class="badge-status info">Файлов: ${repo.files_count}</span> <span class="badge-status success">Чанков: ${repo.chunks_count}</span>`;
+            tdStats.id = `repo-stats-${repo.id}`;
+            
+            const active = activeProgresses[repo.id];
+            if (active) {
+                tdStats.innerHTML = `
+                    <div class="progress-container">
+                        <div class="progress-bar" style="width: ${active.progress}%; transition: width 0.2s ease-in-out;"></div>
+                        <span class="progress-label">${active.status} (${active.progress}%)</span>
+                    </div>
+                `;
+            } else {
+                tdStats.innerHTML = `<span class="badge-status info">Файлов: ${repo.files_count}</span> <span class="badge-status success">Чанков: ${repo.chunks_count}</span>`;
+            }
             
             const tdActions = document.createElement('td');
             const syncBtn = document.createElement('button');
@@ -283,4 +302,103 @@ async function triggerSync(repoId) {
     } catch (err) {
         alert(`Ошибка при запуске синхронизации: ${err.message}`);
     }
+}
+
+/**
+ * Подключение к WebSockets для получения статуса синхронизации в реальном времени.
+ */
+async function connectWebSocket() {
+    try {
+        // Сначала запрашиваем короткоживущий токен для вебсокетов
+        const response = await fetch('/api/auth/token', { method: 'POST' });
+        if (!response.ok) {
+            console.error('Failed to obtain WebSocket token');
+            setTimeout(connectWebSocket, 5000);
+            return;
+        }
+        
+        const data = await response.json();
+        const token = data.token;
+        
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/status?token=${token}`;
+        
+        wsConn = new WebSocket(wsUrl);
+        
+        wsConn.onopen = () => {
+            console.log('WebSocket status connection established.');
+        };
+        
+        wsConn.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                if (message.type === 'sync_progress') {
+                    handleSyncProgressUpdate(message.data);
+                }
+            } catch (err) {
+                console.error('Error handling WebSocket message:', err);
+            }
+        };
+        
+        wsConn.onclose = (event) => {
+            console.log(`WebSocket connection closed (code: ${event.code}). Reconnecting in 3s...`);
+            setTimeout(connectWebSocket, 3000);
+        };
+        
+        wsConn.onerror = (err) => {
+            console.error('WebSocket error:', err);
+            wsConn.close();
+        };
+    } catch (err) {
+        console.error('Failed to initialize WebSocket connection:', err);
+        setTimeout(connectWebSocket, 5000);
+    }
+}
+
+/**
+ * Обработка события изменения прогресса синхронизации из вебсокета.
+ */
+function handleSyncProgressUpdate(data) {
+    const { repo_id, progress, status } = data;
+    
+    if (progress === 100 || status === 'completed' || status === 'failed') {
+        // Задача завершилась — удаляем ее из активного прогресса
+        delete activeProgresses[repo_id];
+        // Полностью перерисовываем таблицы для обновления статических метрик
+        const hash = window.location.hash || '#repositories';
+        if (hash === '#repositories') {
+            loadRepositories();
+        } else if (hash === '#queue') {
+            loadQueue();
+        }
+    } else {
+        activeProgresses[repo_id] = { progress, status };
+        renderActiveProgress(repo_id);
+        
+        // Если открыта вкладка очереди, обновляем ее тоже
+        const hash = window.location.hash || '#repositories';
+        if (hash === '#queue') {
+            loadQueue();
+        }
+    }
+    
+    updateSystemStatusIndicator();
+}
+
+/**
+ * Реактивное обновление прогресс-бара конкретного репозитория в таблице.
+ */
+function renderActiveProgress(repoId) {
+    const tdStats = document.getElementById(`repo-stats-${repoId}`);
+    if (!tdStats) return; // Репозиторий может быть не на текущей странице/экране
+    
+    const active = activeProgresses[repoId];
+    if (!active) return;
+    
+    tdStats.innerHTML = `
+        <div class="progress-container">
+            <div class="progress-bar" style="width: ${active.progress}%; transition: width 0.2s ease-in-out;"></div>
+            <span class="progress-label">${active.status} (${active.progress}%)</span>
+        </div>
+    `;
 }

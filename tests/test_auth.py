@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import time
+import asyncio
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -185,6 +186,44 @@ class TestAuthAPI(unittest.TestCase):
         response = self.client.get("/static/css/styles.css")
         self.assertEqual(response.status_code, 200)
         self.assertIn("accent-color", response.text)
+
+    def test_websocket_connection_unauthorized(self):
+        # Подключение с неверным токеном должно закрываться (TestClient кидает WebSocketDisconnect или HTTPException)
+        from fastapi import WebSocketDisconnect
+        with self.assertRaises(Exception):
+            with self.client.websocket_connect("/ws/status?token=invalid_token") as websocket:
+                pass
+
+    def test_websocket_connection_success_and_broadcast(self):
+        os.environ["DASHBOARD_PASSWORD"] = "secret"
+        token = generate_temp_token("admin")
+        
+        from knowledge_mcp.daemon.status_ws import broadcast_sync
+        
+        # Настраиваем event_loop в main_mod для броадкастинга
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        main_mod.event_loop = loop
+        
+        with self.client.websocket_connect(f"/ws/status?token={token}") as websocket:
+            event_data = {
+                "type": "sync_progress",
+                "data": {
+                    "repo_id": "test-repo",
+                    "progress": 50,
+                    "status": "syncing"
+                }
+            }
+            broadcast_sync(event_data)
+            
+            # Получаем сообщение из сокета
+            received = websocket.receive_json()
+            self.assertEqual(received["type"], "sync_progress")
+            self.assertEqual(received["data"]["progress"], 50)
+            self.assertEqual(received["data"]["status"], "syncing")
 
 
 if __name__ == "__main__":

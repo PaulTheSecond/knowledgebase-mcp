@@ -418,3 +418,43 @@ h2 {
     border-color: var(--accent-color);
     box-shadow: 0 0 0 2px var(--accent-glow);
 }
+
+/* Стили прогресс-бара */
+.progress-container {
+    width: 100%;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    height: 24px;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+}
+
+.progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-color) 0%, var(--accent-color-hover) 100%);
+    box-shadow: 0 0 8px var(--accent-glow);
+    width: 0;
+}
+
+.progress-label {
+    position: absolute;
+    width: 100%;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    pointer-events: none;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.animate-pulse {
+    animation: pulse 1.5s infinite;
+}
