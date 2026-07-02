@@ -152,3 +152,87 @@ class TestChatAPI(unittest.TestCase):
         self.mock_embedder.embed_text.assert_called_once_with("Explain how hello works", is_query=True)
         self.mock_db.search_chunks_hybrid.assert_called_once()
         mock_post.assert_called_once()
+
+    def test_stream_unauthorized(self):
+        req_body = {
+            "messages": [
+                {"role": "user", "content": "Hello, code?"}
+            ]
+        }
+        # Без токена
+        response = self.client.post("/api/chat/stream", json=req_body)
+        self.assertEqual(response.status_code, 401)
+        
+        # С неверным токеном
+        response = self.client.post("/api/chat/stream?token=invalid_token_123", json=req_body)
+        self.assertEqual(response.status_code, 401)
+
+    @patch("httpx.AsyncClient.stream")
+    @patch("knowledge_mcp.daemon.routes.chat.load_config")
+    def test_stream_success(self, mock_load_config, mock_stream):
+        mock_load_config.return_value = {
+            "server": {
+                "dashboard": {
+                    "chat": {
+                        "enabled": True
+                    }
+                }
+            }
+        }
+        os.environ["LLM_API_KEY"] = "sk-test"
+        
+        # Генерируем валидный токен
+        from knowledge_mcp.daemon.auth import generate_temp_token
+        valid_token = generate_temp_token("admin")
+        
+        # Настраиваем мок эмбеддера
+        self.mock_embedder.embed_text.return_value = [0.1, 0.2, 0.3]
+        
+        # Настраиваем мок поиска в БД
+        self.mock_db.search_chunks_hybrid.return_value = [
+            {
+                "path": "test_stream.py",
+                "line_start": 1,
+                "line_end": 5,
+                "content": "def stream(): pass"
+            }
+        ]
+        
+        # Настраиваем мок stream менеджера контекста httpx
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        
+        async def mock_aiter_lines():
+            yield 'data: {"choices": [{"delta": {"content": "Hello"}}]}'
+            yield 'data: {"choices": [{"delta": {"content": " world"}}]}'
+            yield 'data: [DONE]'
+            
+        mock_response.aiter_lines = mock_aiter_lines
+        
+        class MockStreamContext:
+            async def __aenter__(self):
+                return mock_response
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+                
+        mock_stream.return_value = MockStreamContext()
+        
+        req_body = {
+            "messages": [
+                {"role": "user", "content": "Test stream endpoint"}
+            ]
+        }
+        
+        # Делаем запрос к эндпоинту
+        response = self.client.post(f"/api/chat/stream?token={valid_token}", json=req_body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "text/event-stream; charset=utf-8")
+        
+        # Читаем возвращенный стрим
+        lines = [line for line in response.iter_lines() if line]
+        
+        # Должно быть 3 непустых строки в стриме: "Hello", " world", и "sources"
+        self.assertTrue(any("Hello" in line for line in lines))
+        self.assertTrue(any(" world" in line for line in lines))
+        self.assertTrue(any("sources" in line for line in lines))
+        self.assertTrue(any("test_stream.py" in line for line in lines))
