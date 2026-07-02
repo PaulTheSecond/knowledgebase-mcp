@@ -216,3 +216,62 @@ async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_que
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@router.get("/file")
+async def read_file_endpoint(
+    filepath: str, 
+    start_line: int = 1, 
+    end_line: int = None, 
+    username: str = Depends(verify_basic_auth)
+):
+    """
+    Возвращает содержимое указанного файла (или фрагмент строк).
+    Защищает от Path Traversal, проверяя, что путь находится внутри CLONES_DIR или папки проекта.
+    """
+    from pathlib import Path
+    clones_dir = Path(os.environ.get("CLONES_DIR", "data/clones")).resolve()
+    project_dir = Path(".").resolve()
+    
+    # 1. Приводим путь к абсолютному виду
+    # Сначала пытаемся разрешить путь относительно clones_dir
+    target_path = (clones_dir / filepath).resolve()
+    
+    # Если файл не существует относительно clones_dir, пробуем относительно корня проекта
+    if not target_path.exists():
+        target_path = (project_dir / filepath).resolve()
+        
+    # 2. Проверка безопасности (Path Traversal)
+    # Путь должен начинаться либо с clones_dir, либо с project_dir
+    try:
+        is_inside_clones = target_path.parts[:len(clones_dir.parts)] == clones_dir.parts
+        is_inside_project = target_path.parts[:len(project_dir.parts)] == project_dir.parts
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file path structure")
+    
+    if not (is_inside_clones or is_inside_project):
+        raise HTTPException(status_code=403, detail="Access denied: File is outside allowed directories")
+        
+    if not target_path.exists() or not target_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    # 3. Читаем строки
+    try:
+        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+            
+        total_lines = len(lines)
+        # Корректируем start_line и end_line (1-indexed)
+        start = max(1, start_line) - 1
+        end = min(total_lines, end_line) if end_line else total_lines
+        
+        selected_lines = lines[start:end]
+        return {
+            "content": "".join(selected_lines),
+            "filepath": filepath,
+            "start_line": start + 1,
+            "end_line": end,
+            "total_lines": total_lines
+        }
+    except Exception as e:
+        logger.exception("Failed to read file")
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {e}")

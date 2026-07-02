@@ -236,3 +236,30 @@ class TestChatAPI(unittest.TestCase):
         self.assertTrue(any(" world" in line for line in lines))
         self.assertTrue(any("sources" in line for line in lines))
         self.assertTrue(any("test_stream.py" in line for line in lines))
+
+    def test_read_file_unauthorized(self):
+        response = self.client.get("/api/chat/file?filepath=data/config.yaml")
+        self.assertEqual(response.status_code, 401)
+
+    def test_read_file_not_found(self):
+        os.environ["DASHBOARD_PASSWORD"] = "secret"
+        response = self.client.get("/api/chat/file?filepath=non_existent_file.py", auth=("admin", "secret"))
+        self.assertEqual(response.status_code, 404)
+
+    def test_read_file_path_traversal_blocked(self):
+        os.environ["DASHBOARD_PASSWORD"] = "secret"
+        # Попытка выйти к системным файлам вне проекта
+        response = self.client.get("/api/chat/file?filepath=../../../../Windows/System32/drivers/etc/hosts", auth=("admin", "secret"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_read_file_success(self):
+        os.environ["DASHBOARD_PASSWORD"] = "secret"
+        # Читаем data/config.yaml
+        response = self.client.get("/api/chat/file?filepath=data/config.yaml&start_line=1&end_line=3", auth=("admin", "secret"))
+        self.assertEqual(response.status_code, 200)
+        
+        data = response.json()
+        self.assertEqual(data["filepath"], "data/config.yaml")
+        self.assertEqual(data["start_line"], 1)
+        self.assertEqual(data["end_line"], 3)
+        self.assertIn("server:", data["content"])

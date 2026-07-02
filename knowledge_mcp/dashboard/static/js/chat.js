@@ -15,6 +15,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    // Обработчик закрытия модального окна (Story 3.4)
+    const modal = document.getElementById('source-modal');
+    const btnCloseModal = document.getElementById('btn-close-modal');
+    if (btnCloseModal && modal) {
+        btnCloseModal.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        window.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
 });
 
 /**
@@ -125,6 +139,18 @@ async function sendMessage() {
             }
         }
 
+        // Рендерим Markdown в HTML после окончания стрима (Story 3.4)
+        if (typeof marked !== 'undefined') {
+            textSpan.innerHTML = marked.parse(fullResponseText);
+        } else {
+            textSpan.innerText = fullResponseText;
+        }
+
+        // Подсвечиваем синтаксис кода (Story 3.4)
+        if (typeof Prism !== 'undefined') {
+            Prism.highlightAllUnder(assistantMessageDiv);
+        }
+
         // Добавляем ответ ассистента в историю диалога
         chatHistory.push({ role: 'assistant', content: fullResponseText });
 
@@ -213,15 +239,82 @@ function appendSources(containerDiv, sources) {
         const tag = document.createElement('span');
         tag.className = 'source-tag';
         tag.innerText = `${src.filepath} (строки ${src.lines})`;
-        // Заглушка клика — в Story 3.4 сделаем открытие файла
+        
         tag.addEventListener('click', () => {
-            alert(`Открытие файла: ${src.filepath}, строки: ${src.lines}`);
+            openFileSource(src.filepath, src.lines);
         });
         list.appendChild(tag);
     });
 
     sourcesContainer.appendChild(list);
     containerDiv.appendChild(sourcesContainer);
+}
+
+/**
+ * Запрашивает содержимое файла с бэкенда и выводит его в модальном окне (Story 3.4).
+ */
+async function openFileSource(filepath, linesRange) {
+    const modal = document.getElementById('source-modal');
+    const modalFilename = document.getElementById('modal-filename');
+    const modalCodeBlock = document.getElementById('modal-code-block');
+
+    if (!modal || !modalFilename || !modalCodeBlock) return;
+
+    modalFilename.innerText = `Загрузка: ${filepath}...`;
+    modalCodeBlock.textContent = 'Пожалуйста, подождите...';
+    modal.style.display = 'flex';
+
+    // Парсим диапазон строк (например "10-25")
+    let startLine = 1;
+    let endLine = null;
+    if (linesRange && linesRange.includes('-')) {
+        const parts = linesRange.split('-');
+        startLine = parseInt(parts[0], 10) || 1;
+        endLine = parseInt(parts[1], 10) || null;
+    }
+
+    try {
+        const url = `/api/chat/file?filepath=${encodeURIComponent(filepath)}&start_line=${startLine}` + 
+                    (endLine ? `&end_line=${endLine}` : '');
+                    
+        const response = await fetch(url);
+        if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.detail || 'Не удалось загрузить файл');
+        }
+
+        const data = await response.json();
+        
+        modalFilename.innerText = `${filepath} (строки ${data.start_line}-${data.end_line})`;
+        modalCodeBlock.textContent = data.content;
+
+        // Определяем язык для Prism подсветки по расширению
+        modalCodeBlock.className = '';
+        const ext = filepath.split('.').pop().toLowerCase();
+        if (ext === 'py') {
+            modalCodeBlock.classList.add('language-python');
+        } else if (ext === 'js') {
+            modalCodeBlock.classList.add('language-javascript');
+        } else if (ext === 'css') {
+            modalCodeBlock.classList.add('language-css');
+        } else if (ext === 'html') {
+            modalCodeBlock.classList.add('language-html');
+        } else if (ext === 'yaml' || ext === 'yml') {
+            modalCodeBlock.classList.add('language-yaml');
+        } else if (ext === 'json') {
+            modalCodeBlock.classList.add('language-json');
+        } else {
+            modalCodeBlock.classList.add('language-clike');
+        }
+
+        if (typeof Prism !== 'undefined') {
+            Prism.highlightElement(modalCodeBlock);
+        }
+
+    } catch (err) {
+        modalFilename.innerText = 'Ошибка загрузки';
+        modalCodeBlock.textContent = `Не удалось загрузить исходный код:\n${err.message}`;
+    }
 }
 
 /**
