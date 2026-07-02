@@ -1,0 +1,26 @@
+server:
+  port: 8000
+  host: "127.0.0.1"
+  dashboard:
+    enabled: true
+    port: 8080
+    password_env: "DASHBOARD_PASSWORD"
+    chat:
+      enabled: true
+
+embeddings:
+  enabled: false
+  model_name: "intfloat/multilingual-e5-small"
+
+repositories:
+  - id: "test-repo"
+    url: "https://github.com/PaulTheSecond/knowledgebase-mcp.git"
+    auth:
+      type: "pat"
+      token_env: "GITHUB_PAT"
+    branch: "master"
+    triggers:
+      webhooks:
+        enabled: false
+        secret_env: "WEBHOOK_SECRET"
+      cron: "0 */4 * * *"

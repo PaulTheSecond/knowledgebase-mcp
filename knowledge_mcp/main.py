@@ -77,6 +77,10 @@ def init_components(db_path: str):
     from knowledge_mcp.daemon.routes.webhooks import init_webhook_router
     app.include_router(init_webhook_router(db))
 
+    # Подключаем роутер чата (Story 3.1)
+    from knowledge_mcp.daemon.routes.chat import router as chat_router
+    app.include_router(chat_router)
+
 @app.post("/sync")
 async def sync_endpoint(req: SyncRequest, background_tasks: BackgroundTasks):
     """
