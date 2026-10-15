@@ -359,9 +359,7 @@ class Indexer:
                     qname_to_sym_id['file_level'] = sym_rowids[i]
             # Для .cs — ast_node_id хранится в edges_raw (is_ast_id=True)
             # Перестраиваем map через порядок symbols_raw (соответствует csharp_cache['symbols'])
-            cache_hit = None
             if edges_raw and edges_raw[0][3]:  # is_ast_id
-                cache_hit = self.csharp_cache.get(Path(rel_path))  # для поиска ast_node_id
                 # ast_id_to_chunk_idx был построен в _parse_csharp по порядку,
                 # т.е. i-й символ соответствует i-й записи csharp_cache['symbols']
                 # Восстанавливаем через кэш напрямую

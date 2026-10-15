@@ -190,9 +190,8 @@ class TestAuthAPI(unittest.TestCase):
 
     def test_websocket_connection_unauthorized(self):
         # Подключение с неверным токеном должно закрываться (TestClient кидает WebSocketDisconnect или HTTPException)
-        from fastapi import WebSocketDisconnect
         with self.assertRaises(Exception):
-            with self.client.websocket_connect("/ws/status?token=invalid_token") as websocket:
+            with self.client.websocket_connect("/ws/status?token=invalid_token"):
                 pass
 
     def test_websocket_connection_success_and_broadcast(self):

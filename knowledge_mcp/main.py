@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import logging
+from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, WebSocket, WebSocketDisconnect
@@ -21,14 +22,18 @@ from knowledge_mcp.daemon.auth import verify_basic_auth, generate_temp_token
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Knowledge Base Sync Trigger")
-
 event_loop = None
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global event_loop
     event_loop = asyncio.get_running_loop()
+    try:
+        yield
+    finally:
+        event_loop = None
+
+app = FastAPI(title="Knowledge Base Sync Trigger", lifespan=lifespan)
 
 @app.websocket("/ws/status")
 async def websocket_status_endpoint(websocket: WebSocket):

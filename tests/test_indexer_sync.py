@@ -1,8 +1,7 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import os
 import tempfile
-import sys
 from pathlib import Path
 
 from knowledge_mcp.db.models import KnowledgeDB
@@ -52,7 +51,7 @@ class TestIndexerSyncAndRoslyn(unittest.TestCase):
         self.assertEqual(known[file_path]["symbols_count"], 0)
 
         # 2. Добавляем чанк
-        chunk_rowid = self.db.add_chunk("chunk-1", file_id, "public class TestService {}", "code", "verified", 1, 10)
+        self.db.add_chunk("chunk-1", file_id, "public class TestService {}", "code", "verified", 1, 10)
         known = self.db.get_known_files(repo_id)
         self.assertEqual(known[file_path]["chunks_count"], 1)
         self.assertEqual(known[file_path]["symbols_count"], 0)
@@ -77,7 +76,7 @@ class TestIndexerSyncAndRoslyn(unittest.TestCase):
 
         repo_id = "repo-orphan-test"
         # Регистрируем файл в таблице files (как будто парсер упал в прошлый раз)
-        file_id = self.db.upsert_file(repo_id, "Test.cs", mtime, "somehash")
+        self.db.upsert_file(repo_id, "Test.cs", mtime, "somehash")
 
         # Наполняем кэш Roslyn (как если бы RoslynParser успешно починили и он отдал символы)
         indexer.csharp_cache = {

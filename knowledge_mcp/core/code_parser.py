@@ -112,7 +112,6 @@ class CodeParser:
     # -------------------------------------------------------------------------
     def _parse_csharp_symbols(self, tree: tree_sitter.Tree, content: bytes) -> list[Symbol]:
         symbols = []
-        lang = TS_LANGUAGES['c_sharp']
         
         # Рекурсивная функция для прохода по дереву и сбора иерархии
         def traverse(node: tree_sitter.Node, parent_qualified_name: str):
@@ -175,7 +174,6 @@ class CodeParser:
 
             elif node.type == 'property_declaration':
                 name_node = node.child_by_field_name('name')
-                type_node = node.child_by_field_name('type')
                 if name_node:
                     name = self._get_node_text(name_node, content)
                     current_qualified_name = f"{parent_qualified_name}.{name}" if parent_qualified_name else name
@@ -195,8 +193,7 @@ class CodeParser:
 
             elif node.type == 'field_declaration':
                 # fields can have multiple declarators: int a, b;
-                decl_list = node.child_by_field_name('declarator')
-                # Actually, in tree-sitter-c-sharp, variable_declaration has type and declarators
+                # In tree-sitter-c-sharp, variable_declaration has type and declarators.
                 # We'll just take the first declarator name
                 first_name = None
                 for child in node.children:
@@ -207,7 +204,8 @@ class CodeParser:
                                 if name_node:
                                     first_name = self._get_node_text(name_node, content)
                                     break
-                        if first_name: break
+                        if first_name:
+                            break
                 
                 if first_name:
                     current_qualified_name = f"{parent_qualified_name}.{first_name}" if parent_qualified_name else first_name
@@ -536,9 +534,7 @@ class CodeParser:
             # Edge Extraction
             if node.type == 'import_statement':
                 # find import_clause -> named_imports -> import_specifier etc.
-                # Simplification: just extract all identifiers after "import"
-                import_clause = node.child_by_field_name('import')
-                # Wait, TS tree-sitter uses 'import' keyword, but actual exported names are in import_clause or named_imports
+                # TS tree-sitter uses 'import' keyword, but actual exported names are in import_clause or named_imports
                 for child in node.children:
                     if child.type == 'import_clause':
                         for c in child.children:
