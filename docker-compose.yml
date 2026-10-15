@@ -16,6 +16,7 @@ services:
         required: false
     environment:
       - DB_PATH=${DB_PATH:-/data/knowledge.db}
+      - CONFIG_PATH=/data/config.yaml
       - PYTHONUNBUFFERED=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_OFFLINE=1

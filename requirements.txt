@@ -2,7 +2,8 @@ mcp==1.29.1
 pydantic
 pathspec
 fastapi
-uvicorn
+uvicorn[standard]
+websockets
 sqlite-vec
 sentence-transformers
 questionary
