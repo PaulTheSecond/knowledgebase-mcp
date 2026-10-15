@@ -171,6 +171,208 @@ class TestFindRepoConfig(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestWebhookEndpoint(unittest.TestCase):
+    """Интеграционные тесты эндпоинта /webhook/git."""
+
+    def setUp(self):
+        self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        self.db = KnowledgeDB(self.db_path)
+
+        from fastapi import FastAPI
+        from knowledge_mcp.daemon.routes.webhooks import init_webhook_router
+        self.app = FastAPI()
+        self.app.include_router(init_webhook_router(self.db))
+
+        from starlette.testclient import TestClient
+        self.client = TestClient(self.app)
+        os.environ["WEBHOOK_SECRET"] = "super_secret_123"
+
+    def tearDown(self):
+        self.db.close()
+        os.close(self.db_fd)
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
+        if "WEBHOOK_SECRET" in os.environ:
+            del os.environ["WEBHOOK_SECRET"]
+
+    @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
+    def test_github_webhook_success(self, mock_config):
+        """Проверяет успешный прием и постановку в очередь вебхука GitHub."""
+        mock_config.return_value = {
+            "repositories": [
+                {
+                    "id": "my-lib",
+                    "url": "https://github.com/PaulTheSecond/knowledgebase-mcp.git",
+                    "triggers": {
+                        "webhooks": {
+                            "enabled": True,
+                            "secret_env": "WEBHOOK_SECRET"
+                        }
+                    }
+                }
+            ]
+        }
+        import json
+        payload_data = {"repository": {"clone_url": "https://github.com/PaulTheSecond/knowledgebase-mcp.git"}}
+        raw_body = json.dumps(payload_data).encode("utf-8")
+        sig = "sha256=" + hmac.new(b"super_secret_123", raw_body, hashlib.sha256).hexdigest()
+
+        response = self.client.post(
+            "/webhook/git",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig
+            }
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "queued")
+        self.assertEqual(data["repo_id"], "my-lib")
+
+        # Проверяем наличие задачи в БД
+        job = self.db.fetch_next_job()
+        self.assertIsNotNone(job)
+        self.assertEqual(job["repo_id"], "my-lib")
+
+    @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
+    def test_webhook_disabled_for_repo(self, mock_config):
+        """Проверяет возврат 403, если вебхуки отключены (enabled: false)."""
+        mock_config.return_value = {
+            "repositories": [
+                {
+                    "id": "disabled-repo",
+                    "url": "https://github.com/PaulTheSecond/knowledgebase-mcp.git",
+                    "triggers": {
+                        "webhooks": {
+                            "enabled": False,
+                            "secret_env": "WEBHOOK_SECRET"
+                        }
+                    }
+                }
+            ]
+        }
+        import json
+        payload_data = {"repository": {"clone_url": "https://github.com/PaulTheSecond/knowledgebase-mcp.git"}}
+        raw_body = json.dumps(payload_data).encode("utf-8")
+        sig = "sha256=" + hmac.new(b"super_secret_123", raw_body, hashlib.sha256).hexdigest()
+
+        response = self.client.post(
+            "/webhook/git",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig
+            }
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("disabled", response.json()["detail"])
+
+    def test_webhook_missing_signature_header(self):
+        """Проверяет возврат 401 при отсутствии заголовков подписи."""
+        response = self.client.post("/webhook/git", json={"repository": {"clone_url": "https://github.com/user/repo"}})
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Missing signature", response.json()["detail"])
+
+    @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
+    def test_webhook_invalid_signature(self, mock_config):
+        """Проверяет возврат 401 при неверной подписи HMAC."""
+        mock_config.return_value = {
+            "repositories": [
+                {
+                    "id": "my-lib",
+                    "url": "https://github.com/user/repo.git",
+                    "triggers": {
+                        "webhooks": {"enabled": True, "secret_env": "WEBHOOK_SECRET"}
+                    }
+                }
+            ]
+        }
+        response = self.client.post(
+            "/webhook/git",
+            json={"repository": {"clone_url": "https://github.com/user/repo.git"}},
+            headers={"X-Hub-Signature-256": "sha256=wrongsignature123"}
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Invalid signature", response.json()["detail"])
+
+    @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
+    def test_gitlab_webhook_success(self, mock_config):
+        """Проверяет успешный прием вебхука от GitLab с токеном."""
+        mock_config.return_value = {
+            "repositories": [
+                {
+                    "id": "gitlab-lib",
+                    "url": "https://gitlab.com/group/repo.git",
+                    "triggers": {
+                        "webhooks": {"enabled": True, "secret_env": "WEBHOOK_SECRET"}
+                    }
+                }
+            ]
+        }
+        payload = {"project": {"git_http_url": "https://gitlab.com/group/repo.git"}}
+        response = self.client.post(
+            "/webhook/git",
+            json=payload,
+            headers={"X-Gitlab-Token": "super_secret_123"}
+        )
+        self.assertEqual(response.status_code, 200)
+    @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
+    def test_webhook_omitted_enabled_defaults_to_false(self, mock_config):
+        """Проверяет, что при отсутствии ключа enabled по умолчанию считается False (403)."""
+        mock_config.return_value = {
+            "repositories": [
+                {
+                    "id": "unspecified-repo",
+                    "url": "https://github.com/PaulTheSecond/knowledgebase-mcp.git",
+                    "triggers": {
+                        "webhooks": {"secret_env": "WEBHOOK_SECRET"}
+                    }
+                }
+            ]
+        }
+        import json
+        payload_data = {"repository": {"clone_url": "https://github.com/PaulTheSecond/knowledgebase-mcp.git"}}
+        raw_body = json.dumps(payload_data).encode("utf-8")
+        sig = "sha256=" + hmac.new(b"super_secret_123", raw_body, hashlib.sha256).hexdigest()
+
+        response = self.client.post(
+            "/webhook/git",
+            content=raw_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("disabled", response.json()["detail"])
+
+    @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
+    def test_gitea_webhook_success(self, mock_config):
+        """Проверяет успешный прием вебхука от Gitea."""
+        mock_config.return_value = {
+            "repositories": [
+                {
+                    "id": "gitea-lib",
+                    "url": "https://gitea.local/group/repo.git",
+                    "triggers": {
+                        "webhooks": {"enabled": True, "secret_env": "WEBHOOK_SECRET"}
+                    }
+                }
+            ]
+        }
+        import json
+        payload = {"repository": {"clone_url": "https://gitea.local/group/repo.git"}}
+        raw_body = json.dumps(payload).encode("utf-8")
+        sig = "sha256=" + hmac.new(b"super_secret_123", raw_body, hashlib.sha256).hexdigest()
+
+        response = self.client.post(
+            "/webhook/git",
+            content=raw_body,
+            headers={"Content-Type": "application/json", "X-Gitea-Signature": sig}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["provider"], "gitea")
+        self.assertEqual(response.json()["repo_id"], "gitea-lib")
+
+
 if __name__ == "__main__":
     unittest.main()
 

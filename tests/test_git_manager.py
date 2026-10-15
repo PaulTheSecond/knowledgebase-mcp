@@ -28,6 +28,7 @@ class TestGitManager(unittest.TestCase):
         # Assert
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
+        kwargs = mock_run.call_args[1]
         
         # Check command structure
         self.assertEqual(cmd[0], "git")
@@ -36,6 +37,12 @@ class TestGitManager(unittest.TestCase):
         self.assertEqual(cmd[3], "clone")
         self.assertEqual(cmd[4], self.repo_url)
         self.assertEqual(cmd[5], str(Path(self.dest_path)))
+        self.assertEqual(kwargs.get("timeout"), 180)
+        self.assertEqual(kwargs.get("check"), True)
+        self.assertEqual(kwargs.get("capture_output"), True)
+        self.assertEqual(kwargs.get("text"), True)
+        self.assertEqual(kwargs.get("env", {}).get("GIT_TERMINAL_PROMPT"), "0")
+        self.assertEqual(kwargs.get("env", {}).get("GIT_ASKPASS"), "")
 
     @patch("subprocess.run")
     def test_clone_ssh(self, mock_run):
@@ -53,6 +60,7 @@ class TestGitManager(unittest.TestCase):
         # Assert
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
+        kwargs = mock_run.call_args[1]
         
         self.assertEqual(cmd[0], "git")
         self.assertEqual(cmd[1], "-c")
@@ -60,6 +68,11 @@ class TestGitManager(unittest.TestCase):
         self.assertEqual(cmd[3], "clone")
         self.assertEqual(cmd[4], self.repo_url)
         self.assertEqual(cmd[5], str(Path(self.dest_path)))
+        self.assertEqual(kwargs.get("timeout"), 180)
+        self.assertEqual(kwargs.get("check"), True)
+        self.assertEqual(kwargs.get("capture_output"), True)
+        self.assertEqual(kwargs.get("text"), True)
+        self.assertEqual(kwargs.get("env", {}).get("GIT_TERMINAL_PROMPT"), "0")
 
     @patch("subprocess.run")
     def test_pull_https_pat(self, mock_run):
@@ -87,6 +100,11 @@ class TestGitManager(unittest.TestCase):
         self.assertEqual(cmd[4], "origin")
         self.assertEqual(cmd[5], "main")
         self.assertEqual(kwargs.get("cwd"), str(Path(repo_path)))
+        self.assertEqual(kwargs.get("timeout"), 180)
+        self.assertEqual(kwargs.get("check"), True)
+        self.assertEqual(kwargs.get("capture_output"), True)
+        self.assertEqual(kwargs.get("text"), True)
+        self.assertEqual(kwargs.get("env", {}).get("GIT_TERMINAL_PROMPT"), "0")
 
     @patch("subprocess.run")
     def test_token_masking_on_failure(self, mock_run):
@@ -129,8 +147,27 @@ class TestGitManager(unittest.TestCase):
         with patch("pathlib.Path.exists", return_value=True):
             with self.assertRaises(TimeoutError) as ctx:
                 manager.pull("/mock/local/repo", branch="main")
+            self.assertIn("timed out after 180s", str(ctx.exception))
                 
-        self.assertIn("timed out after 180s", str(ctx.exception))
+    @patch("subprocess.run")
+    def test_custom_timeout_applied(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="ok", returncode=0)
+        manager = GitManager(timeout=42)
+        manager.clone(self.repo_url, self.dest_path)
+        
+        kwargs = mock_run.call_args[1]
+        self.assertEqual(kwargs.get("timeout"), 42)
+
+    @patch("subprocess.run")
+    def test_ssh_key_missing_ignored(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="ok", returncode=0)
+        with patch("pathlib.Path.exists", return_value=False):
+            manager = GitManager(ssh_key_path="/nonexistent/key")
+            manager.clone(self.repo_url, self.dest_path)
+            
+        cmd = mock_run.call_args[0][0]
+        # При несуществующем ключе core.sshCommand не должен добавляться
+        self.assertNotIn("core.sshCommand", " ".join(cmd))
 
 if __name__ == "__main__":
     unittest.main()

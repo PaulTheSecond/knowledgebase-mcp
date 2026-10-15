@@ -132,14 +132,14 @@ class DaemonWorker:
             logger.exception(f"Error processing job {job_id} for repo '{repo_id}': {e}")
             err_msg = str(e)
 
-            # Расчёт задержки для экспоненциального бэк-оффа
-            # Попытка 1: 60 сек, Попытка 2: 300 сек, Попытка 3: 900 сек
-            retry_delays = {1: 60, 2: 300, 3: 900}
+            # Расчёт задержки для экспоненциального бэк-оффа:
+            # Попытка 1: 60 сек, Попытка 2: 300 сек, Попытка 3: перевод в halted
+            retry_delays = {1: 60, 2: 300}
             max_attempts = 3
 
             if attempts < max_attempts:
                 # Есть ещё попытки — возвращаем задачу в pending с задержкой
-                delay = retry_delays.get(attempts, 900)
+                delay = retry_delays.get(attempts, 300)
                 logger.warning(
                     f"Job {job_id} failed (attempt {attempts}/{max_attempts}). "
                     f"Rescheduling with {delay}s delay."
