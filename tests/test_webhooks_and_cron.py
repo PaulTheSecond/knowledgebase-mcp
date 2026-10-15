@@ -372,6 +372,57 @@ class TestWebhookEndpoint(unittest.TestCase):
         self.assertEqual(response.json()["provider"], "gitea")
         self.assertEqual(response.json()["repo_id"], "gitea-lib")
 
+    @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
+    def test_webhook_saves_changed_files_to_queue(self, mock_config):
+        """Проверяет, что пути измененных файлов из коммитов корректно парсятся и сохраняются в очередь."""
+        from knowledge_mcp.daemon.routes.webhooks import extract_changed_files_from_payload
+        mock_config.return_value = {
+            "repositories": [
+                {
+                    "id": "delta-repo",
+                    "url": "https://github.com/org/delta.git",
+                    "triggers": {
+                        "webhooks": {"enabled": True, "secret_env": "WEBHOOK_SECRET"}
+                    }
+                }
+            ]
+        }
+        import json
+        payload = {
+            "repository": {"clone_url": "https://github.com/org/delta.git"},
+            "commits": [
+                {
+                    "added": ["src/NewFile.cs", "docs/index.md"],
+                    "modified": ["src/Existing.cs"],
+                    "removed": ["old_script.py"]
+                },
+                {
+                    "modified": ["src/Existing.cs", "README.md"]
+                }
+            ]
+        }
+        # Проверяем функцию извлечения напрямую
+        extracted = extract_changed_files_from_payload(payload)
+        self.assertEqual(extracted, ["README.md", "docs/index.md", "old_script.py", "src/Existing.cs", "src/NewFile.cs"])
+
+        # Проверяем сквозной вызов вебхука
+        raw_body = json.dumps(payload).encode("utf-8")
+        sig = "sha256=" + hmac.new(b"super_secret_123", raw_body, hashlib.sha256).hexdigest()
+
+        response = self.client.post(
+            "/webhook/git",
+            content=raw_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["changed_files_count"], 5)
+
+        # Проверяем, что воркер получит задачу с changed_files
+        job = self.db.fetch_next_job()
+        self.assertIsNotNone(job)
+        self.assertEqual(job["repo_id"], "delta-repo")
+        self.assertEqual(job["changed_files"], extracted)
+
 
 if __name__ == "__main__":
     unittest.main()

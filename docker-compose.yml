@@ -4,21 +4,28 @@ services:
     build: .
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      # Volume для сохранения SQLite БД между перезапусками контейнера
-      - C:/Repos/impactos.knowlagebase/data:/data
-      # Папка с исходниками (монтируется как read-only). По умолчанию это локальная папка ./src
-      # Если ваши проекты лежат в другом месте, просто создайте .env файл и укажите: REPOS_DIR=/path/to/my/projects
+      # Volume для сохранения SQLite БД и кэша репозиториев между перезапусками
+      - ./data:/data
+      # Директория с локальными исходниками на хосте (монтируется как read-only)
       - ${REPOS_DIR:-./src}:/repos:ro
-      # Проброс кэша HuggingFace больше не нужен, модель скачивается внутрь образа при сборке
-      # - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
+    env_file:
+      - path: .env
+        required: false
     environment:
-      - DB_PATH=/data/knowledge_roslyn.db
+      - DB_PATH=${DB_PATH:-/data/knowledge.db}
       - PYTHONUNBUFFERED=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_OFFLINE=1
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - GITHUB_PAT=${GITHUB_PAT:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8005/v1}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct}
     
-    # Ограничение ресурсов: не позволяем контейнеру съесть всю оперативку и CPU хоста
+    # Ограничение ресурсов контейнера
     deploy:
       resources:
         limits:
@@ -31,5 +38,5 @@ services:
     # Автоматический перезапуск при падении
     restart: unless-stopped
 
-    # Команда по умолчанию: поднимает HTTP сервер триггеров
-    command: python -m knowledge_mcp.main --db-path /data/knowledge_roslyn.db serve --host 0.0.0.0 --port 8000
+    # Команда запуска HTTP/WebSocket сервера триггеров и дашборда
+    command: python -m knowledge_mcp.main --db-path /data/knowledge.db serve --host 0.0.0.0 --port 8000

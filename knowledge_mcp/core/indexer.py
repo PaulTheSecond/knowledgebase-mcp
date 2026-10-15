@@ -507,15 +507,16 @@ class Indexer:
     # Публичный API
     # ──────────────────────────────────────────────────────────────────────
 
-    def sync_repo(self, repo_id: str, repo_path: str | Path, allowed_top_level: list[str] = None, force: bool = False):
+    def sync_repo(self, repo_id: str, repo_path: str | Path, allowed_top_level: list[str] | None = None, force: bool = False, target_files: list[str] | None = None):
         """
         Инкрементальная синхронизация репозитория (дельта-скан).
         Сравнивает mtime и hash, удаляет старые файлы, парсит новые/измененные.
         Хэширование выполняется параллельно, а парсинг AST — в главном потоке.
         При force=True проверки mtime/hash игнорируются и все файлы переиндексируются.
+        При передаче target_files проверяются и обновляются только указанные файлы (дельта вебхука).
         """
         repo_path = Path(repo_path).resolve()
-        logger.info(f"Starting sync for repo '{repo_id}' at {repo_path} (force={force})")
+        logger.info(f"Starting sync for repo '{repo_id}' at {repo_path} (force={force}, target_files={len(target_files) if target_files else 'all'})")
 
         from knowledge_mcp.daemon.status_ws import broadcast_sync
         broadcast_sync({
@@ -534,7 +535,13 @@ class Indexer:
         spec = self._get_ignore_spec(repo_path)
 
         # Семантический анализ .NET проектов через Roslyn
-        self._run_roslyn_analysis(repo_path, spec)
+        has_csharp = (
+            any(f.endswith('.cs') or f.endswith('.csproj') for f in target_files)
+            if target_files is not None
+            else True
+        )
+        if has_csharp:
+            self._run_roslyn_analysis(repo_path, spec)
 
         # Конвертируем sqlite3.Row в чистые dict для thread-safety
         known_files_raw = self.db.get_known_files(repo_id)
@@ -546,13 +553,28 @@ class Indexer:
         unchanged_count = 0
         deleted_count = 0
 
-        logger.info("Walking directory tree to collect files...")
         files_to_check = []
-        for filepath in self._walk_files(repo_path, spec, allowed_top_level):
-            if filepath.is_file():
-                rel_path = filepath.relative_to(repo_path).as_posix()
-                files_to_check.append((filepath, rel_path))
-                current_files.add(rel_path)
+        if target_files is not None:
+            logger.info(f"Targeted delta sync for {len(target_files)} files in repo '{repo_id}'")
+            norm_target_files = {tf.replace('\\', '/').lstrip('/') for tf in target_files if tf.strip()}
+            for rel_path in norm_target_files:
+                filepath = repo_path / rel_path
+                if filepath.is_file():
+                    if spec and spec.match_file(rel_path):
+                        continue
+                    files_to_check.append((filepath, rel_path))
+                    current_files.add(rel_path)
+                elif rel_path in known_files:
+                    # Файл удален из репозитория
+                    self.db.delete_file(known_files[rel_path]['id'])
+                    deleted_count += 1
+        else:
+            logger.info("Walking directory tree to collect files...")
+            for filepath in self._walk_files(repo_path, spec, allowed_top_level):
+                if filepath.is_file():
+                    rel_path = filepath.relative_to(repo_path).as_posix()
+                    files_to_check.append((filepath, rel_path))
+                    current_files.add(rel_path)
 
         def check_file(item):
             """
@@ -653,11 +675,12 @@ class Indexer:
                             else:
                                 sync_buffer[rel_path] = 'completed'
 
-            # Удаляем из БД ушедшие с диска файлы
-            for rel_path, known in known_files.items():
-                if rel_path not in current_files:
-                    self.db.delete_file(known['id'])
-                    deleted_count += 1
+            # Удаляем из БД ушедшие с диска файлы (только при полном обходе репозитория)
+            if target_files is None:
+                for rel_path, known in known_files.items():
+                    if rel_path not in current_files:
+                        self.db.delete_file(known['id'])
+                        deleted_count += 1
 
             self.db.commit_transaction()
         except Exception as e:

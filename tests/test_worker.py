@@ -301,5 +301,54 @@ class TestDaemonWorker(unittest.TestCase):
 
         worker.db.close()
 
+    @patch("knowledge_mcp.daemon.worker.get_repository_config")
+    @patch("knowledge_mcp.daemon.worker.GitManager")
+    @patch("knowledge_mcp.daemon.worker.Indexer")
+    @patch("subprocess.run")
+    def test_worker_targeted_delta_sync_with_changed_files(self, mock_sub_run, mock_indexer_class, mock_git_mgr_class, mock_get_config):
+        """Проверяет передачу списка измененных файлов target_files в indexer.sync_repo."""
+        mock_get_config.return_value = {
+            "id": "delta-repo",
+            "url": "https://github.com/org/delta.git",
+            "branch": "master",
+            "auth": {"type": "pat", "token_env": "GITHUB_PAT"}
+        }
+        os.environ["GITHUB_PAT"] = "token123"
+
+        mock_git_mgr = MagicMock()
+        mock_git_mgr_class.return_value = mock_git_mgr
+
+        mock_indexer = MagicMock()
+        mock_indexer_class.return_value = mock_indexer
+
+        mock_sub_run.return_value = MagicMock(stdout="new_commit_sha_999\n", returncode=0)
+
+        worker = DaemonWorker(self.db_path)
+        worker.indexer = mock_indexer
+
+        # Добавляем задачу с указанием changed_files
+        changed = ["src/Service.cs", "README.md"]
+        job_id = self.db.add_to_queue("delta-repo", changed_files=changed)
+
+        job = self.db.fetch_next_job()
+        self.assertIsNotNone(job)
+        self.assertEqual(job["changed_files"], changed)
+
+        worker.run_job(job)
+
+        # Проверяем, что sync_repo вызван с target_files=changed
+        mock_indexer.sync_repo.assert_called_once_with(
+            "delta-repo",
+            str(self.clones_dir / "delta-repo"),
+            target_files=changed
+        )
+
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT status FROM sync_queue WHERE id = ?", (job_id,))
+        self.assertEqual(cursor.fetchone()[0], "completed")
+
+        worker.db.close()
+
+
 if __name__ == "__main__":
     unittest.main()

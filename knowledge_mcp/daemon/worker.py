@@ -128,8 +128,13 @@ class DaemonWorker:
                 return
 
             # Запускаем индексацию репозитория
-            logger.info(f"SHA changed ({last_indexed_sha} -> {current_sha}). Indexing repo '{repo_id}'...")
-            self.indexer.sync_repo(repo_id, str(dest_path))
+            changed_files = job.get("changed_files")
+            if changed_files:
+                logger.info(f"SHA changed ({last_indexed_sha} -> {current_sha}). Targeted delta-syncing {len(changed_files)} files in '{repo_id}'...")
+                self.indexer.sync_repo(repo_id, str(dest_path), target_files=changed_files)
+            else:
+                logger.info(f"SHA changed ({last_indexed_sha} -> {current_sha}). Indexing repo '{repo_id}'...")
+                self.indexer.sync_repo(repo_id, str(dest_path))
 
             # Сохраняем информацию об успешном индексировании коммита
             self.db.update_indexed_commit(repo_id, current_sha)

@@ -148,6 +148,29 @@ def _extract_repo_info_gitlab(body: dict) -> Optional[str]:
     project = body.get("project", {})
     return project.get("git_http_url") or project.get("web_url")
 
+def extract_changed_files_from_payload(body: dict) -> list[str]:
+    """Извлекает уникальные пути измененных, добавленных и удаленных файлов из вебхука."""
+    changed_files = set()
+    commits = body.get("commits", [])
+    if isinstance(commits, list):
+        for commit in commits:
+            if isinstance(commit, dict):
+                for k in ("added", "modified", "removed"):
+                    files = commit.get(k, [])
+                    if isinstance(files, list):
+                        for f in files:
+                            if isinstance(f, str) and f.strip():
+                                changed_files.add(f.strip().replace("\\", "/"))
+    head_commit = body.get("head_commit")
+    if isinstance(head_commit, dict):
+        for k in ("added", "modified", "removed"):
+            files = head_commit.get(k, [])
+            if isinstance(files, list):
+                for f in files:
+                    if isinstance(f, str) and f.strip():
+                        changed_files.add(f.strip().replace("\\", "/"))
+    return sorted(list(changed_files))
+
 
 @router.post("/webhook/git")
 async def webhook_git(request: Request):
@@ -224,8 +247,17 @@ async def webhook_git(request: Request):
             logger.warning(f"Invalid GitLab token for repo '{repo_id}'")
             raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Подпись валидна — ставим задачу в очередь
-    job_id = _db.add_to_queue(repo_id)
-    logger.info(f"Webhook [{provider}] received for '{repo_id}'. Job {job_id} queued.")
+    # Извлекаем пути затронутых файлов для оптимизированной дельта-синхронизации
+    changed_files = extract_changed_files_from_payload(body)
 
-    return {"status": "queued", "repo_id": repo_id, "job_id": job_id, "provider": provider}
+    # Подпись валидна — ставим задачу в очередь
+    job_id = _db.add_to_queue(repo_id, changed_files=changed_files if changed_files else None)
+    logger.info(f"Webhook [{provider}] received for '{repo_id}' ({len(changed_files)} files modified). Job {job_id} queued.")
+
+    return {
+        "status": "queued",
+        "repo_id": repo_id,
+        "job_id": job_id,
+        "provider": provider,
+        "changed_files_count": len(changed_files)
+    }

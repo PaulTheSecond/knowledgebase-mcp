@@ -235,6 +235,13 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20261015_10_sync_queue_changed_files",
+            "up": """
+                ALTER TABLE sync_queue ADD COLUMN changed_files TEXT;
+            """
+        })
+
         for migration in migrations:
             if migration["id"] not in applied_migrations:
                 logger.info(f"Applying sqlite migration: {migration['id']}")
@@ -340,7 +347,7 @@ class KnowledgeDB:
         """Возвращает последние N задач из очереди синхронизации."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, repo_id, status, attempts, last_error, run_at, created_at, updated_at FROM sync_queue ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, repo_id, status, attempts, error_message as last_error, run_at, created_at, updated_at, changed_files FROM sync_queue ORDER BY created_at DESC LIMIT ?",
             (limit,)
         )
         return [dict(row) for row in cursor.fetchall()]
@@ -794,14 +801,21 @@ class KnowledgeDB:
                 """, (status, last_error))
             self._auto_commit()
 
-    def add_to_queue(self, repo_id: str) -> int:
-        """Добавляет репозиторий в очередь на синхронизацию."""
+    def add_to_queue(self, repo_id: str, changed_files: Optional[List[str]] = None) -> int:
+        """Добавляет репозиторий в очередь на синхронизацию.
+
+        Args:
+            repo_id: Идентификатор репозитория.
+            changed_files: Опциональный список относительных путей измененных файлов из вебхука.
+        """
+        import json
+        changed_json = json.dumps(changed_files) if changed_files else None
         with self.lock:
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT INTO sync_queue (repo_id, status)
-                VALUES (?, 'pending')
-            """, (repo_id,))
+                INSERT INTO sync_queue (repo_id, status, changed_files)
+                VALUES (?, 'pending', ?)
+            """, (repo_id, changed_json))
             self._auto_commit()
             return cursor.lastrowid
 
@@ -815,7 +829,7 @@ class KnowledgeDB:
             try:
                 cursor.execute("BEGIN IMMEDIATE TRANSACTION;")
                 cursor.execute("""
-                    SELECT id, repo_id, attempts
+                    SELECT id, repo_id, attempts, changed_files
                     FROM sync_queue
                     WHERE status = 'pending'
                       AND (run_at IS NULL OR run_at <= datetime('now', 'localtime'))
@@ -824,14 +838,21 @@ class KnowledgeDB:
                 """)
                 row = cursor.fetchone()
                 if row:
-                    job_id, repo_id, attempts = row[0], row[1], row[2]
+                    job_id, repo_id, attempts, changed_json = row[0], row[1], row[2], row[3]
+                    import json
+                    changed_files = json.loads(changed_json) if changed_json else None
                     cursor.execute("""
                         UPDATE sync_queue
                         SET status = 'processing', updated_at = datetime('now', 'localtime')
                         WHERE id = ?
                     """, (job_id,))
                     self.conn.commit()
-                    return {"id": job_id, "repo_id": repo_id, "attempts": attempts}
+                    return {
+                        "id": job_id,
+                        "repo_id": repo_id,
+                        "attempts": attempts,
+                        "changed_files": changed_files
+                    }
                 self.conn.commit()
                 return None
             except Exception as e:
