@@ -15,12 +15,11 @@ embeddings:
 
 # Список индексируемых репозиториев
 repositories:
-  # Основной репозиторий Knowledge Base MCP
+  # Основной репозиторий Knowledge Base MCP (открытый репозиторий, auth: none)
   - id: "knowledgebase-mcp"
     url: "https://github.com/PaulTheSecond/knowledgebase-mcp.git"
     auth:
-      type: "pat"
-      token_env: "GITHUB_PAT"
+      type: "none"  # "none" для публичных репозиториев, "pat" или "ssh" для приватных
     branch: "master"
     triggers:
       webhooks:
@@ -28,7 +27,7 @@ repositories:
         secret_env: "WEBHOOK_SECRET"
       cron: "0 */4 * * *"  # Каждые 4 часа
 
-  # Репозиторий библиотек ядра (ImpactOS / Yurta)
+  # Репозиторий библиотек ядра (ImpactOS / Yurta, приватный репозиторий)
   - id: "yurta-core-lib"
     url: "https://github.com/Tribe-Impact/Yurta.Core.Lib.git"
     auth:

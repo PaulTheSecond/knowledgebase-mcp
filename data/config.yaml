@@ -16,8 +16,7 @@ repositories:
   - id: "knowledgebase-mcp"
     url: "https://github.com/PaulTheSecond/knowledgebase-mcp.git"
     auth:
-      type: "pat"
-      token_env: "GITHUB_PAT"
+      type: "none"
     branch: "master"
     triggers:
       webhooks:

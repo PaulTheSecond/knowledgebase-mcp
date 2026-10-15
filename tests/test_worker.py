@@ -239,17 +239,19 @@ class TestDaemonWorker(unittest.TestCase):
             del os.environ["MISSING_PAT_ENV"]
 
         worker = DaemonWorker(self.db_path)
-        job_id = self.db.add_to_queue("test-repo")
-        job = self.db.fetch_next_job()
-        worker.run_job(job)
+        try:
+            job_id = self.db.add_to_queue("test-repo")
+            job = self.db.fetch_next_job()
+            worker.run_job(job)
 
-        cursor = self.db.conn.cursor()
-        cursor.execute("SELECT status, attempts, error_message FROM sync_queue WHERE id = ?", (job_id,))
-        status, attempts, err = cursor.fetchone()
-        self.assertEqual(status, "failed")
-        self.assertEqual(attempts, 1)
-        self.assertIn("MISSING_PAT_ENV' is not set", err)
-        worker.db.close()
+            cursor = self.db.conn.cursor()
+            cursor.execute("SELECT status, attempts, error_message FROM sync_queue WHERE id = ?", (job_id,))
+            status, attempts, err = cursor.fetchone()
+            self.assertEqual(status, "failed")
+            self.assertEqual(attempts, 1)
+            self.assertIn("MISSING_PAT_ENV' is not set", err)
+        finally:
+            worker.db.close()
 
     @patch("knowledge_mcp.daemon.worker.get_repository_config")
     @patch("knowledge_mcp.daemon.worker.GitManager")

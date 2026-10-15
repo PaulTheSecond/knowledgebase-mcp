@@ -152,6 +152,56 @@ class TestChatAPI(unittest.TestCase):
         self.mock_db.search_chunks_hybrid.assert_called_once()
         mock_post.assert_called_once()
 
+    @patch("httpx.AsyncClient.post")
+    @patch("knowledge_mcp.daemon.routes.chat.load_config")
+    def test_chat_without_embedder_uses_lexical_search(self, mock_load_config, mock_post):
+        """Проверяет работу чата, когда embedder не инициализирован (гибридный поиск FTS5+Graph)."""
+        mock_load_config.return_value = {
+            "server": {"dashboard": {"chat": {"enabled": True}}}
+        }
+        os.environ["LLM_API_KEY"] = "sk-test"
+        self.mock_indexer.embedder = None
+        
+        self.mock_db.search_chunks_hybrid.return_value = [
+            {"path": "core.py", "line_start": 1, "line_end": 10, "content": "class Core: pass"}
+        ]
+        
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Answer without vector search"}}]
+        }
+        mock_post.return_value = mock_response
+
+        req_body = {"messages": [{"role": "user", "content": "How Core works"}]}
+        response = self.client.post("/api/chat", json=req_body, auth=("admin", "secret"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["message"]["content"], "Answer without vector search")
+        self.mock_db.search_chunks_hybrid.assert_called_once_with("How Core works", None, limit=5)
+
+    @patch("httpx.AsyncClient.post")
+    @patch("knowledge_mcp.daemon.routes.chat.load_config")
+    def test_chat_llm_connection_error_returns_friendly_message(self, mock_load_config, mock_post):
+        """Проверяет корректную обработку ошибки подключения к LLM с возвратом цитат."""
+        import httpx
+        mock_load_config.return_value = {
+            "server": {"dashboard": {"chat": {"enabled": True}}}
+        }
+        os.environ["LLM_API_KEY"] = "sk-test"
+        
+        self.mock_db.search_chunks_hybrid.return_value = [
+            {"path": "models.py", "line_start": 10, "line_end": 20, "content": "class KnowledgeDB: pass"}
+        ]
+        mock_post.side_effect = httpx.ConnectError("Connection refused")
+
+        req_body = {"messages": [{"role": "user", "content": "Tell me about KnowledgeDB"}]}
+        response = self.client.post("/api/chat", json=req_body, auth=("admin", "secret"))
+        self.assertEqual(response.status_code, 200)
+        res_json = response.json()
+        self.assertIn("Не удалось подключиться к LLM-шлюзу", res_json["message"]["content"])
+        self.assertEqual(len(res_json["sources"]), 1)
+        self.assertEqual(res_json["sources"][0]["filepath"], "models.py")
+
     def test_stream_unauthorized(self):
         req_body = {
             "messages": [

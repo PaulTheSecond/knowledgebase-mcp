@@ -106,6 +106,14 @@ def init_components(db_path: str):
     db = KnowledgeDB(db_path)
     indexer = Indexer(db, use_embeddings=use_emb)
     
+    # Синхронизируем глобальные переменные для обоих вариантов загрузки (__main__ и knowledge_mcp.main)
+    import sys
+    for mod_name in ("knowledge_mcp.main", "__main__"):
+        mod = sys.modules.get(mod_name)
+        if mod:
+            mod.db = db
+            mod.indexer = indexer
+
     # Инициализируем и подключаем роутер вебхуков (Story 1.5)
     from knowledge_mcp.daemon.routes.webhooks import init_webhook_router
     app.include_router(init_webhook_router(db))
@@ -179,6 +187,14 @@ async def api_get_queue(username: str = Depends(verify_basic_auth)):
         raise HTTPException(status_code=500, detail="Components not initialized")
     jobs = db.get_queue_jobs(limit=50)
     return {"jobs": jobs}
+
+@app.post("/api/queue/retry-failed")
+async def api_retry_failed_jobs(username: str = Depends(verify_basic_auth)):
+    """Сбрасывает все упавшие задачи очереди обратно в pending для повторной попытки."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Components not initialized")
+    count = db.retry_failed_jobs()
+    return {"status": "retried", "count": count}
 
 @app.post("/api/sync/{repo_id}")
 async def api_trigger_sync(repo_id: str, username: str = Depends(verify_basic_auth)):

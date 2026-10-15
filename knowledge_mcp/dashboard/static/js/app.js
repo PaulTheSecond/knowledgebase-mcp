@@ -84,6 +84,23 @@ function initRouter() {
         }
         updateSystemStatusIndicator();
     });
+
+    // Настраиваем кнопку повтора упавших задач
+    const btnRetry = document.getElementById('btn-retry-failed');
+    if (btnRetry) {
+        btnRetry.addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/queue/retry-failed', { method: 'POST' });
+                if (!res.ok) throw new Error('Ошибка сброса задач');
+                const data = await res.json();
+                loadQueue();
+                updateSystemStatusIndicator();
+                alert(`Сброшено задач для повторной попытки: ${data.count}`);
+            } catch (err) {
+                alert(`Ошибка: ${err.message}`);
+            }
+        });
+    }
 }
 
 /**

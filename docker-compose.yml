@@ -25,6 +25,7 @@ services:
       - GITHUB_PAT=${GITHUB_PAT:-}
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8005/v1}
       - LLM_MODEL=${LLM_MODEL:-deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct}
+      - LLM_API_KEY=${LLM_API_KEY:-sk-local}
     
     # Ограничение ресурсов контейнера
     deploy:

@@ -27,6 +27,15 @@ def verify_query_token(token: str = None):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return token
 
+def get_components():
+    """Получает актуальные инстансы (db, indexer) из main_mod или __main__."""
+    import sys
+    import knowledge_mcp.main as main_mod
+    current_db = getattr(main_mod, "db", None) or getattr(sys.modules.get("__main__"), "db", None)
+    current_indexer = getattr(main_mod, "indexer", None) or getattr(sys.modules.get("__main__"), "indexer", None)
+    return current_db, current_indexer
+
+
 def get_llm_settings(config: dict) -> tuple[str, str]:
     """Возвращает (endpoint_url, model_name) для обращения к LLM/OmniRoute.
     
@@ -61,24 +70,30 @@ async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_ba
         raise HTTPException(status_code=400, detail="No user message found")
     user_query = user_messages[-1].content
 
-    # Получаем зависимости из main.py
-    import knowledge_mcp.main as main_mod
-    if not main_mod.db or not main_mod.indexer or not main_mod.indexer.embedder:
-        raise HTTPException(status_code=500, detail="Search engine or Embedder not initialized")
+    # Получаем зависимости через get_components
+    db_inst, indexer_inst = get_components()
+    if not db_inst or not indexer_inst:
+        raise HTTPException(status_code=500, detail="Search engine not initialized")
 
     api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
-         raise HTTPException(status_code=500, detail="LLM_API_KEY environment variable is not set")
+        raise HTTPException(status_code=500, detail="LLM_API_KEY environment variable is not set")
 
-    # 1. Вычисляем вектор вопроса
-    query_vector = main_mod.indexer.embedder.embed_text(user_query, is_query=True)
+    # 1. Вычисляем вектор вопроса (если инициализирован embedder)
+    query_vector = None
+    if indexer_inst.embedder:
+        try:
+            query_vector = indexer_inst.embedder.embed_text(user_query, is_query=True)
+        except Exception as e:
+            logger.warning(f"Failed to calculate query vector: {e}")
 
-    # 2. Выполняем гибридный поиск по базе знаний
+    # 2. Выполняем гибридный поиск по базе знаний (FTS5 + Graph, плюс векторы если доступны)
     try:
-        chunks = main_mod.db.search_chunks_hybrid(user_query, query_vector, limit=5)
-    except Exception as e:
+        raw_chunks = db_inst.search_chunks_hybrid(user_query, query_vector, limit=5)
+        chunks = [dict(c) if not isinstance(c, dict) else c for c in raw_chunks]
+    except Exception:
         logger.exception("Hybrid search failed")
-        raise HTTPException(status_code=500, detail=f"Hybrid search failed: {e}")
+        chunks = []
 
     # 3. Сборка контекста для системного промпта
     context_str = ""
@@ -102,6 +117,7 @@ async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_ba
         formatted_messages.append({"role": m.role, "content": m.content})
 
     endpoint_url, model_name = get_llm_settings(config)
+    sources = [{"filepath": c["path"], "lines": f"{c.get('line_start')}-{c.get('line_end')}"} for c in chunks]
 
     try:
         async with httpx.AsyncClient() as client:
@@ -119,25 +135,53 @@ async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_ba
             )
             
             if response.status_code != 200:
-                logger.error(f"OmniRoute HTTP error {response.status_code}: {response.text}")
-                raise HTTPException(status_code=500, detail=f"OmniRoute error: {response.text}")
+                logger.error(f"LLM HTTP error {response.status_code}: {response.text}")
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "content": f"⚠️ **Ошибка ответа LLM (HTTP {response.status_code})**\n\n"
+                                   f"**Эндпоинт:** `{endpoint_url}`\n**Модель:** `{model_name}`\n\n"
+                                   f"**Детали:** {response.text}\n\n"
+                                   f"**Найденные фрагменты в базе знаний ({len(sources)} шт.):**\n"
+                                   + ("\n".join([f"- `{s['filepath']}:{s['lines']}`" for s in sources]) if sources else "Релевантный код в индексе не найден.")
+                    },
+                    "sources": sources
+                }
                 
             res_data = response.json()
             content = res_data["choices"][0]["message"]["content"]
-        
-        sources = [{"filepath": c["path"], "lines": f"{c.get('line_start')}-{c.get('line_end')}"} for c in chunks]
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": content
+                },
+                "sources": sources
+            }
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as e:
+        logger.warning(f"Cannot connect to LLM at {endpoint_url}: {e}")
         return {
             "message": {
                 "role": "assistant",
-                "content": content
+                "content": f"⚠️ **Не удалось подключиться к LLM-шлюзу** по адресу `{endpoint_url}`.\n\n"
+                           f"**Модель:** `{model_name}`\n\n"
+                           f"Убедитесь, что сервер инференса (например, OmniRoute, vLLM, Ollama или LocalAI) запущен и доступен по указанному адресу.\n\n"
+                           f"**Найденные релевантные фрагменты в базе знаний ({len(sources)} шт.):**\n"
+                           + ("\n".join([f"- `{s['filepath']}:{s['lines']}`" for s in sources]) if sources else "Релевантный код в индексе не найден.")
             },
             "sources": sources
         }
     except Exception as e:
-        logger.exception("OmniRoute request failed")
+        logger.exception("LLM request failed")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail=f"OmniRoute request failed: {e}")
+        return {
+            "message": {
+                "role": "assistant",
+                "content": f"⚠️ Ошибка вызова LLM: {str(e)}"
+            },
+            "sources": sources
+        }
+
 
 @router.post("/stream")
 async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_query_token)):
@@ -152,24 +196,30 @@ async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_que
         raise HTTPException(status_code=400, detail="No user message found")
     user_query = user_messages[-1].content
 
-    # Получаем зависимости из main.py
-    import knowledge_mcp.main as main_mod
-    if not main_mod.db or not main_mod.indexer or not main_mod.indexer.embedder:
-        raise HTTPException(status_code=500, detail="Search engine or Embedder not initialized")
+    # Получаем зависимости через get_components
+    db_inst, indexer_inst = get_components()
+    if not db_inst or not indexer_inst:
+        raise HTTPException(status_code=500, detail="Search engine not initialized")
 
     api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
-         raise HTTPException(status_code=500, detail="LLM_API_KEY environment variable is not set")
+        raise HTTPException(status_code=500, detail="LLM_API_KEY environment variable is not set")
 
-    # 1. Вычисляем вектор вопроса
-    query_vector = main_mod.indexer.embedder.embed_text(user_query, is_query=True)
+    # 1. Вычисляем вектор вопроса (если инициализирован embedder)
+    query_vector = None
+    if indexer_inst.embedder:
+        try:
+            query_vector = indexer_inst.embedder.embed_text(user_query, is_query=True)
+        except Exception as e:
+            logger.warning(f"Failed to calculate query vector: {e}")
 
-    # 2. Выполняем гибридный поиск по базе знаний
+    # 2. Выполняем гибридный поиск по базе знаний (FTS5 + Graph, плюс векторы если есть)
     try:
-        chunks = main_mod.db.search_chunks_hybrid(user_query, query_vector, limit=5)
-    except Exception as e:
+        raw_chunks = db_inst.search_chunks_hybrid(user_query, query_vector, limit=5)
+        chunks = [dict(c) if not isinstance(c, dict) else c for c in raw_chunks]
+    except Exception:
         logger.exception("Hybrid search failed")
-        raise HTTPException(status_code=500, detail=f"Hybrid search failed: {e}")
+        chunks = []
 
     # 3. Сборка контекста для системного промпта
     context_str = ""
@@ -192,48 +242,66 @@ async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_que
         formatted_messages.append({"role": m.role, "content": m.content})
 
     endpoint_url, model_name = get_llm_settings(config)
+    sources = [{"filepath": c["path"], "lines": f"{c.get('line_start')}-{c.get('line_end')}"} for c in chunks]
 
     async def event_generator():
         try:
             async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    "POST",
-                    endpoint_url,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": model_name,
-                        "messages": formatted_messages,
-                        "stream": True
-                    },
-                    timeout=60.0
-                ) as response:
-                    if response.status_code != 200:
-                        err_text = await response.aread()
-                        yield f"data: {json.dumps({'error': f'OmniRoute stream error: {err_text.decode()}'})}\n\n"
-                        return
+                try:
+                    async with client.stream(
+                        "POST",
+                        endpoint_url,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": model_name,
+                            "messages": formatted_messages,
+                            "stream": True
+                        },
+                        timeout=60.0
+                    ) as response:
+                        if response.status_code != 200:
+                            err_text = await response.aread()
+                            err_msg = (
+                                f"⚠️ **Ошибка LLM-сервера (HTTP {response.status_code})**\n\n"
+                                f"**Эндпоинт:** `{endpoint_url}`\n**Модель:** `{model_name}`\n\n"
+                                f"**Детали:** {err_text.decode('utf-8', errors='replace')}\n\n"
+                                f"**Найденные фрагменты кода в базе знаний:**"
+                            )
+                            yield f"data: {json.dumps({'token': err_msg})}\n\n"
+                            yield f"data: {json.dumps({'sources': sources})}\n\n"
+                            return
 
-                    async for line in response.aiter_lines():
-                        if not line.strip():
-                            continue
-                        if line.startswith("data: "):
-                            data_content = line[6:]
-                            if data_content.strip() == "[DONE]":
-                                break
-                            try:
-                                chunk_json = json.loads(data_content)
-                                if "choices" in chunk_json and len(chunk_json["choices"]) > 0:
-                                    delta = chunk_json["choices"][0].get("delta", {})
-                                    delta_content = delta.get("content")
-                                    if delta_content:
-                                        yield f"data: {json.dumps({'token': delta_content})}\n\n"
-                            except Exception as e:
-                                logger.warning(f"Error parsing SSE chunk: {e}")
+                        async for line in response.aiter_lines():
+                            if not line.strip():
+                                continue
+                            if line.startswith("data: "):
+                                data_content = line[6:]
+                                if data_content.strip() == "[DONE]":
+                                    break
+                                try:
+                                    chunk_json = json.loads(data_content)
+                                    if "choices" in chunk_json and len(chunk_json["choices"]) > 0:
+                                        delta = chunk_json["choices"][0].get("delta", {})
+                                        delta_content = delta.get("content")
+                                        if delta_content:
+                                            yield f"data: {json.dumps({'token': delta_content})}\n\n"
+                                except Exception as e:
+                                    logger.warning(f"Error parsing SSE chunk: {e}")
+
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as e:
+                    logger.warning(f"LLM connection error at {endpoint_url}: {e}")
+                    conn_msg = (
+                        f"⚠️ **Не удалось подключиться к LLM-шлюзу** по адресу `{endpoint_url}`.\n\n"
+                        f"**Модель:** `{model_name}`\n\n"
+                        f"Убедитесь, что сервер инференса (например, OmniRoute, vLLM, Ollama или LocalAI) запущен и доступен по указанному адресу.\n\n"
+                        f"**Найденные релевантные фрагменты в базе знаний ({len(sources)} шт.):**"
+                    )
+                    yield f"data: {json.dumps({'token': conn_msg})}\n\n"
 
             # Отправка источников в конце
-            sources = [{"filepath": c["path"], "lines": f"{c.get('line_start')}-{c.get('line_end')}"} for c in chunks]
             yield f"data: {json.dumps({'sources': sources})}\n\n"
 
         except Exception as e:
@@ -241,6 +309,7 @@ async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_que
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 # Список защищенных файлов и расширений, доступ к которым категорически запрещен через UI
 SENSITIVE_FILES = {

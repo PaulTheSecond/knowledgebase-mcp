@@ -723,30 +723,31 @@ class KnowledgeDB:
         cursor.execute(sql, params)
         return cursor.fetchall()
 
-    def search_chunks_hybrid(self, query: str, query_vector: List[float], repo_ids: Optional[List[str]] = None, limit: int = 10) -> List[sqlite3.Row]:
-        """Гибридный поиск RRF: объединяет FTS5, KNN по векторам, и Graph Search (Тройной гибрид)."""
+    def search_chunks_hybrid(self, query: str, query_vector: Optional[List[float]] = None, repo_ids: Optional[List[str]] = None, limit: int = 10) -> List[sqlite3.Row]:
+        """Гибридный поиск RRF: объединяет FTS5, KNN по векторам (если есть), и Graph Search."""
         cursor = self.conn.cursor()
         
         fts_res = self.search_chunks_fts(query, repo_ids, limit=50)
         graph_res = self.search_chunks_graph(query, repo_ids, limit=20)
         
-        vec_sql = '''
-            SELECT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
-                   f.repo_id, f.path, vec_distance_L2(cv.embedding, ?) as distance
-            FROM chunks_vec cv
-            JOIN chunks c ON cv.rowid = c.rowid
-            JOIN files f ON c.file_id = f.id
-        '''
-        params = [sqlite_vec.serialize_float32(query_vector)]
-        if repo_ids:
-            placeholders = ','.join('?' for _ in repo_ids)
-            vec_sql += f" WHERE f.repo_id IN ({placeholders})"
-            params.extend(repo_ids)
-            
-        vec_sql += " ORDER BY distance ASC LIMIT 50"
-        
-        cursor.execute(vec_sql, params)
-        vec_res = cursor.fetchall()
+        vec_res = []
+        if query_vector is not None:
+            vec_sql = '''
+                SELECT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
+                       f.repo_id, f.path, vec_distance_L2(cv.embedding, ?) as distance
+                FROM chunks_vec cv
+                JOIN chunks c ON cv.rowid = c.rowid
+                JOIN files f ON c.file_id = f.id
+            '''
+            params = [sqlite_vec.serialize_float32(query_vector)]
+            if repo_ids:
+                placeholders = ','.join('?' for _ in repo_ids)
+                vec_sql += f" WHERE f.repo_id IN ({placeholders})"
+                params.extend(repo_ids)
+                
+            vec_sql += " ORDER BY distance ASC LIMIT 50"
+            cursor.execute(vec_sql, params)
+            vec_res = cursor.fetchall()
         
         # Reciprocal Rank Fusion алгоритм
         K = RRF_K
@@ -917,3 +918,20 @@ class KnowledgeDB:
                 WHERE id = ?
             """, (attempts, error_message, delay_seconds, job_id))
             self._auto_commit()
+
+    def retry_failed_jobs(self) -> int:
+        """Сбрасывает задачи со статусом failed/halted обратно в pending с attempts=0."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE sync_queue
+                SET status = 'pending',
+                    attempts = 0,
+                    error_message = NULL,
+                    run_at = NULL,
+                    updated_at = datetime('now', 'localtime')
+                WHERE status IN ('failed', 'halted')
+            """)
+            count = cursor.rowcount
+            self._auto_commit()
+            return count
