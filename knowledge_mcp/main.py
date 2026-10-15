@@ -28,9 +28,32 @@ event_loop = None
 async def lifespan(app: FastAPI):
     global event_loop
     event_loop = asyncio.get_running_loop()
+    
+    worker = None
+    scheduler = None
+    if db:
+        import threading
+        from knowledge_mcp.daemon.worker import DaemonWorker
+        from knowledge_mcp.daemon.scheduler import CronScheduler
+        
+        worker = DaemonWorker(db.db_path)
+        worker_thread = threading.Thread(target=worker.start, daemon=True, name="DaemonWorkerThread")
+        worker_thread.start()
+        logger.info("DaemonWorker background thread started.")
+        
+        scheduler = CronScheduler(db)
+        scheduler.start()
+        logger.info("CronScheduler background timers started.")
+
     try:
         yield
     finally:
+        if scheduler:
+            scheduler.stop()
+            logger.info("CronScheduler stopped.")
+        if worker:
+            worker.stop()
+            logger.info("DaemonWorker stopped.")
         event_loop = None
 
 app = FastAPI(title="Knowledge Base Sync Trigger", lifespan=lifespan)

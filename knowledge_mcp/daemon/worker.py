@@ -27,6 +27,12 @@ class DaemonWorker:
         # Директория клонирования (data/clones по умолчанию)
         self.clones_dir = Path(os.environ.get("CLONES_DIR", "data/clones"))
         self.clones_dir.mkdir(parents=True, exist_ok=True)
+        self._running = False
+
+    def stop(self) -> None:
+        """Останавливает цикл обработки очереди."""
+        logger.info("Stopping daemon worker...")
+        self._running = False
 
     def get_git_sha(self, repo_path: Path) -> Optional[str]:
         """Определяет хэш HEAD коммита репозитория.
@@ -155,10 +161,11 @@ class DaemonWorker:
                 self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err_msg)
                 self.db.update_system_status("halted", last_error=err_msg)
 
-    def start(self):
-        """Запускает бесконечный цикл обработки очереди."""
+    def start(self) -> None:
+        """Запускает цикл обработки очереди."""
         logger.info("Starting background daemon worker loop...")
-        while True:
+        self._running = True
+        while self._running:
             try:
                 # Проверяем статус воркера в БД
                 status_row = self.db.get_system_status()
