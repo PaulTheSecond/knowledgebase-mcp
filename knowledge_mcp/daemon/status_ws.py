@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import List
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +21,18 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict):
         logger.debug(f"Broadcasting to WS: {message}")
-        # Создаем копию списка подключений для предотвращения изменения во время итерации
         connections = list(self.active_connections)
-        for connection in connections:
+        if not connections:
+            return
+
+        async def _send_safe(ws: WebSocket):
             try:
-                await connection.send_json(message)
+                await ws.send_json(message)
             except Exception as e:
                 logger.error(f"Error sending message to client: {e}")
-                # Если сокет закрылся аварийно, убираем его
-                self.disconnect(connection)
+                self.disconnect(ws)
+
+        await asyncio.gather(*(_send_safe(c) for c in connections), return_exceptions=True)
 
 manager = ConnectionManager()
 
@@ -43,9 +46,10 @@ def broadcast_sync(message: dict):
         else:
             # Fallback для тестов
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 asyncio.create_task(manager.broadcast(message))
             except RuntimeError:
                 pass
     except Exception as e:
         logger.error(f"Failed to broadcast message: {e}")
+

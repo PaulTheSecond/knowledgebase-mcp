@@ -298,6 +298,12 @@ def _get_auth_headers() -> dict[str, str]:
     return {"Authorization": f"Basic {b64_creds}"}
 
 
+def _get_daemon_base_url() -> str:
+    """Возвращает базовый URL Daemon API из переменной окружения DAEMON_URL."""
+    import os
+    return os.environ.get("DAEMON_URL", "http://127.0.0.1:8000").rstrip("/")
+
+
 async def _handle_delete_repo(arguments: dict) -> list[types.TextContent]:
     """knowledge_delete_repo: делегирует удаление репозитория Daemon-процессу через HTTP.
 
@@ -312,7 +318,8 @@ async def _handle_delete_repo(arguments: dict) -> list[types.TextContent]:
         import urllib.request
         import urllib.error
 
-        url = f"http://127.0.0.1:8000/api/repo/{repo_id}"
+        base_url = _get_daemon_base_url()
+        url = f"{base_url}/api/repo/{repo_id}"
         headers = _get_auth_headers()
         req = urllib.request.Request(url, method="DELETE", headers=headers)
 
@@ -343,7 +350,8 @@ async def _handle_sync_repo(arguments: dict) -> list[types.TextContent]:
         import urllib.request
         import urllib.error
 
-        url = f"http://127.0.0.1:8000/api/sync/{repo_id}"
+        base_url = _get_daemon_base_url()
+        url = f"{base_url}/api/sync/{repo_id}"
         headers = _get_auth_headers()
         headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, method="POST", data=b"", headers=headers)

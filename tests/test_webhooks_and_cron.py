@@ -132,6 +132,32 @@ class TestFindRepoConfig(unittest.TestCase):
         self.assertEqual(result["id"], "my-repo")
 
     @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
+    def test_find_ssh_config_matched_by_https_webhook(self, mock_config):
+        """Проверяет, что репозиторий с SSH URL в config.yaml корректно находится по HTTPS clone URL из вебхука."""
+        from knowledge_mcp.daemon.routes.webhooks import _find_repo_config_by_url
+
+        mock_config.return_value = {
+            "repositories": [
+                {"id": "ssh-repo", "url": "git@github.com:PaulTheSecond/knowledgebase-mcp.git"}
+            ]
+        }
+
+        # Вебхук от GitHub присылает HTTPS clone_url
+        result = _find_repo_config_by_url("https://github.com/PaulTheSecond/knowledgebase-mcp.git")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], "ssh-repo")
+
+    def test_normalize_git_url(self):
+        from knowledge_mcp.daemon.routes.webhooks import normalize_git_url
+
+        expected = "github.com/org/repo"
+        self.assertEqual(normalize_git_url("https://github.com/org/repo.git"), expected)
+        self.assertEqual(normalize_git_url("http://github.com/org/repo/"), expected)
+        self.assertEqual(normalize_git_url("git@github.com:org/repo.git"), expected)
+        self.assertEqual(normalize_git_url("ssh://git@github.com/org/repo.git"), expected)
+        self.assertEqual(normalize_git_url("ssh://git@github.com:22/org/repo.git"), expected)
+
+    @patch("knowledge_mcp.daemon.routes.webhooks.load_config")
     def test_not_found(self, mock_config):
         from knowledge_mcp.daemon.routes.webhooks import _find_repo_config_by_url
 
@@ -147,3 +173,4 @@ class TestFindRepoConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

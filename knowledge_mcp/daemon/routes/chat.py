@@ -27,9 +27,30 @@ def verify_query_token(token: str = None):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return token
 
+def get_llm_settings(config: dict) -> tuple[str, str]:
+    """Возвращает (endpoint_url, model_name) для обращения к LLM/OmniRoute.
+    
+    Приоритет:
+    1. Переменные окружения LLM_BASE_URL и LLM_MODEL.
+    2. Секция server.dashboard.chat в config.yaml (api_base, model).
+    3. Дефолты OmniRoute (http://localhost:20128/v1/chat/completions, kr/claude-sonnet-4.5).
+    """
+    chat_cfg = config.get("server", {}).get("dashboard", {}).get("chat", {})
+    
+    base_url = os.environ.get("LLM_BASE_URL") or chat_cfg.get("api_base") or "http://localhost:20128/v1"
+    base_url = base_url.rstrip("/")
+    if not base_url.endswith("/chat/completions"):
+        endpoint_url = f"{base_url}/chat/completions"
+    else:
+        endpoint_url = base_url
+
+    model = os.environ.get("LLM_MODEL") or chat_cfg.get("model") or "kr/claude-sonnet-4.5"
+    return endpoint_url, model
+
+
 @router.post("")
 async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_basic_auth)):
-    """Синхронный RAG Чат. Проводит гибридный поиск и запрашивает OmniRoute."""
+    """Синхронный RAG Чат. Проводит гибридный поиск и запрашивает OmniRoute/LLM."""
     config = load_config()
     chat_enabled = config.get("server", {}).get("dashboard", {}).get("chat", {}).get("enabled", False)
     if not chat_enabled:
@@ -75,21 +96,23 @@ async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_ba
 {context_str}
 """
 
-    # 4. OpenAI-совместимый вызов OmniRoute через HTTP-запросы
+    # 4. OpenAI-совместимый вызов LLM через HTTP-запросы
     formatted_messages = [{"role": "system", "content": system_prompt}]
     for m in req.messages:
         formatted_messages.append({"role": m.role, "content": m.content})
 
+    endpoint_url, model_name = get_llm_settings(config)
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "http://localhost:20128/v1/chat/completions",
+                endpoint_url,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": "kr/claude-sonnet-4.5",
+                    "model": model_name,
                     "messages": formatted_messages
                 },
                 timeout=60.0
@@ -168,18 +191,20 @@ async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_que
     for m in req.messages:
         formatted_messages.append({"role": m.role, "content": m.content})
 
+    endpoint_url, model_name = get_llm_settings(config)
+
     async def event_generator():
         try:
             async with httpx.AsyncClient() as client:
                 async with client.stream(
                     "POST",
-                    "http://localhost:20128/v1/chat/completions",
+                    endpoint_url,
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": "kr/claude-sonnet-4.5",
+                        "model": model_name,
                         "messages": formatted_messages,
                         "stream": True
                     },

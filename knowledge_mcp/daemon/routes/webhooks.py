@@ -54,8 +54,45 @@ def _verify_hmac_sha256(payload: bytes, secret: str, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+def normalize_git_url(url: str) -> str:
+    """Приводит Git URL к единому виду host/path (без протоколов, ssh-префиксов, портов и .git).
+    
+    Примеры:
+        'git@github.com:org/repo.git' -> 'github.com/org/repo'
+        'https://github.com/org/repo.git' -> 'github.com/org/repo'
+        'ssh://git@gitlab.com:22/org/repo.git' -> 'gitlab.com/org/repo'
+    """
+    import re
+    if not url:
+        return ""
+    clean = url.strip().rstrip("/")
+    if clean.endswith(".git"):
+        clean = clean[:-4]
+
+    # Убираем схему протокола (https://, http://, ssh://)
+    for prefix in ("https://", "http://", "ssh://"):
+        if clean.startswith(prefix):
+            clean = clean[len(prefix):]
+            break
+
+    # Обработка SSH-пользователя (например git@)
+    if "@" in clean:
+        clean = clean.split("@", 1)[1]
+
+    # Удаляем номер порта (например :22/ -> /)
+    clean = re.sub(r":\d+/", "/", clean)
+    clean = clean.replace(":", "/")
+
+    while "//" in clean:
+        clean = clean.replace("//", "/")
+
+    return clean.lower()
+
+
 def _find_repo_config_by_url(clone_url: str) -> Optional[dict]:
     """Ищет конфигурацию репозитория по clone URL.
+
+    Поддерживает сопоставление между SSH и HTTPS форматами URL.
 
     Args:
         clone_url: URL репозитория из payload вебхука.
@@ -64,12 +101,11 @@ def _find_repo_config_by_url(clone_url: str) -> Optional[dict]:
         Словарь конфигурации репозитория или None.
     """
     config = load_config()
+    norm_clone = normalize_git_url(clone_url)
+
     for repo in config.get("repositories", []):
         repo_url = repo.get("url", "")
-        # Нормализуем URL — убираем .git и trailing slashes
-        norm_repo = repo_url.rstrip("/").removesuffix(".git")
-        norm_clone = clone_url.rstrip("/").removesuffix(".git")
-        if norm_repo == norm_clone:
+        if normalize_git_url(repo_url) == norm_clone:
             return repo
     return None
 
