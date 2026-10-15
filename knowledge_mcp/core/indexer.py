@@ -129,7 +129,9 @@ class Indexer:
                 path_resolved_cache[path_str] = Path(path_str).resolve()
             return path_resolved_cache[path_str]
 
-        parser_dll = Path(__file__).parent.parent / "RoslynParser" / "bin" / "Release" / "net8.0" / "RoslynParser.dll"
+        app_root = Path(__file__).resolve().parents[2]
+        parser_dll = app_root / "RoslynParser" / "bin" / "Release" / "net8.0" / "RoslynParser.dll"
+        parser_csproj = app_root / "RoslynParser" / "RoslynParser.csproj"
 
         for proj in csharp_projects:
             if "RoslynParser" in str(proj):
@@ -142,7 +144,7 @@ class Indexer:
             else:
                 cmd = [
                     "dotnet", "run", "-c", "Release",
-                    "--project", str(Path(__file__).parent.parent / "RoslynParser" / "RoslynParser.csproj"),
+                    "--project", str(parser_csproj),
                     "--", str(proj)
                 ]
 
@@ -507,14 +509,15 @@ class Indexer:
     # Публичный API
     # ──────────────────────────────────────────────────────────────────────
 
-    def sync_repo(self, repo_id: str, repo_path: str | Path, allowed_top_level: list[str] = None):
+    def sync_repo(self, repo_id: str, repo_path: str | Path, allowed_top_level: list[str] = None, force: bool = False):
         """
         Инкрементальная синхронизация репозитория (дельта-скан).
         Сравнивает mtime и hash, удаляет старые файлы, парсит новые/измененные.
         Хэширование выполняется параллельно, а парсинг AST — в главном потоке.
+        При force=True проверки mtime/hash игнорируются и все файлы переиндексируются.
         """
         repo_path = Path(repo_path).resolve()
-        logger.info(f"Starting sync for repo '{repo_id}' at {repo_path}")
+        logger.info(f"Starting sync for repo '{repo_id}' at {repo_path} (force={force})")
 
         from knowledge_mcp.daemon.status_ws import broadcast_sync
         broadcast_sync({
@@ -561,17 +564,30 @@ class Indexer:
             filepath, rel_path = item
             try:
                 mtime = filepath.stat().st_mtime
-                if rel_path in known_files:
+                if not force and rel_path in known_files:
                     known = known_files[rel_path]
-                    if known['mtime'] == mtime:
-                        return (rel_path, filepath, mtime, None, 'unchanged', None)
-                    file_hash = hash_file(filepath)
-                    if known['hash'] == file_hash:
-                        return (rel_path, filepath, mtime, file_hash, 'touch', None)
-                    return (rel_path, filepath, mtime, file_hash, 'updated', known['id'])
-                else:
-                    file_hash = hash_file(filepath)
-                    return (rel_path, filepath, mtime, file_hash, 'added', None)
+                    is_cs = filepath.suffix.lower() == '.cs'
+                    # Защита от пропуска C# файлов после сбоя парсера:
+                    # если в БД нет записей в symbols или chunks для непустого .cs файла, форсируем повторный парсинг ('updated')
+                    is_orphan = (
+                        is_cs
+                        and filepath.stat().st_size > 0
+                        and (known.get('chunks_count', 0) == 0 or known.get('symbols_count', 0) == 0)
+                    )
+
+                    if not is_orphan:
+                        if known['mtime'] == mtime:
+                            return (rel_path, filepath, mtime, None, 'unchanged', None)
+                        file_hash = hash_file(filepath)
+                        if known['hash'] == file_hash:
+                            return (rel_path, filepath, mtime, file_hash, 'touch', None)
+                        return (rel_path, filepath, mtime, file_hash, 'updated', known['id'])
+
+                # Если force, или файл новый, или файл-сирота, или изменился:
+                file_hash = hash_file(filepath)
+                status = 'updated' if rel_path in known_files else 'added'
+                old_id = known_files[rel_path]['id'] if rel_path in known_files else None
+                return (rel_path, filepath, mtime, file_hash, status, old_id)
             except Exception as e:
                 return (rel_path, filepath, None, None, 'error', str(e))
 

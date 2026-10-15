@@ -13,9 +13,12 @@ class LocalEmbedder:
     - Требует префиксов 'query: ' и 'passage: ' для асимметричного поиска.
     """
     def __init__(self, model_name: str = "intfloat/multilingual-e5-small"):
-        logger.info(f"Loading local embedding model: {model_name}... (this may take a while on first run)")
         from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(model_name)
+        try:
+            # Сначала пытаемся загрузить из локального кэша без сетевых проверок к HuggingFace Hub
+            self.model = SentenceTransformer(model_name, local_files_only=True)
+        except Exception:
+            self.model = SentenceTransformer(model_name)
         logger.info("Local model loaded successfully.")
         
     def embed_text(self, text: str, is_query: bool = False) -> list[float]:

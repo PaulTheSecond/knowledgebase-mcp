@@ -226,6 +226,13 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20261015_09_idx_chunks_file",
+            "up": """
+                CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
+            """
+        })
+
         for migration in migrations:
             if migration["id"] not in applied_migrations:
                 logger.info(f"Applying sqlite migration: {migration['id']}")
@@ -258,9 +265,16 @@ class KnowledgeDB:
             self.conn.commit()
 
     def get_known_files(self, repo_id: str) -> Dict[str, sqlite3.Row]:
-        """Возвращает словарь известных файлов репозитория: path -> Row(id, mtime, hash)."""
+        """Возвращает словарь известных файлов репозитория: path -> Row(id, mtime, hash, chunks_count, symbols_count)."""
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, path, mtime, hash FROM files WHERE repo_id = ?", (repo_id,))
+        cursor.execute("""
+            SELECT 
+                f.id, f.path, f.mtime, f.hash,
+                EXISTS(SELECT 1 FROM chunks c WHERE c.file_id = f.id) AS chunks_count,
+                EXISTS(SELECT 1 FROM symbols s WHERE s.file_id = f.id) AS symbols_count
+            FROM files f
+            WHERE f.repo_id = ?
+        """, (repo_id,))
         return {row['path']: row for row in cursor.fetchall()}
 
     def upsert_file(self, repo_id: str, path: str, mtime: float, file_hash: str) -> int:
@@ -609,6 +623,28 @@ class KnowledgeDB:
             WHERE c.id = ?
         ''', (chunk_id,))
         return cursor.fetchone()
+        
+    def get_file_content(self, path: str, repo_id: Optional[str] = None) -> Optional[str]:
+        """Возвращает полный контент файла, собирая его из всех чанков в правильном порядке."""
+        cursor = self.conn.cursor()
+        sql = '''
+            SELECT c.content
+            FROM chunks c
+            JOIN files f ON c.file_id = f.id
+            WHERE f.path = ?
+        '''
+        params = [path]
+        if repo_id:
+            sql += " AND f.repo_id = ?"
+            params.append(repo_id)
+        sql += " ORDER BY c.line_start ASC"
+        
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        if not rows:
+            return None
+            
+        return "\n".join(row['content'] for row in rows)
         
     def search_chunks_fts(self, query: str, repo_ids: Optional[List[str]] = None, limit: int = 10) -> List[sqlite3.Row]:
         """Полнотекстовый поиск по чанкам."""

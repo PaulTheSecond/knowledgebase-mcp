@@ -10,8 +10,8 @@ services:
       # Папка с исходниками (монтируется как read-only). По умолчанию это локальная папка ./src
       # Если ваши проекты лежат в другом месте, просто создайте .env файл и укажите: REPOS_DIR=/path/to/my/projects
       - ${REPOS_DIR:-./src}:/repos:ro
-      # Проброс кэша HuggingFace, чтобы не скачивать модель при каждом рестарте контейнера
-      - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
+      # Проброс кэша HuggingFace больше не нужен, модель скачивается внутрь образа при сборке
+      # - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
     environment:
       - DB_PATH=/data/knowledge_roslyn.db
       - PYTHONUNBUFFERED=1

@@ -201,30 +201,34 @@ class TestAuthAPI(unittest.TestCase):
         
         from knowledge_mcp.daemon.status_ws import broadcast_sync
         
-        # Настраиваем event_loop в main_mod для броадкастинга
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        # Настраиваем event_loop в фоновом потоке для корректной работы broadcast_sync
+        import threading
+        loop = asyncio.new_event_loop()
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
         main_mod.event_loop = loop
         
-        with self.client.websocket_connect(f"/ws/status?token={token}") as websocket:
-            event_data = {
-                "type": "sync_progress",
-                "data": {
-                    "repo_id": "test-repo",
-                    "progress": 50,
-                    "status": "syncing"
+        try:
+            with self.client.websocket_connect(f"/ws/status?token={token}") as websocket:
+                event_data = {
+                    "type": "sync_progress",
+                    "data": {
+                        "repo_id": "test-repo",
+                        "progress": 50,
+                        "status": "syncing"
+                    }
                 }
-            }
-            broadcast_sync(event_data)
-            
-            # Получаем сообщение из сокета
-            received = websocket.receive_json()
-            self.assertEqual(received["type"], "sync_progress")
-            self.assertEqual(received["data"]["progress"], 50)
-            self.assertEqual(received["data"]["status"], "syncing")
+                broadcast_sync(event_data)
+                
+                # Получаем сообщение из сокета
+                received = websocket.receive_json()
+                self.assertEqual(received["type"], "sync_progress")
+                self.assertEqual(received["data"]["progress"], 50)
+                self.assertEqual(received["data"]["status"], "syncing")
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=1.0)
+            main_mod.event_loop = None
 
 
 if __name__ == "__main__":

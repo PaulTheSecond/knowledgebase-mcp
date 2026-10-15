@@ -11,7 +11,7 @@ class TestChatAPI(unittest.TestCase):
     def setUp(self):
         # Вручную регистрируем роутер чата, если он еще не зарегистрирован
         from knowledge_mcp.daemon.routes.chat import router as chat_router
-        if not any(route.path.startswith("/api/chat") for route in app.routes):
+        if not any(getattr(route, "path", "").startswith("/api/chat") for route in app.routes):
             app.include_router(chat_router)
 
         self.client = TestClient(app)

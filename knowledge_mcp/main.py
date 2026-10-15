@@ -66,6 +66,7 @@ indexer = None
 class SyncRequest(BaseModel):
     repo_id: str
     repo_path: str
+    force: bool = False
 
 def init_components(db_path: str):
     global db, indexer
@@ -90,7 +91,7 @@ async def sync_endpoint(req: SyncRequest, background_tasks: BackgroundTasks):
     if not db or not indexer:
         raise HTTPException(status_code=500, detail="Components not initialized")
     
-    background_tasks.add_task(indexer.sync_repo, req.repo_id, req.repo_path)
+    background_tasks.add_task(indexer.sync_repo, req.repo_id, req.repo_path, force=req.force)
     return {"status": "Sync queued", "repo_id": req.repo_id, "background": True}
 
 @app.post("/api/auth/token")
@@ -178,6 +179,7 @@ def main():
     sync_parser.add_argument("--repo-id", required=True, type=str, help="Repository ID")
     sync_parser.add_argument("--repo-path", required=True, type=str, help="Path to repository root")
     sync_parser.add_argument("--all", action="store_true", help="Index all directories without interactive prompt")
+    sync_parser.add_argument("--force", action="store_true", help="Force re-indexing of all files ignoring mtime/hash cache")
     
     # Режим сервера (HTTP endpoint)
     serve_parser = subparsers.add_parser("serve", help="Start HTTP server to listen for /sync webhook triggers")
@@ -217,38 +219,45 @@ def main():
 
         if args.command == "sync":
             allowed_top_level = None
-            if not getattr(args, "all", False):
-                import questionary
-                repo_path_obj = Path(args.repo_path).resolve()
-                if not repo_path_obj.exists():
-                    logger.error(f"Path does not exist: {repo_path_obj}")
-                    sys.exit(1)
-                
-                spec = indexer._get_ignore_spec(repo_path_obj)
-                
-                # Собираем элементы первого уровня
-                choices = []
-                for entry in os.scandir(repo_path_obj):
-                    rel_p = entry.name + ('/' if entry.is_dir() else '')
-                    if not spec.match_file(rel_p):
-                        choices.append(entry.name)
-                
-                if not choices:
-                    logger.warning("No unignored files/directories found at top level.")
+            is_all = getattr(args, "all", False)
+            force = getattr(args, "force", False)
+
+            if not is_all:
+                if not sys.stdin.isatty():
+                    logger.warning("Неинтерактивный терминал (отсутствует TTY). Автоматически включен пакетный режим (--all).")
+                    is_all = True
                 else:
-                    selected = questionary.checkbox(
-                        "Выберите папки/файлы для индексации (Enter - выбрать все отмеченные):",
-                        choices=[questionary.Choice(c, checked=True) for c in sorted(choices)]
-                    ).ask()
+                    import questionary
+                    repo_path_obj = Path(args.repo_path).resolve()
+                    if not repo_path_obj.exists():
+                        logger.error(f"Path does not exist: {repo_path_obj}")
+                        sys.exit(1)
                     
-                    if selected is None:
-                        logger.info("Sync cancelled by user.")
-                        sys.exit(0)
+                    spec = indexer._get_ignore_spec(repo_path_obj)
+                    
+                    # Собираем элементы первого уровня
+                    choices = []
+                    for entry in os.scandir(repo_path_obj):
+                        rel_p = entry.name + ('/' if entry.is_dir() else '')
+                        if not spec.match_file(rel_p):
+                            choices.append(entry.name)
+                    
+                    if not choices:
+                        logger.warning("No unignored files/directories found at top level.")
+                    else:
+                        selected = questionary.checkbox(
+                            "Выберите папки/файлы для индексации (Enter - выбрать все отмеченные):",
+                            choices=[questionary.Choice(c, checked=True) for c in sorted(choices)]
+                        ).ask()
                         
-                    allowed_top_level = selected
+                        if selected is None:
+                            logger.info("Sync cancelled by user.")
+                            sys.exit(0)
+                            
+                        allowed_top_level = selected
 
             logger.info(f"Manual CLI trigger logic for {args.repo_id}")
-            indexer.sync_repo(args.repo_id, args.repo_path, allowed_top_level=allowed_top_level)
+            indexer.sync_repo(args.repo_id, args.repo_path, allowed_top_level=allowed_top_level, force=force)
         elif args.command == "serve":
             logger.info(f"Starting trigger HTTP endpoint on {args.host}:{args.port}")
             uvicorn.run(app, host=args.host, port=args.port)

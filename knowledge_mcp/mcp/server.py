@@ -85,6 +85,18 @@ _TOOL_SCHEMAS = [
         }
     ),
     types.Tool(
+        name="knowledge_read_file",
+        description="Retrieve the complete raw content of a file from the knowledge base by its file path.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "The exact path of the file (e.g. 'docs/data-access/README.md')."},
+                "repo_id": {"type": "string", "description": "Optional repo_id if the path exists in multiple repositories."}
+            },
+            "required": ["path"]
+        }
+    ),
+    types.Tool(
         name="knowledge_delete_repo",
         description="Delete all knowledge base data associated with a specific repository ID. This removes all scanned files, chunks, and embeddings for that repository.",
         inputSchema={
@@ -253,6 +265,24 @@ async def _handle_get_chunk(arguments: dict) -> list[types.TextContent]:
 
     except Exception as e:
         logger.error(f"Get chunk failed: {e}")
+        return _err(f"Database query error: {e}")
+
+
+async def _handle_read_file(arguments: dict) -> list[types.TextContent]:
+    """knowledge_read_file: получить полный контент файла по пути."""
+    path = arguments.get("path")
+    if not path:
+        return _err("Error: 'path' argument is required.")
+    
+    repo_id = arguments.get("repo_id")
+    try:
+        content = db.get_file_content(path, repo_id)
+        if content is None:
+            return _err(f"File '{path}' not found in the knowledge base.")
+            
+        return [types.TextContent(type="text", text=content)]
+    except Exception as e:
+        logger.error(f"Read file failed: {e}")
         return _err(f"Database query error: {e}")
 
 
@@ -452,6 +482,7 @@ async def _handle_impact_analysis(arguments: dict) -> list[types.TextContent]:
 _TOOL_HANDLERS: dict[str, Callable[[dict], Any]] = {
     "knowledge_search":        _handle_search,
     "knowledge_get_chunk":     _handle_get_chunk,
+    "knowledge_read_file":     _handle_read_file,
     "knowledge_delete_repo":   _handle_delete_repo,
     "knowledge_sync_repo":     _handle_sync_repo,
     "knowledge_find_symbol":   _handle_find_symbol,
