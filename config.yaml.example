@@ -1,0 +1,42 @@
+server:
+  port: 8000
+  host: "0.0.0.0"
+  dashboard:
+    enabled: true
+    port: 8080
+    password_env: "DASHBOARD_PASSWORD"
+    chat:
+      enabled: true
+
+# Векторные эмбеддинги (семантический поиск)
+embeddings:
+  enabled: false  # Установите true для включения нейросетевых векторных представлений
+  model_name: "intfloat/multilingual-e5-small"
+
+# Список индексируемых репозиториев
+repositories:
+  # Основной репозиторий Knowledge Base MCP
+  - id: "knowledgebase-mcp"
+    url: "https://github.com/PaulTheSecond/knowledgebase-mcp.git"
+    auth:
+      type: "pat"
+      token_env: "GITHUB_PAT"
+    branch: "master"
+    triggers:
+      webhooks:
+        enabled: true
+        secret_env: "WEBHOOK_SECRET"
+      cron: "0 */4 * * *"  # Каждые 4 часа
+
+  # Репозиторий библиотек ядра (ImpactOS / Yurta)
+  - id: "yurta-core-lib"
+    url: "https://github.com/Tribe-Impact/Yurta.Core.Lib.git"
+    auth:
+      type: "pat"
+      token_env: "GITHUB_PAT"
+    branch: "master"
+    triggers:
+      webhooks:
+        enabled: true
+        secret_env: "WEBHOOK_SECRET"
+      cron: "0 */4 * * *"

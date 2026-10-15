@@ -23,7 +23,10 @@ class DaemonWorker:
         """
         self.db_path = Path(db_path)
         self.db = KnowledgeDB(self.db_path)
-        self.indexer = Indexer(self.db)
+        from knowledge_mcp.core.config import load_config
+        cfg = load_config()
+        use_emb = cfg.get("embeddings", {}).get("enabled", False)
+        self.indexer = Indexer(self.db, use_embeddings=use_emb)
         # Директория клонирования (data/clones по умолчанию)
         self.clones_dir = Path(os.environ.get("CLONES_DIR", "data/clones"))
         self.clones_dir.mkdir(parents=True, exist_ok=True)

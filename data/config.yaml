@@ -1,6 +1,6 @@
 server:
   port: 8000
-  host: "127.0.0.1"
+  host: "0.0.0.0"
   dashboard:
     enabled: true
     port: 8080
@@ -13,7 +13,7 @@ embeddings:
   model_name: "intfloat/multilingual-e5-small"
 
 repositories:
-  - id: "test-repo"
+  - id: "knowledgebase-mcp"
     url: "https://github.com/PaulTheSecond/knowledgebase-mcp.git"
     auth:
       type: "pat"
@@ -21,6 +21,18 @@ repositories:
     branch: "master"
     triggers:
       webhooks:
-        enabled: false
+        enabled: true
+        secret_env: "WEBHOOK_SECRET"
+      cron: "0 */4 * * *"
+
+  - id: "yurta-core-lib"
+    url: "https://github.com/Tribe-Impact/Yurta.Core.Lib.git"
+    auth:
+      type: "pat"
+      token_env: "GITHUB_PAT"
+    branch: "master"
+    triggers:
+      webhooks:
+        enabled: true
         secret_env: "WEBHOOK_SECRET"
       cron: "0 */4 * * *"

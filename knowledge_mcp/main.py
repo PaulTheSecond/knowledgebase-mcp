@@ -23,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 event_loop = None
+start_daemon = False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,7 +32,7 @@ async def lifespan(app: FastAPI):
     
     worker = None
     scheduler = None
-    if db:
+    if db and start_daemon:
         import threading
         from knowledge_mcp.daemon.worker import DaemonWorker
         from knowledge_mcp.daemon.scheduler import CronScheduler
@@ -99,8 +100,11 @@ class SyncRequest(BaseModel):
 def init_components(db_path: str):
     global db, indexer
     from knowledge_mcp.core.indexer import Indexer  # Ленивый импорт — только для sync/serve
+    from knowledge_mcp.core.config import load_config
+    cfg = load_config()
+    use_emb = cfg.get("embeddings", {}).get("enabled", False)
     db = KnowledgeDB(db_path)
-    indexer = Indexer(db)
+    indexer = Indexer(db, use_embeddings=use_emb)
     
     # Инициализируем и подключаем роутер вебхуков (Story 1.5)
     from knowledge_mcp.daemon.routes.webhooks import init_webhook_router
@@ -287,6 +291,8 @@ def main():
             logger.info(f"Manual CLI trigger logic for {args.repo_id}")
             indexer.sync_repo(args.repo_id, args.repo_path, allowed_top_level=allowed_top_level, force=force)
         elif args.command == "serve":
+            global start_daemon
+            start_daemon = True
             logger.info(f"Starting trigger HTTP endpoint on {args.host}:{args.port}")
             uvicorn.run(app, host=args.host, port=args.port)
 
