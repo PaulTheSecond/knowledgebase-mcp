@@ -2,7 +2,7 @@ import os
 import logging
 import httpx
 import json
-from typing import List, Dict, Any
+from typing import List
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -217,6 +217,15 @@ async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_que
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+# Список защищенных файлов и расширений, доступ к которым категорически запрещен через UI
+SENSITIVE_FILES = {
+    ".env", ".env.local", ".env.production",
+    "config.yaml", "config.user.toml", "settings.json",
+    "knowledge.db", "knowledge.db-wal", "knowledge.db-shm"
+}
+SENSITIVE_EXTENSIONS = {".db", ".sqlite", ".sqlite3", ".key", ".pem", ".pfx", ".token"}
+
+
 @router.get("/file")
 async def read_file_endpoint(
     filepath: str, 
@@ -226,41 +235,56 @@ async def read_file_endpoint(
 ):
     """
     Возвращает содержимое указанного файла (или фрагмент строк).
-    Защищает от Path Traversal, проверяя, что путь находится внутри CLONES_DIR или папки проекта.
+    Защищает от Path Traversal, проверяя допустимые директории и блокируя доступ к конфигам и секретам.
     """
     from pathlib import Path
+    
+    # 1. Защита от Path Traversal и спецсимволов
+    if ".." in filepath.replace("\\", "/").split("/"):
+        raise HTTPException(status_code=403, detail="Access denied: Directory traversal sequence detected")
+
     clones_dir = Path(os.environ.get("CLONES_DIR", "data/clones")).resolve()
     project_dir = Path(".").resolve()
     
-    # 1. Приводим путь к абсолютному виду
-    # Сначала пытаемся разрешить путь относительно clones_dir
+    # 2. Приводим путь к абсолютному виду
     target_path = (clones_dir / filepath).resolve()
-    
-    # Если файл не существует относительно clones_dir, пробуем относительно корня проекта
     if not target_path.exists():
         target_path = (project_dir / filepath).resolve()
         
-    # 2. Проверка безопасности (Path Traversal)
-    # Путь должен начинаться либо с clones_dir, либо с project_dir
+    # 3. Проверка безопасности: путь должен начинаться либо с clones_dir, либо с project_dir
     try:
+        is_inside_clones = target_path.is_relative_to(clones_dir)
+        is_inside_project = target_path.is_relative_to(project_dir)
+    except AttributeError:
+        # Для обратной совместимости с Python < 3.9 (хотя у нас 3.14)
         is_inside_clones = target_path.parts[:len(clones_dir.parts)] == clones_dir.parts
         is_inside_project = target_path.parts[:len(project_dir.parts)] == project_dir.parts
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid file path structure")
-    
+
     if not (is_inside_clones or is_inside_project):
         raise HTTPException(status_code=403, detail="Access denied: File is outside allowed directories")
+
+    # 4. Блокировка доступа к секретам, конфигурационным файлам и системным базам данных
+    target_name = target_path.name.lower()
+    target_suffix = target_path.suffix.lower()
+    parts_lower = [p.lower() for p in target_path.parts]
+
+    if (
+        target_name in SENSITIVE_FILES
+        or target_suffix in SENSITIVE_EXTENSIONS
+        or any(part in (".git", ".ssh", ".idea", ".vscode") for part in parts_lower)
+        or (is_inside_project and not is_inside_clones and "data" in parts_lower and target_suffix in (".db", ".yaml", ".yml"))
+    ):
+        raise HTTPException(status_code=403, detail="Access denied: Access to sensitive or configuration files is prohibited")
         
     if not target_path.exists() or not target_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
         
-    # 3. Читаем строки
+    # 5. Читаем строки
     try:
         with open(target_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
             
         total_lines = len(lines)
-        # Корректируем start_line и end_line (1-indexed)
         start = max(1, start_line) - 1
         end = min(total_lines, end_line) if end_line else total_lines
         

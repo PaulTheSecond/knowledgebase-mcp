@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+import threading
 from collections import deque
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     def __init__(self, db_path: str | Path, read_only: bool = False):
         self.db_path = Path(db_path)
+        self.lock = threading.RLock()
         
         # Если БД не существует, инициализируем схему во временном пишущем соединении
         if read_only and not self.db_path.exists():
@@ -769,102 +771,109 @@ class KnowledgeDB:
 
     def get_system_status(self) -> Optional[sqlite3.Row]:
         """Возвращает текущий статус системы."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT status, last_error, last_indexed_at, updated_at FROM system_status WHERE id = 1")
-        return cursor.fetchone()
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT status, last_error, last_indexed_at, updated_at FROM system_status WHERE id = 1")
+            return cursor.fetchone()
 
     def update_system_status(self, status: str, last_error: Optional[str] = None, last_indexed_at: Optional[float] = None) -> None:
         """Обновляет статус системы."""
-        cursor = self.conn.cursor()
-        if last_indexed_at is not None:
-            cursor.execute("""
-                UPDATE system_status 
-                SET status = ?, last_error = ?, last_indexed_at = datetime(?, 'unixepoch', 'localtime'), updated_at = datetime('now', 'localtime')
-                WHERE id = 1
-            """, (status, last_error, last_indexed_at))
-        else:
-            cursor.execute("""
-                UPDATE system_status 
-                SET status = ?, last_error = ?, updated_at = datetime('now', 'localtime')
-                WHERE id = 1
-            """, (status, last_error))
-        self._auto_commit()
+        with self.lock:
+            cursor = self.conn.cursor()
+            if last_indexed_at is not None:
+                cursor.execute("""
+                    UPDATE system_status 
+                    SET status = ?, last_error = ?, last_indexed_at = datetime(?, 'unixepoch', 'localtime'), updated_at = datetime('now', 'localtime')
+                    WHERE id = 1
+                """, (status, last_error, last_indexed_at))
+            else:
+                cursor.execute("""
+                    UPDATE system_status 
+                    SET status = ?, last_error = ?, updated_at = datetime('now', 'localtime')
+                    WHERE id = 1
+                """, (status, last_error))
+            self._auto_commit()
 
     def add_to_queue(self, repo_id: str) -> int:
         """Добавляет репозиторий в очередь на синхронизацию."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO sync_queue (repo_id, status)
-            VALUES (?, 'pending')
-        """, (repo_id,))
-        self._auto_commit()
-        return cursor.lastrowid
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO sync_queue (repo_id, status)
+                VALUES (?, 'pending')
+            """, (repo_id,))
+            self._auto_commit()
+            return cursor.lastrowid
 
     def fetch_next_job(self) -> Optional[Dict[str, Any]]:
         """Извлекает следующую pending задачу по принципу FIFO и переводит ее в processing в IMMEDIATE транзакции.
 
         Учитывает колонку run_at: задачи с run_at в будущем пропускаются (экспоненциальный бэк-офф).
         """
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("BEGIN IMMEDIATE TRANSACTION;")
-            cursor.execute("""
-                SELECT id, repo_id, attempts
-                FROM sync_queue
-                WHERE status = 'pending'
-                  AND (run_at IS NULL OR run_at <= datetime('now', 'localtime'))
-                ORDER BY created_at ASC
-                LIMIT 1
-            """)
-            row = cursor.fetchone()
-            if row:
-                job_id, repo_id, attempts = row[0], row[1], row[2]
+        with self.lock:
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute("BEGIN IMMEDIATE TRANSACTION;")
                 cursor.execute("""
-                    UPDATE sync_queue
-                    SET status = 'processing', updated_at = datetime('now', 'localtime')
-                    WHERE id = ?
-                """, (job_id,))
+                    SELECT id, repo_id, attempts
+                    FROM sync_queue
+                    WHERE status = 'pending'
+                      AND (run_at IS NULL OR run_at <= datetime('now', 'localtime'))
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                """)
+                row = cursor.fetchone()
+                if row:
+                    job_id, repo_id, attempts = row[0], row[1], row[2]
+                    cursor.execute("""
+                        UPDATE sync_queue
+                        SET status = 'processing', updated_at = datetime('now', 'localtime')
+                        WHERE id = ?
+                    """, (job_id,))
+                    self.conn.commit()
+                    return {"id": job_id, "repo_id": repo_id, "attempts": attempts}
                 self.conn.commit()
-                return {"id": job_id, "repo_id": repo_id, "attempts": attempts}
-            self.conn.commit()
-            return None
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Error fetching next job from queue: {e}")
-            raise e
+                return None
+            except Exception as e:
+                self.conn.rollback()
+                logger.error(f"Error fetching next job from queue: {e}")
+                raise e
 
     def update_job_status(self, job_id: int, status: str, attempts: Optional[int] = None, error_message: Optional[str] = None) -> None:
         """Обновляет статус и параметры задачи в очереди."""
-        cursor = self.conn.cursor()
-        if attempts is not None:
-            cursor.execute("""
-                UPDATE sync_queue
-                SET status = ?, attempts = ?, error_message = ?, updated_at = datetime('now', 'localtime')
-                WHERE id = ?
-            """, (status, attempts, error_message, job_id))
-        else:
-            cursor.execute("""
-                UPDATE sync_queue
-                SET status = ?, error_message = ?, updated_at = datetime('now', 'localtime')
-                WHERE id = ?
-            """, (status, error_message, job_id))
-        self._auto_commit()
+        with self.lock:
+            cursor = self.conn.cursor()
+            if attempts is not None:
+                cursor.execute("""
+                    UPDATE sync_queue
+                    SET status = ?, attempts = ?, error_message = ?, updated_at = datetime('now', 'localtime')
+                    WHERE id = ?
+                """, (status, attempts, error_message, job_id))
+            else:
+                cursor.execute("""
+                    UPDATE sync_queue
+                    SET status = ?, error_message = ?, updated_at = datetime('now', 'localtime')
+                    WHERE id = ?
+                """, (status, error_message, job_id))
+            self._auto_commit()
 
     def get_indexed_commit(self, repo_id: str) -> Optional[str]:
         """Возвращает хеш последнего проиндексированного коммита для репозитория."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT git_sha FROM indexed_commits WHERE repo_id = ?", (repo_id,))
-        row = cursor.fetchone()
-        return row[0] if row else None
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT git_sha FROM indexed_commits WHERE repo_id = ?", (repo_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
 
     def update_indexed_commit(self, repo_id: str, git_sha: str) -> None:
         """Обновляет хеш последнего проиндексированного коммита."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO indexed_commits (repo_id, git_sha, updated_at)
-            VALUES (?, ?, datetime('now', 'localtime'))
-        """, (repo_id, git_sha))
-        self._auto_commit()
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO indexed_commits (repo_id, git_sha, updated_at)
+                VALUES (?, ?, datetime('now', 'localtime'))
+            """, (repo_id, git_sha))
+            self._auto_commit()
 
     def reschedule_job(self, job_id: int, attempts: int, delay_seconds: int, error_message: str) -> None:
         """Возвращает задачу в pending с заданной задержкой (run_at) для экспоненциального бэк-оффа.
@@ -875,14 +884,15 @@ class KnowledgeDB:
             delay_seconds: Задержка в секундах до следующей попытки.
             error_message: Текст ошибки.
         """
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE sync_queue
-            SET status = 'pending',
-                attempts = ?,
-                error_message = ?,
-                run_at = datetime('now', 'localtime', '+' || ? || ' seconds'),
-                updated_at = datetime('now', 'localtime')
-            WHERE id = ?
-        """, (attempts, error_message, delay_seconds, job_id))
-        self._auto_commit()
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE sync_queue
+                SET status = 'pending',
+                    attempts = ?,
+                    error_message = ?,
+                    run_at = datetime('now', 'localtime', '+' || ? || ' seconds'),
+                    updated_at = datetime('now', 'localtime')
+                WHERE id = ?
+            """, (attempts, error_message, delay_seconds, job_id))
+            self._auto_commit()

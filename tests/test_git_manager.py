@@ -111,5 +111,27 @@ class TestGitManager(unittest.TestCase):
         self.assertNotIn(expected_b64, str(context.exception))
         self.assertIn("********", str(context.exception))
 
+    @patch("subprocess.run")
+    def test_clone_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git clone", timeout=180)
+        manager = GitManager(pat_token=self.pat_token, timeout=180)
+        
+        with self.assertRaises(TimeoutError) as ctx:
+            manager.clone(self.repo_url, self.dest_path)
+            
+        self.assertIn("timed out after 180s", str(ctx.exception))
+
+    @patch("subprocess.run")
+    def test_pull_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git pull", timeout=180)
+        manager = GitManager(pat_token=self.pat_token, timeout=180)
+        
+        with patch("pathlib.Path.exists", return_value=True):
+            with self.assertRaises(TimeoutError) as ctx:
+                manager.pull("/mock/local/repo", branch="main")
+                
+        self.assertIn("timed out after 180s", str(ctx.exception))
+
 if __name__ == "__main__":
     unittest.main()
+

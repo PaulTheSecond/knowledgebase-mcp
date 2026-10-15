@@ -74,7 +74,8 @@ class CronScheduler:
             db: Инстанс KnowledgeDB для записи задач в очередь.
         """
         self.db = db
-        self._timers: list[threading.Timer] = []
+        # Храним строго один активный таймер на каждый репозиторий, предотвращая утечку памяти
+        self._active_timers: dict[str, threading.Timer] = {}
         self._running = False
         self._lock = threading.Lock()
 
@@ -127,15 +128,28 @@ class CronScheduler:
                 if self._running:
                     self._schedule_repo(repo_id, interval)
 
-        timer = threading.Timer(interval, _tick)
-        timer.daemon = True
-        timer.start()
-        self._timers.append(timer)
+        with self._lock:
+            # Отменяем предыдущий таймер этого репозитория, если он есть
+            old_timer = self._active_timers.pop(repo_id, None)
+            if old_timer:
+                old_timer.cancel()
+
+            timer = threading.Timer(interval, _tick)
+            timer.daemon = True
+            timer.start()
+            self._active_timers[repo_id] = timer
+
+    @property
+    def _timers(self) -> list[threading.Timer]:
+        """Обратная совместимость со старым свойством _timers."""
+        with self._lock:
+            return list(self._active_timers.values())
 
     def stop(self) -> None:
-        """Останавливает все таймеры планировщика."""
+        """Останавливает все таймеры планировщика и очищает хранилище."""
         self._running = False
-        for timer in self._timers:
-            timer.cancel()
-        self._timers.clear()
+        with self._lock:
+            for timer in self._active_timers.values():
+                timer.cancel()
+            self._active_timers.clear()
         logger.info("Cron scheduler stopped")

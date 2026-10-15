@@ -1,9 +1,8 @@
 import unittest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 import os
 from fastapi.testclient import TestClient
 
-import knowledge_mcp.daemon.routes.chat
 from knowledge_mcp.main import app
 import knowledge_mcp.main as main_mod
 
@@ -238,7 +237,7 @@ class TestChatAPI(unittest.TestCase):
         self.assertTrue(any("test_stream.py" in line for line in lines))
 
     def test_read_file_unauthorized(self):
-        response = self.client.get("/api/chat/file?filepath=data/config.yaml")
+        response = self.client.get("/api/chat/file?filepath=tests/test_chat.py")
         self.assertEqual(response.status_code, 401)
 
     def test_read_file_not_found(self):
@@ -251,15 +250,24 @@ class TestChatAPI(unittest.TestCase):
         # Попытка выйти к системным файлам вне проекта
         response = self.client.get("/api/chat/file?filepath=../../../../Windows/System32/drivers/etc/hosts", auth=("admin", "secret"))
         self.assertEqual(response.status_code, 403)
+        self.assertIn("Access denied", response.json()["detail"])
+
+    def test_read_sensitive_file_blocked(self):
+        os.environ["DASHBOARD_PASSWORD"] = "secret"
+        # Попытка прочитать конфигурацию или секреты должна блокироваться с 403
+        for sensitive in ["data/config.yaml", ".env", "data/knowledge.db"]:
+            response = self.client.get(f"/api/chat/file?filepath={sensitive}", auth=("admin", "secret"))
+            self.assertEqual(response.status_code, 403)
+            self.assertIn("Access denied", response.json()["detail"])
 
     def test_read_file_success(self):
         os.environ["DASHBOARD_PASSWORD"] = "secret"
-        # Читаем data/config.yaml
-        response = self.client.get("/api/chat/file?filepath=data/config.yaml&start_line=1&end_line=3", auth=("admin", "secret"))
+        # Читаем не конфиденциальный файл проекта (tests/test_chat.py)
+        response = self.client.get("/api/chat/file?filepath=tests/test_chat.py&start_line=1&end_line=3", auth=("admin", "secret"))
         self.assertEqual(response.status_code, 200)
         
         data = response.json()
-        self.assertEqual(data["filepath"], "data/config.yaml")
+        self.assertEqual(data["filepath"], "tests/test_chat.py")
         self.assertEqual(data["start_line"], 1)
         self.assertEqual(data["end_line"], 3)
-        self.assertIn("server:", data["content"])
+        self.assertIn("import", data["content"])
