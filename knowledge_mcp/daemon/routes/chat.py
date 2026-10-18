@@ -129,7 +129,8 @@ async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_ba
                 },
                 json={
                     "model": model_name,
-                    "messages": formatted_messages
+                    "messages": formatted_messages,
+                    "stream": False
                 },
                 timeout=60.0
             )
