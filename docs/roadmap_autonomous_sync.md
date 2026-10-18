@@ -62,11 +62,14 @@ timeline
 
 ---
 
-## v1.6.1: Maintenance, Payload Delta-Sync & Deployment Hardening — 🔄 *In Progress*
-*Estimate: Patch / Maintenance release*
+## v1.6.1: Maintenance, Storage Optimization & Large-Scale Indexing — ✅ *Completed*
 - **Payload file parsing:** Extract modified and added file paths directly from webhook commit payloads (`commits[].added`, `commits[].modified`, `commits[].removed`) and pass them to the indexer for instant delta-indexing without scanning entire repositories.
-- **Docker Compose portability:** Replace hardcoded host paths with portable relative volume mounts (`./data:/data`) and ensure `.env` file ingestion.
-- **Documentation refresh:** Comprehensive update of `README.md` reflecting daemon operation, web dashboard, and webhook integration.
+- **Docker Compose portability:** Relative volume mounts (`./data:/data`) and `.env` configuration file ingestion.
+- **Storage optimization (ADR-006):** FTS5 external content table (`content='chunks'`) eliminating 100% text duplication; `PRAGMA auto_vacuum = FULL;` for automatic file compaction.
+- **Transaction batching & resilience:** Periodic batch commits (`BATCH_COMMIT_SIZE = 50`) and SQLite engine tuning (`temp_store = MEMORY`, `cache_size = -64000`, `busy_timeout = 60000`) enabling seamless indexing of 1,400+ files / 23,000+ chunks without disk I/O errors.
+- **Local repository support (`local_path`):** Direct indexing of locally mounted folders without requiring remote Git clone/pull or credentials.
+- **Mutation testing:** Setup `mutmut` for testing mutation resilience across the database and persistence layers.
+- **Documentation refresh:** Comprehensive update of `README.md`, ADRs, and coding standards.
 
 ## v1.7: Operational Hardening & Health Metrics — 📋 *Planned*
 *Estimate: Minor update*

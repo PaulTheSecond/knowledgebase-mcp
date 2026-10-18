@@ -39,3 +39,26 @@ def configure_connection(conn: sqlite3.Connection) -> None:
 ```python
 conn = sqlite3.connect("file:/data/knowledge.db?mode=ro", uri=True)
 ```
+
+## Прагмы памяти и производительности (Production Pragmas)
+Для пишущих соединений в `get_db_connection` настраиваются следующие прагмы:
+```python
+conn.execute("PRAGMA foreign_keys = ON;")
+conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
+conn.execute("PRAGMA temp_store = MEMORY;")
+conn.execute("PRAGMA cache_size = -64000;")  # 64 МБ кэша страниц в RAM
+conn.execute("PRAGMA auto_vacuum = FULL;")
+conn.execute("PRAGMA journal_mode = WAL;")
+conn.execute("PRAGMA synchronous = NORMAL;")
+```
+
+## Батчевые транзакции для больших объемов данных (Batch Commit)
+При циклической вставке или обновлении сотен и тысяч файлов (например, в `Indexer.sync_repo`), запрещено держать одну монолитную транзакцию на весь репозиторий.
+Используйте периодический сброс батчами (рекомендуемый размер `BATCH_COMMIT_SIZE = 50`):
+```python
+if processed % BATCH_COMMIT_SIZE == 0:
+    self.db.commit_transaction()
+    self.db.begin_transaction()
+```
+Это предотвращает переполнение WAL-буферов и возникновение ошибок ввода-вывода (`sqlite3.OperationalError: disk I/O error`) на сетевых и Docker bind-mount томах.
+

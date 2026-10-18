@@ -1,13 +1,13 @@
 # Knowledge MCP
 
-![Version v1.6](https://img.shields.io/badge/version-v1.6-blue.svg)
+![Version v1.6.1](https://img.shields.io/badge/version-v1.6.1-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg)
 ![SQLite-vec](https://img.shields.io/badge/SQLite--vec-WAL%20enabled-orange.svg)
 
 High-precision autonomous local knowledge base server (RAG) that implements the **Model Context Protocol (MCP)**. It enables AI coding assistants (Codex, Claude Code, Gemini CLI, Cursor, etc.) to navigate, search, and reason about complex codebases using a hybrid approach combining semantic, lexical, and structural call-graph analysis.
 
-Now includes a fully **autonomous background sync daemon**, **Git webhooks support**, a **No-Build SPA Web Dashboard**, and an **Interactive RAG Chat** powered by local LLMs.
+Now includes a fully **autonomous background sync daemon**, **Git webhooks support**, a **No-Build SPA Web Dashboard**, an **Interactive RAG Chat** powered by local LLMs, and **storage-optimized FTS5 External Content**.
 
 ---
 
@@ -15,16 +15,18 @@ Now includes a fully **autonomous background sync daemon**, **Git webhooks suppo
 
 1. **Hybrid Triple Search**:
    - Fuses three retrieval channels through **Reciprocal Rank Fusion (RRF)**:
-     - **Full-Text Search (FTS5)**: Exact symbol names, identifiers, and keyword queries.
+     - **Full-Text Search (FTS5 External Content)**: Zero text duplication (`content='chunks'`), auto-vacuum (`FULL`), and instant keyword/symbol search saving ~50% database storage.
      - **Semantic Vector Search (`sqlite-vec`)**: High-accuracy conceptual matching with multilingual embeddings (`intfloat/multilingual-e5-small`).
      - **Graph-Based Retrieval**: 2x relevance boost to actual code definitions and call chains.
 2. **Deep Structural & Semantic Indexing**:
-   - **C# / .NET**: Native **Roslyn** workspace analysis extracting full symbol hierarchies and method invocations.
+   - **C# / .NET**: Native **Roslyn** workspace analysis extracting full symbol hierarchies and method invocations across large `.sln` solutions.
    - **Polyglot Code**: **Tree-sitter** engine for Python, TypeScript, JavaScript, Go, Rust, and more.
    - **Markdown**: Section-aware chunking for architecture decisions and guides.
 3. **Autonomous Background Lifecycle & Queue**:
    - In-database SQLite FIFO queue (`sync_queue`) ensuring persistent state across restarts.
    - Background worker with exponential backoff (1m, 5m, 15m), fatal halt protection, and Git commit SHA idempotency.
+   - **Transaction Batching (`BATCH_COMMIT_SIZE = 50`)**: Resilient indexing of enterprise monorepos (1,400+ files, 23,000+ chunks) without disk I/O pressure.
+   - **Direct Local Repository Mounts (`local_path`)**: Direct indexing of pre-mounted local directories without remote clone or token requirements.
    - In-memory credential safety: PAT tokens and SSH keys are kept in RAM and never leaked into `.git/config`.
 4. **Git Webhooks & Intelligent Delta Sync**:
    - Built-in HTTP receiver `/webhook/git` supporting GitHub, Gitea (HMAC-SHA256 signature validation), and GitLab (`X-Gitlab-Token`).
@@ -103,6 +105,7 @@ embeddings:
   enabled: false # Set true to enable vector search
 
 repositories:
+  # Remote repository with PAT authentication
   - id: "my-project"
     url: "https://github.com/org/my-project.git"
     auth:
@@ -114,6 +117,13 @@ repositories:
         enabled: true
         secret_env: "WEBHOOK_SECRET"
       cron: "0 */4 * * *"
+
+  # Locally mounted repository (no clone/pull, direct delta-sync)
+  - id: "ImpactOS.Core.Lib"
+    local_path: "/repos/ImpactOS.Core.Lib"
+    auth:
+      type: "none"
+    branch: "master"
 ```
 
 ### 3. Launch the Daemon
@@ -157,6 +167,19 @@ pip install -r requirements.txt
 - **Run MCP Stdio Server (for IDE integration):**
   ```bash
   python -m knowledge_mcp.main mcp
+  ```
+
+### Testing & Quality Assurance
+
+- **Run Unit Tests:**
+  ```bash
+  pytest
+  ```
+
+- **Run Mutation Testing (`mutmut`):**
+  ```bash
+  mutmut run
+  mutmut results
   ```
 
 ---
@@ -213,3 +236,4 @@ Or when running via Docker:
 - [ADR-002: Hybrid Semantic & Graph Indexing](docs/adr-002-hybrid-semantic-graph-indexing.md)
 - [ADR-004: Autonomous Sync, Triggers & Credentials](docs/adr-004-autonomous-sync-triggers-credentials.md)
 - [ADR-005: Web Dashboard Architecture](docs/adr-005-web-dashboard-architecture.md)
+- [ADR-006: FTS5 External Content, Storage Optimization & Batching](docs/adr-006-fts5-external-content-and-large-repo-batching.md)
