@@ -1,0 +1,49 @@
+{
+  "name": "knowledgebase-mcp-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve --proxy-config proxy.conf.json",
+    "build": "ng build --configuration production",
+    "watch": "ng build --watch --configuration development"
+  },
+  "dependencies": {
+    "@angular/animations": "^19.2.0",
+    "@angular/cdk": "^19.2.0",
+    "@angular/common": "^19.2.0",
+    "@angular/compiler": "^19.2.0",
+    "@angular/core": "^19.2.0",
+    "@angular/forms": "^19.2.0",
+    "@angular/platform-browser": "^19.2.0",
+    "@angular/platform-browser-dynamic": "^19.2.0",
+    "@angular/router": "^19.2.0",
+    "@ng-web-apis/common": "^5.4.0",
+    "@ng-web-apis/platform": "^5.4.0",
+    "@ng-web-apis/mutation-observer": "^5.4.0",
+    "@ng-web-apis/intersection-observer": "^5.4.0",
+    "@taiga-ui/cdk": "^5.28.0",
+    "@taiga-ui/core": "^5.28.0",
+    "@taiga-ui/kit": "^5.28.0",
+    "@taiga-ui/i18n": "^5.28.0",
+    "@taiga-ui/layout": "^5.28.0",
+    "@taiga-ui/icons": "^5.28.0",
+    "@taiga-ui/styles": "^5.28.0",
+    "@taiga-ui/polymorpheus": "^5.0.1",
+    "@taiga-ui/event-plugins": "^5.1.0",
+    "marked": "^15.0.0",
+    "prismjs": "^1.29.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0",
+    "zone.js": "~0.15.0"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "^19.2.0",
+    "@angular/cli": "^19.2.0",
+    "@angular/compiler-cli": "^19.2.0",
+    "@types/marked": "^6.0.0",
+    "@types/node": "^22.0.0",
+    "@types/prismjs": "^1.26.5",
+    "typescript": "~5.7.0"
+  }
+}

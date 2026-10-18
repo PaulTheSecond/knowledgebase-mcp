@@ -1,0 +1,66 @@
+<div class="section-card">
+  <div class="card-header-flex">
+    <div>
+      <h2>{{ i18n.t('queue.title') }}</h2>
+      <p class="text-secondary">{{ i18n.t('queue.subtitle') }}</p>
+    </div>
+    <div style="display: flex; gap: 10px; align-items: center;">
+      <span class="badge-status info">{{ i18n.t('status.badge_active') }}</span>
+      <button class="btn btn-secondary" [disabled]="retrying()" (click)="retryFailed()">
+        {{ i18n.t('queue.btn_retry') }}
+      </button>
+    </div>
+  </div>
+
+  <div class="table-container">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>{{ i18n.t('queue.table_id') }}</th>
+          <th>{{ i18n.t('queue.table_repo') }}</th>
+          <th>{{ i18n.t('queue.table_status') }}</th>
+          <th>{{ i18n.t('queue.table_attempts') }}</th>
+          <th>{{ i18n.t('queue.table_error') }}</th>
+          <th>{{ i18n.t('queue.table_time') }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        @if (loading()) {
+          <tr>
+            <td colspan="6" class="text-center">{{ i18n.t('queue.loading') }}</td>
+          </tr>
+        } @else if (jobs().length === 0) {
+          <tr>
+            <td colspan="6" class="text-center text-muted">{{ i18n.t('queue.empty') }}</td>
+          </tr>
+        } @else {
+          @for (job of jobs(); track job.id) {
+            <tr>
+              <td>#{{ job.id }}</td>
+              <td style="font-weight: 600;">{{ job.repo_id }}</td>
+              <td>
+                <span class="badge-status" [ngClass]="{
+                  'success': job.status === 'completed',
+                  'danger': job.status === 'failed',
+                  'warning': job.status === 'processing',
+                  'info': job.status === 'pending'
+                }">{{ job.status }}</span>
+              </td>
+              <td>{{ job.attempts }}/3</td>
+              <td>
+                @if (job.last_error) {
+                  <span class="text-danger" [title]="job.last_error">
+                    {{ job.last_error.length > 30 ? job.last_error.substring(0, 30) + '...' : job.last_error }}
+                  </span>
+                } @else {
+                  <span class="text-muted">—</span>
+                }
+              </td>
+              <td>{{ job.created_at | date:'medium' }}</td>
+            </tr>
+          }
+        }
+      </tbody>
+    </table>
+  </div>
+</div>

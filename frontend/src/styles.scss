@@ -1,0 +1,113 @@
+// Глобальные стили панели управления Knowledgebase MCP (Angular + Taiga UI)
+
+:root {
+  --app-font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sidebar-width: 260px;
+  --header-height: 70px;
+
+  // Dark Theme
+  --bg-primary: hsl(224, 25%, 8%);
+  --bg-secondary: hsl(222, 22%, 12%);
+  --bg-tertiary: hsl(222, 20%, 15%);
+  --border-color: hsl(220, 15%, 20%);
+  --text-primary: hsl(210, 40%, 96%);
+  --text-secondary: hsl(215, 20%, 65%);
+  --text-muted: hsl(215, 12%, 45%);
+
+  --accent-color: hsl(217, 89%, 60%);
+  --accent-color-hover: hsl(217, 95%, 68%);
+  --accent-glow: rgba(59, 130, 246, 0.2);
+
+  --green-color: hsl(142, 70%, 45%);
+  --green-glow: rgba(34, 197, 94, 0.25);
+  --yellow-color: hsl(48, 96%, 53%);
+  --red-color: hsl(346, 84%, 55%);
+}
+
+[data-theme="light"], body.tui-theme-light {
+  --bg-primary: hsl(220, 20%, 97%);
+  --bg-secondary: hsl(0, 0%, 100%);
+  --bg-tertiary: hsl(220, 15%, 93%);
+  --border-color: hsl(220, 15%, 86%);
+  --text-primary: hsl(222, 25%, 15%);
+  --text-secondary: hsl(215, 15%, 42%);
+  --text-muted: hsl(215, 10%, 60%);
+
+  --accent-color: hsl(217, 85%, 52%);
+  --accent-color-hover: hsl(217, 90%, 45%);
+  --accent-glow: rgba(37, 99, 235, 0.15);
+
+  --green-color: hsl(142, 65%, 40%);
+  --green-glow: rgba(34, 197, 94, 0.2);
+  --yellow-color: hsl(42, 95%, 45%);
+  --red-color: hsl(346, 80%, 50%);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--app-font-family);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+// Карточки, бейджи, кнопки
+.section-card {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.card-header-flex {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.badge-status {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+
+  &.info {
+    background-color: rgba(59, 130, 246, 0.15);
+    color: var(--accent-color);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+  }
+
+  &.success {
+    background-color: rgba(34, 197, 94, 0.15);
+    color: var(--green-color);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+  }
+
+  &.warning {
+    background-color: rgba(234, 179, 8, 0.15);
+    color: var(--yellow-color);
+    border: 1px solid rgba(234, 179, 8, 0.3);
+  }
+
+  &.danger {
+    background-color: rgba(239, 68, 68, 0.15);
+    color: var(--red-color);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+}

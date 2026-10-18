@@ -284,6 +284,19 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20261018_12_app_settings",
+            "up": """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT OR IGNORE INTO app_settings (key, value) VALUES ('default_locale', 'ru');
+                INSERT OR IGNORE INTO app_settings (key, value) VALUES ('default_theme', 'dark');
+            """
+        })
+
         for migration in migrations:
             if migration["id"] not in applied_migrations:
                 logger.info(f"Applying sqlite migration: {migration['id']}")
@@ -998,3 +1011,32 @@ class KnowledgeDB:
             count = cursor.rowcount
             self._auto_commit()
             return count
+
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Возвращает значение настройки из таблицы app_settings."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row[0] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Сохраняет или обновляет значение настройки в таблице app_settings."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, datetime('now', 'localtime'))
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+            """, (key, value))
+            self._auto_commit()
+
+    def get_all_settings(self) -> Dict[str, str]:
+        """Возвращает все сохраненные настройки в виде словаря."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT key, value FROM app_settings")
+            return {row[0]: row[1] for row in cursor.fetchall()}
+

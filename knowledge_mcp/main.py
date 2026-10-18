@@ -5,14 +5,15 @@ import logging
 from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, WebSocket, WebSocketDisconnect, Header
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from pathlib import Path
+from typing import Optional
 
 from knowledge_mcp.db.models import KnowledgeDB
 from knowledge_mcp.daemon.auth import verify_basic_auth, generate_temp_token
+from knowledge_mcp.core.i18n import t, get_locale_from_header
 
 # НЕ импортируем Indexer на верхнем уровне!
 # Indexer -> embeddings.py -> sentence_transformers -> torch (~30 сек импорт).
@@ -59,6 +60,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Knowledge Base Sync Trigger", lifespan=lifespan)
 
+from knowledge_mcp.daemon.routes.chat import router as chat_router
+from knowledge_mcp.daemon.routes.settings import router as settings_router
+
+app.include_router(chat_router)
+app.include_router(settings_router)
+
 @app.websocket("/ws/status")
 async def websocket_status_endpoint(websocket: WebSocket):
     """WebSocket канал для обновления статуса синхронизации в реальном времени."""
@@ -76,18 +83,6 @@ async def websocket_status_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-
-# Монтируем статические файлы для Dashboard
-static_dir = Path(__file__).parent / "dashboard" / "static"
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-@app.get("/", response_class=HTMLResponse)
-async def get_dashboard():
-    """Возвращает основную страницу Dashboard UI."""
-    index_path = static_dir / "index.html"
-    if not index_path.exists():
-        raise HTTPException(status_code=404, detail="Dashboard index.html not found")
-    return index_path.read_text(encoding="utf-8")
 
 db = None
 indexer = None
@@ -118,9 +113,6 @@ def init_components(db_path: str):
     from knowledge_mcp.daemon.routes.webhooks import init_webhook_router
     app.include_router(init_webhook_router(db))
 
-    # Подключаем роутер чата (Story 3.1)
-    from knowledge_mcp.daemon.routes.chat import router as chat_router
-    app.include_router(chat_router)
 
 @app.post("/sync")
 async def sync_endpoint(req: SyncRequest, background_tasks: BackgroundTasks):
@@ -188,29 +180,88 @@ async def api_get_queue(username: str = Depends(verify_basic_auth)):
     jobs = db.get_queue_jobs(limit=50)
     return {"jobs": jobs}
 
+def _get_request_locale(accept_language: Optional[str] = None) -> str:
+    default_loc = db.get_setting("default_locale", "ru") if db else "ru"
+    return get_locale_from_header(accept_language, default_loc)
+
 @app.post("/api/queue/retry-failed")
-async def api_retry_failed_jobs(username: str = Depends(verify_basic_auth)):
+async def api_retry_failed_jobs(
+    username: str = Depends(verify_basic_auth),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
+):
     """Сбрасывает все упавшие задачи очереди обратно в pending для повторной попытки."""
+    locale = _get_request_locale(accept_language)
     if not db:
-        raise HTTPException(status_code=500, detail="Components not initialized")
+        raise HTTPException(status_code=500, detail=t("system.not_initialized", locale=locale))
     count = db.retry_failed_jobs()
-    return {"status": "retried", "count": count}
+    return {
+        "status": "retried",
+        "count": count,
+        "message": t("queue.retried", locale=locale, count=count)
+    }
 
 @app.post("/api/sync/{repo_id}")
-async def api_trigger_sync(repo_id: str, username: str = Depends(verify_basic_auth)):
+async def api_trigger_sync(
+    repo_id: str,
+    username: str = Depends(verify_basic_auth),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
+):
     """Ставит задачу синхронизации в очередь."""
+    locale = _get_request_locale(accept_language)
     if not db:
-        raise HTTPException(status_code=500, detail="Components not initialized")
+        raise HTTPException(status_code=500, detail=t("system.not_initialized", locale=locale))
     job_id = db.add_to_queue(repo_id)
-    return {"status": "queued", "repo_id": repo_id, "job_id": job_id}
+    return {
+        "status": "queued",
+        "repo_id": repo_id,
+        "job_id": job_id,
+        "message": t("queue.sync_queued", locale=locale, repo_id=repo_id, job_id=job_id)
+    }
 
 @app.delete("/api/repo/{repo_id}")
-async def api_delete_repo(repo_id: str, username: str = Depends(verify_basic_auth)):
+async def api_delete_repo(
+    repo_id: str,
+    username: str = Depends(verify_basic_auth),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
+):
     """Удаляет все данные репозитория из индекса."""
+    locale = _get_request_locale(accept_language)
     if not db:
-        raise HTTPException(status_code=500, detail="Components not initialized")
+        raise HTTPException(status_code=500, detail=t("system.not_initialized", locale=locale))
     deleted_files = db.delete_repo(repo_id)
-    return {"status": "deleted", "repo_id": repo_id, "files_deleted": deleted_files}
+    return {
+        "status": "deleted",
+        "repo_id": repo_id,
+        "files_deleted": deleted_files,
+        "message": t("repo.deleted", locale=locale, repo_id=repo_id)
+    }
+
+# Раздача Frontend Dashboard (Angular SPA или Fallback Static)
+angular_dist_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist" / "dashboard" / "browser"
+
+@app.get("/")
+@app.get("/{full_path:path}")
+async def serve_spa_or_static(full_path: str = ""):
+    """
+    Раздает статические файлы и SPA index.html для роутинга Angular.
+    """
+    # Не перехватываем обращения к API или WebSocket
+    if full_path.startswith("api/") or full_path.startswith("ws/") or full_path == "sync":
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if angular_dist_dir.exists():
+        # Если запрошен конкретный файл бандла (например, main-xxx.js, styles-xxx.css, favicon.ico)
+        if full_path:
+            file_path = (angular_dist_dir / full_path).resolve()
+            if file_path.is_file() and str(file_path).startswith(str(angular_dist_dir.resolve())):
+                return FileResponse(file_path)
+
+        # Для маршрутов SPA (/, /repositories, /queue, /chat) отдаем index.html
+        index_file = angular_dist_dir / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+
+    raise HTTPException(status_code=404, detail="Dashboard index.html not found. Please build frontend first.")
 
 def main():
     parser = argparse.ArgumentParser(description="Knowledge MCP - Indexer & Trigger Server")

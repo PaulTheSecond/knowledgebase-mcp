@@ -1,0 +1,27 @@
+# Git & Cache
+.git/
+.gemini/
+.agent/
+scratch/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# .NET
+RoslynParser/bin/
+RoslynParser/obj/
+
+# Node / Angular Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/
+.angular/

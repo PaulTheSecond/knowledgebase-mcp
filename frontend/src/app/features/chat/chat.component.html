@@ -1,0 +1,52 @@
+<div class="chat-container section-card">
+  <div class="chat-messages" #messagesContainer>
+    @for (msg of messages(); track $index) {
+      <div class="message" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'" [class.system]="msg.role === 'system'">
+        @if (msg.role === 'assistant') {
+          <div [innerHTML]="renderMarkdown(msg.content)"></div>
+          @if (msg.sources && msg.sources.length > 0) {
+            <div class="sources-container">
+              <div class="sources-title">{{ i18n.t('chat.context_sources') }}</div>
+              <div class="sources-list">
+                @for (src of msg.sources; track $index) {
+                  <span class="source-tag" (click)="openSource(src.filepath, src.lines)">
+                    {{ src.filepath }} ({{ src.lines }})
+                  </span>
+                }
+              </div>
+            </div>
+          }
+        } @else {
+          <p>{{ msg.content }}</p>
+        }
+      </div>
+    }
+  </div>
+
+  <div class="chat-input-area">
+    <input 
+      type="text" 
+      class="chat-input"
+      [(ngModel)]="userInput" 
+      (keydown.enter)="sendMessage()" 
+      [placeholder]="i18n.t('chat.placeholder')" 
+      [disabled]="isGenerating()" />
+    <button class="btn btn-primary" [disabled]="isGenerating()" (click)="sendMessage()">
+      {{ i18n.t('chat.btn_send') }}
+    </button>
+  </div>
+</div>
+
+@if (modalFile(); as file) {
+  <div class="modal-backdrop" (click)="closeSourceModal()">
+    <div class="modal-content" (click)="$event.stopPropagation()">
+      <div class="modal-header">
+        <h3>{{ file.filepath }} (строки {{ file.startLine }}-{{ file.endLine }})</h3>
+        <button class="btn-close" (click)="closeSourceModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <pre><code>{{ file.content }}</code></pre>
+      </div>
+    </div>
+  </div>
+}

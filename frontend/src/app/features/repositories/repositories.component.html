@@ -1,0 +1,72 @@
+<div class="section-card">
+  <div class="card-header-flex">
+    <div>
+      <h2>{{ i18n.t('repos.title') }}</h2>
+      <p class="text-secondary">{{ i18n.t('repos.subtitle') }}</p>
+    </div>
+    <button class="btn btn-primary" (click)="openAddDialog()">
+      {{ i18n.t('repos.btn_add') }}
+    </button>
+  </div>
+
+  <div class="table-container">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>{{ i18n.t('repos.table_id') }}</th>
+          <th>{{ i18n.t('repos.table_url') }}</th>
+          <th>{{ i18n.t('repos.table_branch') }}</th>
+          <th>{{ i18n.t('repos.table_stats') }}</th>
+          <th>{{ i18n.t('repos.table_actions') }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        @if (loading()) {
+          <tr>
+            <td colspan="5" class="text-center">{{ i18n.t('repos.loading') }}</td>
+          </tr>
+        } @else if (repositories().length === 0) {
+          <tr>
+            <td colspan="5" class="text-center text-muted">{{ i18n.t('repos.empty') }}</td>
+          </tr>
+        } @else {
+          @for (repo of repositories(); track repo.id) {
+            <tr>
+              <td style="font-weight: 600;">{{ repo.id }}</td>
+              <td>{{ repo.url }}</td>
+              <td><span class="badge-status info">{{ repo.branch }}</span></td>
+              <td>
+                @if (activeProgresses()[repo.id]; as progress) {
+                  <div class="progress-container">
+                    <div class="progress-bar" [style.width.%]="progress.progress"></div>
+                    <span class="progress-label">{{ progress.status }} ({{ progress.progress }}%)</span>
+                  </div>
+                } @else {
+                  <span class="badge-status info">{{ i18n.t('repos.files', { count: repo.files_count || 0 }) }}</span>
+                  <span class="badge-status success" style="margin-left: 6px;">{{ i18n.t('repos.chunks', { count: repo.chunks_count || 0 }) }}</span>
+                }
+              </td>
+              <td style="white-space: nowrap;">
+                <button class="btn btn-sm btn-primary" (click)="triggerSync(repo.id)" style="margin-right: 6px;">
+                  {{ i18n.t('repos.btn_sync') }}
+                </button>
+                <button class="btn btn-sm btn-secondary" (click)="openEditDialog(repo)" style="margin-right: 6px;">
+                  {{ i18n.t('repos.btn_edit') }}
+                </button>
+                <button class="btn btn-sm btn-secondary btn-danger" (click)="deleteRepo(repo.id)">
+                  {{ i18n.t('repos.btn_delete') }}
+                </button>
+              </td>
+            </tr>
+          }
+        }
+      </tbody>
+    </table>
+  </div>
+</div>
+
+@if (showRepoModal()) {
+  <div class="modal-backdrop">
+    <app-repo-dialog #dialog></app-repo-dialog>
+  </div>
+}

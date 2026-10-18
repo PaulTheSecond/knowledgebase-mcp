@@ -7,7 +7,19 @@ COPY RoslynParser/ .
 # publish создаёт плоский каталог со всеми DLL-зависимостями Roslyn
 RUN dotnet publish -c Release -o /roslyn/out
 
-# ── Stage 2: финальный образ — SDK нужен RoslynParser (MSBuildLocator) ────────
+# ── Stage 2: Сборка Angular 19 Frontend ─────────────────────────────────────
+# Собираем современный SPA дашборд с темами оформления и мультиязычностью
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /frontend
+# Копируем package*.json отдельно для эффективного кэширования npm ci
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 3: Финальный образ ────────────────────────────────────────────────
 # Используем dotnet SDK как базу и доустанавливаем Python.
 # dotnet/runtime:8.0 НЕ подходит: MSBuildLocator ищет SDK при запуске и падает.
 FROM mcr.microsoft.com/dotnet/sdk:8.0
@@ -38,13 +50,15 @@ ENV HF_HOME=/app/models
 # Предзагрузка NLP-модели, чтобы не скачивать её при каждом старте контейнера
 RUN /opt/venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')"
 
-# ── Код приложения ──────────────────────────────────────────────────────────
+# ── Код приложения и артефакты сборки ──────────────────────────────────────
 # Копируется последним — изменение кода не инвалидирует кеш pip и dotnet
 COPY knowledge_mcp/ /app/knowledge_mcp/
 
-# Копируем собранный RoslynParser из stage 1 в путь, который ожидает indexer.py
-# indexer.py: Path(__file__).resolve().parents[2] / "RoslynParser" / "bin" / "Release" / "net8.0" / "RoslynParser.dll"
+# Копируем собранный RoslynParser из stage 1
 COPY --from=dotnet-builder /roslyn/out /app/RoslynParser/bin/Release/net8.0/
+
+# Копируем скомпилированный Angular SPA из stage 2
+COPY --from=frontend-builder /frontend/dist/dashboard/browser /app/frontend/dist/dashboard/browser
 
 RUN mkdir -p /data
 ENV DB_PATH=/data/knowledge_roslyn.db

@@ -62,3 +62,9 @@ obj/
 ehthumbs.db
 Thumbs.db
 scratch/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/
+.angular/

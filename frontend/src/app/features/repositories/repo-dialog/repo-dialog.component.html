@@ -1,0 +1,73 @@
+<div class="dialog-container">
+  <div class="dialog-header">
+    <h3>{{ i18n.t(isEditing() ? 'repo_modal.edit_title' : 'repo_modal.add_title') }}</h3>
+    <button class="btn-close" (click)="cancel()">✕</button>
+  </div>
+
+  <div class="dialog-body">
+    <form [formGroup]="form">
+      <div class="form-group">
+        <label class="form-label">{{ i18n.t('repo_modal.id_label') }}</label>
+        <input class="form-input" formControlName="id" [placeholder]="i18n.t('repo_modal.id_placeholder')" />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ i18n.t('repo_modal.url_label') }}</label>
+        <input class="form-input" formControlName="url" [placeholder]="i18n.t('repo_modal.url_placeholder')" />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ i18n.t('repo_modal.branch_label') }}</label>
+        <input class="form-input" formControlName="branch" />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ i18n.t('repo_modal.auth_type_label') }}</label>
+        <select class="form-select" formControlName="authType">
+          <option value="none">{{ i18n.t('repo_modal.auth_none') }}</option>
+          <option value="pat">{{ i18n.t('repo_modal.auth_pat') }}</option>
+          <option value="ssh">{{ i18n.t('repo_modal.auth_ssh') }}</option>
+        </select>
+      </div>
+
+      @if (form.get('authType')?.value === 'pat') {
+        <div class="form-group">
+          <label class="form-label">{{ i18n.t('repo_modal.token_env_label') }}</label>
+          <input class="form-input" formControlName="tokenEnv" />
+        </div>
+      }
+
+      @if (form.get('authType')?.value === 'ssh') {
+        <div class="form-group">
+          <label class="form-label">{{ i18n.t('repo_modal.ssh_key_label') }}</label>
+          <input class="form-input" formControlName="sshPath" placeholder="/root/.ssh/id_rsa" />
+        </div>
+      }
+
+      <div class="form-group">
+        <label class="form-label">{{ i18n.t('repo_modal.triggers_title') }}</label>
+        <label class="checkbox-row">
+          <input type="checkbox" formControlName="webhooks" />
+          <span>{{ i18n.t('repo_modal.webhooks_enable') }}</span>
+        </label>
+        <input class="form-input" formControlName="cron" placeholder="Cron: 0 */4 * * *" style="margin-top: 8px;" />
+        <div class="form-desc">{{ i18n.t('repo_modal.cron_label') }}</div>
+      </div>
+
+      @if (testResult(); as res) {
+        <div class="alert" [class.success]="res.success" [class.error]="!res.success">
+          {{ res.success ? '✅ ' : '❌ ' }} {{ res.message }}
+        </div>
+      }
+    </form>
+  </div>
+
+  <div class="dialog-footer">
+    <button type="button" class="btn btn-secondary" [disabled]="testing()" (click)="testConnection()">
+      {{ testing() ? i18n.t('common.testing') : i18n.t('repo_modal.btn_test_git') }}
+    </button>
+    <button type="button" class="btn btn-primary" [disabled]="saving()" (click)="save()">
+      {{ i18n.t('repo_modal.btn_save') }}
+    </button>
+  </div>
+</div>

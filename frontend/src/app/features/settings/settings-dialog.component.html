@@ -1,0 +1,180 @@
+<div class="settings-modal-dialog">
+  <div class="dialog-header">
+    <h3>{{ i18n.t('settings.title') }}</h3>
+    <button class="btn-close" (click)="cancel()">✕</button>
+  </div>
+
+  <div class="settings-layout">
+    <!-- Сайдбар табов -->
+    <div class="settings-tabs-sidebar">
+      <button 
+        class="tab-btn" 
+        [class.active]="activeTab() === 'appearance'" 
+        (click)="setTab('appearance')">
+        {{ i18n.t('settings.tab_appearance') }}
+      </button>
+      <button 
+        class="tab-btn" 
+        [class.active]="activeTab() === 'llm'" 
+        (click)="setTab('llm')">
+        {{ i18n.t('settings.tab_llm') }}
+      </button>
+      <button 
+        class="tab-btn" 
+        [class.active]="activeTab() === 'embeddings'" 
+        (click)="setTab('embeddings')">
+        {{ i18n.t('settings.tab_embeddings') }}
+      </button>
+      <button 
+        class="tab-btn" 
+        [class.active]="activeTab() === 'integrations'" 
+        (click)="setTab('integrations')">
+        {{ i18n.t('settings.tab_integrations') }}
+      </button>
+    </div>
+
+    <!-- Область контента -->
+    <div class="settings-tab-content">
+      <!-- Вкладка 1: Внешний вид и язык -->
+      @if (activeTab() === 'appearance') {
+        <div class="pane">
+          <div class="form-group">
+            <label class="form-label">{{ i18n.t('settings.lang_heading') }}</label>
+            <div class="form-desc">{{ i18n.t('settings.lang_desc') }}</div>
+            <div class="grid-2">
+              <div 
+                class="choice-card" 
+                [class.active]="selectedLocale() === 'ru'" 
+                (click)="selectLanguage('ru')">
+                🇷🇺 Русский
+              </div>
+              <div 
+                class="choice-card" 
+                [class.active]="selectedLocale() === 'en'" 
+                (click)="selectLanguage('en')">
+                🇬🇧 English
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-top: 28px;">
+            <label class="form-label">{{ i18n.t('settings.theme_heading') }}</label>
+            <div class="form-desc">{{ i18n.t('settings.theme_desc') }}</div>
+            <div class="grid-3">
+              <div 
+                class="choice-card" 
+                [class.active]="selectedTheme() === 'dark'" 
+                (click)="selectTheme('dark')">
+                {{ i18n.t('settings.theme_dark') }}
+              </div>
+              <div 
+                class="choice-card" 
+                [class.active]="selectedTheme() === 'light'" 
+                (click)="selectTheme('light')">
+                {{ i18n.t('settings.theme_light') }}
+              </div>
+              <div 
+                class="choice-card" 
+                [class.active]="selectedTheme() === 'system'" 
+                (click)="selectTheme('system')">
+                {{ i18n.t('settings.theme_system') }}
+              </div>
+            </div>
+          </div>
+        </div>
+      }
+
+      <!-- Вкладка 2: LLM и RAG -->
+      @if (activeTab() === 'llm') {
+        <div class="pane" [formGroup]="form">
+          <div class="form-group">
+            <label class="checkbox-row">
+              <input type="checkbox" formControlName="chatEnabled" />
+              <span>{{ i18n.t('settings.chat_enabled') }}</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">
+              <span>{{ i18n.t('settings.llm_base_url') }}</span>
+              @if (isEnvBaseUrl()) {
+                <span class="badge-env">{{ i18n.t('settings.env_badge') }}</span>
+              }
+            </label>
+            <input class="form-input" formControlName="llmBaseUrl" placeholder="http://localhost:20128/v1" />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">
+              <span>{{ i18n.t('settings.llm_model') }}</span>
+              @if (isEnvModel()) {
+                <span class="badge-env">{{ i18n.t('settings.env_badge') }}</span>
+              }
+            </label>
+            <input class="form-input" formControlName="llmModel" placeholder="kr/claude-sonnet-4.5" />
+          </div>
+
+          <div class="form-group">
+            <button type="button" class="btn btn-secondary" [disabled]="testingLlm()" (click)="testLlm()">
+              {{ testingLlm() ? i18n.t('common.testing') : i18n.t('settings.btn_test_llm') }}
+            </button>
+            @if (llmTestResult(); as res) {
+              <div class="alert" [class.success]="res.success" [class.error]="!res.success">
+                {{ res.success ? '✅ ' : '❌ ' }} {{ res.message }}
+              </div>
+            }
+          </div>
+        </div>
+      }
+
+      <!-- Вкладка 3: Эмбеддинги -->
+      @if (activeTab() === 'embeddings') {
+        <div class="pane" [formGroup]="form">
+          <div class="form-group">
+            <label class="checkbox-row">
+              <input type="checkbox" formControlName="embeddingsEnabled" />
+              <span>{{ i18n.t('settings.emb_enabled') }}</span>
+            </label>
+            <div class="form-desc" style="margin-top: 6px;">{{ i18n.t('settings.emb_model') }}</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">{{ i18n.t('settings.emb_model') }}</label>
+            <input class="form-input" formControlName="embeddingsModel" />
+          </div>
+        </div>
+      }
+
+      <!-- Вкладка 4: Интеграции -->
+      @if (activeTab() === 'integrations') {
+        <div class="pane" [formGroup]="form">
+          <div class="form-group">
+            <label class="form-label">
+              <span>{{ i18n.t('settings.webhook_secret') }}</span>
+              @if (isEnvWebhook()) {
+                <span class="badge-env">{{ i18n.t('settings.env_badge') }}</span>
+              }
+            </label>
+            <input type="password" class="form-input" formControlName="webhookSecret" placeholder="••••••••" />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">
+              <span>{{ i18n.t('settings.github_pat') }}</span>
+              @if (isEnvPat()) {
+                <span class="badge-env">{{ i18n.t('settings.env_badge') }}</span>
+              }
+            </label>
+            <input type="password" class="form-input" value="••••••••" disabled />
+            <div class="form-desc">{{ i18n.t('settings.env_notice') }}</div>
+          </div>
+        </div>
+      }
+    </div>
+  </div>
+
+  <div class="dialog-footer">
+    <button type="button" class="btn btn-secondary" (click)="cancel()">{{ i18n.t('common.cancel') }}</button>
+    <button type="button" class="btn btn-primary" [disabled]="saving()" (click)="save()">{{ i18n.t('common.save') }}</button>
+  </div>
+</div>

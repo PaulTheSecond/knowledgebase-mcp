@@ -151,3 +151,41 @@ class GitManager:
             logger.error(f"Git pull failed: {err_msg}")
             raise RuntimeError(f"Git pull failed: {err_msg}") from e
 
+    def test_connection(self, repo_url: str, branch: Optional[str] = None) -> tuple[bool, str]:
+        """Проверяет доступность удаленного Git-репозитория и корректность авторизации.
+
+        Args:
+            repo_url: URL удаленного репозитория.
+            branch: Опциональная ветка для проверки существования.
+
+        Returns:
+            (success: bool, message: str)
+        """
+        auth_args = self._get_auth_args()
+        cmd = ["git"] + auth_args + ["ls-remote", "--heads", repo_url]
+        if branch:
+            cmd.append(branch)
+
+        env = self._get_env()
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=min(self.timeout, 15),
+                env=env
+            )
+            output = res.stdout.strip()
+            if branch and output and branch not in output and f"refs/heads/{branch}" not in output:
+                return False, f"Branch '{branch}' not found on remote"
+            return True, "Connection successful"
+        except subprocess.TimeoutExpired:
+            return False, "Connection timed out (15s limit)"
+        except subprocess.CalledProcessError as e:
+            err_msg = self._mask_secrets(e.stderr or str(e)).strip()
+            return False, err_msg
+        except Exception as e:
+            return False, str(e)
+
+

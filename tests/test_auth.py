@@ -177,15 +177,17 @@ class TestAuthAPI(unittest.TestCase):
         self.mock_db.delete_repo.assert_called_once_with("test-repo")
 
     def test_static_dashboard_rendering(self):
-        # Проверяем, что корень возвращает страницу Dashboard
+        # Проверяем, что корень возвращает страницу Dashboard Angular SPA
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Knowledge Base Dashboard", response.text)
+        self.assertIn("<app-root>", response.text)
 
-        # Проверяем раздачу статических CSS стилей
-        response = self.client.get("/static/css/styles.css")
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("accent-color", response.text)
+        # Проверяем SPA роуты
+        for spa_route in ["/repositories", "/queue", "/chat"]:
+            spa_res = self.client.get(spa_route)
+            self.assertEqual(spa_res.status_code, 200)
+            self.assertIn("<app-root>", spa_res.text)
 
     def test_websocket_connection_unauthorized(self):
         # Подключение с неверным токеном должно закрываться (TestClient кидает WebSocketDisconnect или HTTPException)

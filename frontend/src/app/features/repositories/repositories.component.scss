@@ -1,0 +1,121 @@
+.table-container {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+
+  th, td {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 13.5px;
+  }
+
+  th {
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11.5px;
+    letter-spacing: 0.5px;
+  }
+
+  tr:hover td {
+    background-color: var(--bg-tertiary);
+  }
+}
+
+.text-center {
+  text-align: center;
+}
+
+.text-muted {
+  color: var(--text-muted);
+}
+
+.progress-container {
+  position: relative;
+  width: 100%;
+  min-width: 160px;
+  background-color: var(--bg-tertiary);
+  border-radius: 6px;
+  overflow: hidden;
+  height: 24px;
+}
+
+.progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background-color: var(--accent-color);
+  transition: width 0.3s ease;
+}
+
+.progress-label {
+  position: relative;
+  z-index: 1;
+  display: block;
+  text-align: center;
+  line-height: 24px;
+  font-size: 11px;
+  font-weight: 600;
+  color: white;
+}
+
+.btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+
+  &.btn-sm {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
+  &.btn-primary {
+    background-color: var(--accent-color);
+    color: white;
+
+    &:hover {
+      background-color: var(--accent-color-hover);
+    }
+  }
+
+  &.btn-secondary {
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+
+    &:hover {
+      background-color: var(--border-color);
+    }
+
+    &.btn-danger {
+      color: var(--red-color);
+
+      &:hover {
+        background-color: rgba(239, 68, 68, 0.15);
+      }
+    }
+  }
+}
+
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
