@@ -50,6 +50,7 @@ Connected AI agents have access to rich read-only tools:
 ### Search & Retrieval
 - **`knowledge_search`**: Triple hybrid search across all configured repositories. Returns code chunks with trust levels (`verified` for source code, `hint` for docs).
 - **`knowledge_get_chunk`**: Retrieve complete chunk content and associated metadata by UUID.
+- **`knowledge_read_file`**: Retrieve the complete raw content of an indexed file from the knowledge base by its path.
 
 ### Symbol & Graph Navigation
 - **`knowledge_find_symbol`**: Search classes, interfaces, and methods using wildcards (e.g. `*Repository`).
@@ -159,19 +160,27 @@ pip install -r requirements.txt
   python -m knowledge_mcp.main serve --host 0.0.0.0 --port 8000
   ```
 
-- **Run CLI Repository Sync:**
+- **Run CLI Repository Sync (Incremental or Force):**
   ```bash
+  # Incremental sync (skips unchanged files)
   python -m knowledge_mcp.main sync --repo-id my-project --repo-path C:\Repos\my-project --all
+
+  # Force re-indexing of all files ignoring hash/mtime cache
+  python -m knowledge_mcp.main sync --repo-id my-project --repo-path C:\Repos\my-project --all --force
   ```
 
-- **Run MCP Stdio Server (for IDE integration):**
+- **Run MCP Stdio Server (for AI IDE integration):**
   ```bash
+  # Fast startup with FTS5 + Graph analysis (zero neural memory overhead)
   python -m knowledge_mcp.main mcp
+
+  # With vector embeddings enabled (multilingual-e5-small)
+  python -m knowledge_mcp.main mcp --with-embeddings
   ```
 
 ### Testing & Quality Assurance
 
-- **Run Unit Tests:**
+- **Run Unit Tests (79 passing tests):**
   ```bash
   pytest
   ```
@@ -181,6 +190,25 @@ pip install -r requirements.txt
   mutmut run
   mutmut results
   ```
+
+---
+
+## 🌐 REST & WebSocket API
+
+The daemon provides a complete REST and real-time WebSocket API for CI/CD, webhooks, and automation:
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/` | Basic Auth | Web Dashboard Single-Page Application (HTML5 / Vanilla JS). |
+| `POST` | `/api/auth/token` | Basic Auth | Issue a temporary cryptographic session token for WebSockets / SSE. |
+| `GET` | `/api/status` | Basic Auth | System telemetry: state (`idle`/`syncing`/`halted`), error, repo metrics (files, chunks, vectors). |
+| `GET` | `/api/queue` | Basic Auth | List recent background synchronization queue tasks and their states. |
+| `POST` | `/api/queue/retry-failed` | Basic Auth | Reset all failed jobs back to `pending` status for immediate retry. |
+| `POST` | `/api/sync/{repo_id}` | Basic Auth | Enqueue an immediate synchronization job for a repository. |
+| `DELETE` | `/api/repo/{repo_id}` | Basic Auth | Delete all indexed data, chunks, and symbols for a repository. |
+| `POST` | `/api/chat` | Basic Auth | Interactive RAG Chat endpoint with character-by-character SSE streaming. |
+| `WS` | `/ws/status?token=...` | Temp Token | Real-time WebSocket feed of progress bars, telemetry, and queue updates. |
+| `POST` | `/webhook/git` | HMAC / Token | Universal webhook receiver for GitHub (`X-Hub-Signature-256`), Gitea, and GitLab (`X-Gitlab-Token`). |
 
 ---
 
