@@ -35,15 +35,17 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
     # Всегда включаем внешние ключи
     conn.execute("PRAGMA foreign_keys = ON;")
     
-    # Режим WAL и synchronous = NORMAL для пишущих соединений
+    # Режим WAL, synchronous = NORMAL и auto_vacuum = FULL для пишущих соединений
     if not read_only:
         try:
+            # Настройка auto_vacuum (FULL) для новых баз данных
+            conn.execute("PRAGMA auto_vacuum = FULL;")
             # Настройка режима WAL
             journal_mode = conn.execute("PRAGMA journal_mode = WAL;").fetchone()[0]
             conn.execute("PRAGMA synchronous = NORMAL;")
             logger.info(f"Database journal mode set to: {journal_mode}")
         except sqlite3.Error as e:
-            logger.warning(f"Failed to configure WAL mode: {e}")
+            logger.warning(f"Failed to configure WAL mode or auto_vacuum: {e}")
 
     # Загрузка sqlite-vec
     try:

@@ -726,4 +726,8 @@ class Indexer:
             }
         })
         logger.info(f"Sync complete for '{repo_id}': +{added_count} ~{updated_count} -{deleted_count} (={unchanged_count} unchanged)")
+        try:
+            self.db.optimize()
+        except Exception as e:
+            logger.warning(f"Failed to optimize database after sync: {e}")
 

@@ -242,6 +242,48 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20261018_11_fts5_external_content_and_autovacuum",
+            "up": """
+                -- 1. Удаляем старые триггеры
+                DROP TRIGGER IF EXISTS chunks_ai;
+                DROP TRIGGER IF EXISTS chunks_ad;
+                DROP TRIGGER IF EXISTS chunks_au;
+
+                -- 2. Пересоздаем chunks_fts как внешнюю контент-таблицу (content='chunks', content_rowid='rowid')
+                -- Это исключает дублирование текстов кода в chunks_fts_content (~35-45% экономии диска)
+                DROP TABLE IF EXISTS chunks_fts;
+                CREATE VIRTUAL TABLE chunks_fts USING fts5(
+                    content,
+                    content='chunks',
+                    content_rowid='rowid'
+                );
+
+                -- 3. Заполняем FTS-индекс из существующей таблицы chunks
+                INSERT INTO chunks_fts(rowid, content) SELECT rowid, content FROM chunks;
+
+                -- 4. Создаем новые триггеры для внешней контент-таблицы FTS5
+                CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+                    INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+                END;
+
+                CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
+                    INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+                    DELETE FROM chunks_vec WHERE rowid = old.rowid;
+                END;
+
+                CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
+                    INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+                    DELETE FROM chunks_vec WHERE rowid = old.rowid;
+                    INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+                END;
+
+                -- 5. Включаем auto_vacuum = FULL и выполняем VACUUM для сжатия базы
+                PRAGMA auto_vacuum = FULL;
+                VACUUM;
+            """
+        })
+
         for migration in migrations:
             if migration["id"] not in applied_migrations:
                 logger.info(f"Applying sqlite migration: {migration['id']}")
@@ -252,6 +294,21 @@ class KnowledgeDB:
     def close(self):
         """Закрывает соединение с БД."""
         self.conn.close()
+
+    def vacuum(self):
+        """Выполняет VACUUM для дефрагментации и сжатия файла БД."""
+        with self.lock:
+            self.conn.execute("VACUUM;")
+
+    def optimize(self):
+        """Запускает PRAGMA optimize для актуализации статистики планировщика запросов."""
+        with self.lock:
+            self.conn.execute("PRAGMA optimize;")
+
+    def get_vacuum_mode(self) -> int:
+        """Возвращает текущий режим auto_vacuum (0=NONE, 1=FULL, 2=INCREMENTAL)."""
+        cursor = self.conn.cursor()
+        return cursor.execute("PRAGMA auto_vacuum;").fetchone()[0]
 
     def begin_transaction(self):
         """Начинает явную транзакцию для пакетных операций (избегаем тысяч отдельных commit)."""
