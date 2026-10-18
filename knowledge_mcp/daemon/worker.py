@@ -84,35 +84,56 @@ class DaemonWorker:
         auth = repo_config.get("auth", {})
         auth_type = auth.get("type")
 
+        local_path = repo_config.get("local_path") or repo_config.get("path")
+        resolved_local_path = None
+        if local_path:
+            p = Path(local_path)
+            if p.exists():
+                resolved_local_path = p
+            elif Path(f"/repos/{p.name}").exists():
+                resolved_local_path = Path(f"/repos/{p.name}")
+            elif os.environ.get("REPOS_DIR") and (Path(os.environ["REPOS_DIR"]) / p.name).exists():
+                resolved_local_path = Path(os.environ["REPOS_DIR"]) / p.name
+
+        if resolved_local_path:
+            dest_path = resolved_local_path
+            is_local = True
+        else:
+            dest_path = self.clones_dir / repo_id
+            is_local = False
+
+        git_mgr = None
         pat_token = None
         ssh_key_path = None
+        if not is_local:
+            if auth_type == "pat":
+                token_env = auth.get("token_env", "GITHUB_PAT")
+                pat_token = os.environ.get(token_env)
+                if not pat_token:
+                    err = f"PAT token environment variable '{token_env}' is not set."
+                    logger.error(err)
+                    self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err)
+                    return
+            elif auth_type == "ssh":
+                ssh_key_path = auth.get("private_key_path")
 
-        if auth_type == "pat":
-            token_env = auth.get("token_env", "GITHUB_PAT")
-            pat_token = os.environ.get(token_env)
-            if not pat_token:
-                err = f"PAT token environment variable '{token_env}' is not set."
-                logger.error(err)
-                self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err)
-                return
-        elif auth_type == "ssh":
-            ssh_key_path = auth.get("private_key_path")
-
-        # Настраиваем GitManager
-        git_mgr = GitManager(pat_token=pat_token, ssh_key_path=ssh_key_path)
-        dest_path = self.clones_dir / repo_id
+            # Настраиваем GitManager
+            git_mgr = GitManager(pat_token=pat_token, ssh_key_path=ssh_key_path)
 
         # Обновляем глобальный статус системы на 'syncing'
         self.db.update_system_status("syncing")
 
         try:
-            # Клонируем или обновляем репозиторий
-            if not dest_path.exists() or not (dest_path / ".git").exists():
-                logger.info(f"Cloning '{repo_id}' from remote URL")
-                git_mgr.clone(git_url, dest_path)
+            if not is_local:
+                # Клонируем или обновляем репозиторий
+                if not dest_path.exists() or not (dest_path / ".git").exists():
+                    logger.info(f"Cloning '{repo_id}' from remote URL")
+                    git_mgr.clone(git_url, dest_path)
+                else:
+                    logger.info(f"Pulling latest updates for '{repo_id}'")
+                    git_mgr.pull(dest_path, branch=branch)
             else:
-                logger.info(f"Pulling latest updates for '{repo_id}'")
-                git_mgr.pull(dest_path, branch=branch)
+                logger.info(f"Using local repository for '{repo_id}' at {dest_path}")
 
             # Получаем HEAD SHA
             current_sha = self.get_git_sha(dest_path)

@@ -33,6 +33,8 @@ def hash_file(filepath: Path, chunk_size: int = 8192) -> str:
 EMBED_SUB_BATCH_SIZE = 128
 # Максимальное количество потоков для параллельного хэширования
 MAX_HASH_WORKERS = 8
+# Количество файлов в одном батче транзакции SQLite для предотвращения переполнения буферов и disk I/O error
+BATCH_COMMIT_SIZE = 50
 
 
 class ReindexStatus(Enum):
@@ -674,6 +676,12 @@ class Indexer:
                                 sync_buffer[rel_path] = 'waiting_for_embedding'
                             else:
                                 sync_buffer[rel_path] = 'completed'
+
+                    # Коммитим батчами каждые BATCH_COMMIT_SIZE файлов, чтобы не держать
+                    # гигантскую транзакцию в памяти и не вызывать disk I/O error в SQLite
+                    if processed % BATCH_COMMIT_SIZE == 0:
+                        self.db.commit_transaction()
+                        self.db.begin_transaction()
 
             # Удаляем из БД ушедшие с диска файлы (только при полном обходе репозитория)
             if target_files is None:

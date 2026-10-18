@@ -351,6 +351,50 @@ class TestDaemonWorker(unittest.TestCase):
 
         worker.db.close()
 
+    @patch("knowledge_mcp.daemon.worker.get_repository_config")
+    @patch("knowledge_mcp.daemon.worker.GitManager")
+    @patch("knowledge_mcp.daemon.worker.Indexer")
+    @patch("subprocess.run")
+    def test_worker_local_path_indexes_directly(self, mock_sub_run, mock_indexer_class, mock_git_mgr_class, mock_get_config):
+        """Проверяет прямую индексацию локально смонтированного репозитория без clone/pull."""
+        with tempfile.TemporaryDirectory() as local_repo_dir:
+            mock_get_config.return_value = {
+                "id": "ImpactOS.Core.Lib",
+                "local_path": local_repo_dir,
+                "branch": "master",
+                "auth": {"type": "none"}
+            }
+
+            mock_git_mgr = MagicMock()
+            mock_git_mgr_class.return_value = mock_git_mgr
+
+            mock_indexer = MagicMock()
+            mock_indexer_class.return_value = mock_indexer
+
+            mock_sub_run.return_value = MagicMock(stdout="local_sha_456\n", returncode=0)
+
+            worker = DaemonWorker(self.db_path)
+            worker.indexer = mock_indexer
+
+            job_id = self.db.add_to_queue("ImpactOS.Core.Lib")
+            job = self.db.fetch_next_job()
+            self.assertIsNotNone(job)
+
+            worker.run_job(job)
+
+            # GitManager clone/pull не должны вызываться
+            mock_git_mgr.clone.assert_not_called()
+            mock_git_mgr.pull.assert_not_called()
+
+            # sync_repo должен быть вызван с локальным путем
+            mock_indexer.sync_repo.assert_called_once_with("ImpactOS.Core.Lib", str(Path(local_repo_dir)))
+
+            cursor = self.db.conn.cursor()
+            cursor.execute("SELECT status FROM sync_queue WHERE id = ?", (job_id,))
+            self.assertEqual(cursor.fetchone()[0], "completed")
+
+            worker.db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,12 +27,13 @@ repositories:
         secret_env: "WEBHOOK_SECRET"
       cron: "0 */4 * * *"  # Каждые 4 часа
 
-  # Репозиторий библиотек ядра (ImpactOS / Yurta, приватный репозиторий)
-  - id: "yurta-core-lib"
+  # Репозиторий библиотек ядра (ImpactOS / Yurta)
+  - id: "ImpactOS.Core.Lib"
     url: "https://github.com/Tribe-Impact/Yurta.Core.Lib.git"
+    # Для смонтированных директорий можно указать прямой путь без необходимости git clone
+    local_path: "/repos/ImpactOS.Core.Lib"
     auth:
-      type: "pat"
-      token_env: "GITHUB_PAT"
+      type: "none"  # "none" если репозиторий уже локально смонтирован в контейнер
     branch: "master"
     triggers:
       webhooks:

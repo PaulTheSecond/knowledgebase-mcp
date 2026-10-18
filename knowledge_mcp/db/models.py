@@ -317,13 +317,19 @@ class KnowledgeDB:
 
     def commit_transaction(self):
         """Фиксирует текущую транзакцию."""
-        self.conn.commit()
-        self._in_transaction = False
+        if getattr(self, '_in_transaction', False):
+            self.conn.commit()
+            self._in_transaction = False
 
     def rollback_transaction(self):
         """Откатывает текущую транзакцию при ошибке."""
-        self.conn.rollback()
-        self._in_transaction = False
+        if getattr(self, '_in_transaction', False):
+            try:
+                self.conn.rollback()
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                self._in_transaction = False
 
     def _auto_commit(self):
         """Вызывает commit() только если мы НЕ внутри явной транзакции."""

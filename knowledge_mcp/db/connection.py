@@ -32,8 +32,11 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
 
     conn.row_factory = sqlite3.Row
     
-    # Всегда включаем внешние ключи
+    # Всегда включаем внешние ключи и таймаут ожидания блокировок
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
+    conn.execute("PRAGMA temp_store = MEMORY;")
+    conn.execute("PRAGMA cache_size = -64000;")
     
     # Режим WAL, synchronous = NORMAL и auto_vacuum = FULL для пишущих соединений
     if not read_only:

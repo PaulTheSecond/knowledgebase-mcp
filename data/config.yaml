@@ -24,11 +24,11 @@ repositories:
         secret_env: "WEBHOOK_SECRET"
       cron: "0 */4 * * *"
 
-  - id: "yurta-core-lib"
+  - id: "ImpactOS.Core.Lib"
     url: "https://github.com/Tribe-Impact/Yurta.Core.Lib.git"
+    local_path: "/repos/ImpactOS.Core.Lib"
     auth:
-      type: "pat"
-      token_env: "GITHUB_PAT"
+      type: "none"
     branch: "master"
     triggers:
       webhooks:
