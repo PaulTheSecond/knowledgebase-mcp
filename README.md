@@ -32,8 +32,8 @@ Now includes a fully **autonomous background sync daemon**, **Git webhooks suppo
    - Built-in HTTP receiver `/webhook/git` supporting GitHub, Gitea (HMAC-SHA256 signature validation), and GitLab (`X-Gitlab-Token`).
    - Parses commit payloads (`added`, `modified`, `removed`) for sub-second targeted delta re-indexing.
    - Scheduled periodic re-indexing via standard Cron expressions.
-5. **Modern Web Dashboard & Telemetry (Angular 19 + Taiga UI 5)**:
-   - Modern, high-performance SPA dashboard built with Angular 19 and Taiga UI 5 design system.
+5. **Modern Web Dashboard & Telemetry (Angular 21 + Taiga UI 5)**:
+   - Modern, high-performance SPA dashboard built with Angular 21 and Taiga UI 5 design system.
    - **Bilingual & Localization (RU / EN)**: Full multilingual support on both frontend and backend (`Accept-Language`), with default locale stored in SQLite.
    - **Theming**: Dark, Light, and System color schemes with reactive design-token styling.
    - **In-Browser Settings & Management**: Manage LLM endpoints, embeddings, and Git repositories with instant connection testing (`test-git`, `test-llm`) directly from the UI.
@@ -181,7 +181,7 @@ pip install -r requirements.txt
   python -m knowledge_mcp.main mcp --with-embeddings
   ```
 
-### Frontend Development (Angular 19 + Taiga UI 5)
+### Frontend Development (Angular 21 + Taiga UI 5)
 
 ```bash
 cd frontend
@@ -217,7 +217,7 @@ The daemon provides a complete REST and real-time WebSocket API for CI/CD, webho
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `GET` | `/` | Basic Auth | Angular 19 SPA Web Dashboard. |
+| `GET` | `/` | Basic Auth | Angular 21 SPA Web Dashboard. |
 | `POST` | `/api/auth/token` | Basic Auth | Issue a temporary cryptographic session token for WebSockets / SSE. |
 | `GET` | `/api/status` | Basic Auth | System telemetry: state (`idle`/`syncing`/`halted`), error, repo metrics (files, chunks, vectors). |
 | `GET` | `/api/queue` | Basic Auth | List recent background synchronization queue tasks and their states. |

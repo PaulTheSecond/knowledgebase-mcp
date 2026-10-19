@@ -7,7 +7,7 @@ COPY RoslynParser/ .
 # publish создаёт плоский каталог со всеми DLL-зависимостями Roslyn
 RUN dotnet publish -c Release -o /roslyn/out
 
-# ── Stage 2: Сборка Angular 19 Frontend ─────────────────────────────────────
+# ── Stage 2: Сборка Angular 21 Frontend ─────────────────────────────────────
 # Собираем современный SPA дашборд с темами оформления и мультиязычностью
 FROM node:22-alpine AS frontend-builder
 
