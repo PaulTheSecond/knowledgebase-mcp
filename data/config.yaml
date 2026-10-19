@@ -1,37 +1,36 @@
 server:
   port: 8000
-  host: "0.0.0.0"
+  host: 0.0.0.0
   dashboard:
     enabled: true
     port: 8080
-    password_env: "DASHBOARD_PASSWORD"
+    password_env: DASHBOARD_PASSWORD
     chat:
       enabled: true
-
+      api_base: http://host.docker.internal:20128/v1
+      model: kr/claude-sonnet-4.5
 embeddings:
   enabled: false
-  model_name: "intfloat/multilingual-e5-small"
-
+  model_name: intfloat/multilingual-e5-small
 repositories:
-  - id: "knowledgebase-mcp"
-    url: "https://github.com/PaulTheSecond/knowledgebase-mcp.git"
-    auth:
-      type: "none"
-    branch: "master"
-    triggers:
-      webhooks:
-        enabled: true
-        secret_env: "WEBHOOK_SECRET"
-      cron: "0 */4 * * *"
-
-  - id: "ImpactOS.Core.Lib"
-    url: "https://github.com/Tribe-Impact/Yurta.Core.Lib.git"
-    local_path: "/repos/ImpactOS.Core.Lib"
-    auth:
-      type: "none"
-    branch: "master"
-    triggers:
-      webhooks:
-        enabled: true
-        secret_env: "WEBHOOK_SECRET"
-      cron: "0 */4 * * *"
+- id: knowledgebase-mcp
+  url: https://github.com/PaulTheSecond/knowledgebase-mcp.git
+  auth:
+    type: none
+  branch: master
+  triggers:
+    webhooks:
+      enabled: true
+      secret_env: WEBHOOK_SECRET
+    cron: 0 */4 * * *
+- id: ImpactOS.Core.Lib
+  url: https://github.com/Tribe-Impact/Yurta.Core.Lib.git
+  local_path: /repos/ImpactOS.Core.Lib
+  auth:
+    type: none
+  branch: master
+  triggers:
+    webhooks:
+      enabled: true
+      secret_env: WEBHOOK_SECRET
+    cron: 0 */4 * * *

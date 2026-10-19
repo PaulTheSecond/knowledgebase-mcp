@@ -1,11 +1,13 @@
 <div class="section-card">
   <div class="card-header-flex">
     <div>
-      <h2>{{ i18n.t('repos.title') }}</h2>
-      <p class="text-secondary">{{ i18n.t('repos.subtitle') }}</p>
+      <p class="text-secondary" style="margin: 0;">{{ i18n.t('repos.subtitle') }}</p>
     </div>
-    <button class="btn btn-primary" (click)="openAddDialog()">
-      {{ i18n.t('repos.btn_add') }}
+    <button class="btn btn-icon btn-primary" (click)="openAddDialog()" [attr.title]="i18n.t('repos.btn_add')" [attr.aria-label]="i18n.t('repos.btn_add')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"/>
+        <line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
     </button>
   </div>
 
@@ -47,14 +49,24 @@
                 }
               </td>
               <td style="white-space: nowrap;">
-                <button class="btn btn-sm btn-primary" (click)="triggerSync(repo.id)" style="margin-right: 6px;">
-                  {{ i18n.t('repos.btn_sync') }}
+                <button class="btn btn-icon-sm btn-primary" (click)="triggerSync(repo.id)" style="margin-right: 6px;" [attr.title]="i18n.t('repos.btn_sync')" [attr.aria-label]="i18n.t('repos.btn_sync')">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <polyline points="1 20 1 14 7 14"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                  </svg>
                 </button>
-                <button class="btn btn-sm btn-secondary" (click)="openEditDialog(repo)" style="margin-right: 6px;">
-                  {{ i18n.t('repos.btn_edit') }}
+                <button class="btn btn-icon-sm btn-secondary" (click)="openEditDialog(repo)" style="margin-right: 6px;" [attr.title]="i18n.t('repos.btn_edit')" [attr.aria-label]="i18n.t('repos.btn_edit')">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 20h9"/>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                  </svg>
                 </button>
-                <button class="btn btn-sm btn-secondary btn-danger" (click)="deleteRepo(repo.id)">
-                  {{ i18n.t('repos.btn_delete') }}
+                <button class="btn btn-icon-sm btn-secondary btn-danger" (click)="deleteRepo(repo.id)" [attr.title]="i18n.t('repos.btn_delete')" [attr.aria-label]="i18n.t('repos.btn_delete')">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
                 </button>
               </td>
             </tr>

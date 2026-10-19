@@ -61,6 +61,29 @@ export class ApiService {
     );
   }
 
+  stopJob(jobId: number): Observable<{ status: string; job_id: number; message: string }> {
+    return this.http.post<{ status: string; job_id: number; message: string }>(
+      `/api/queue/${jobId}/stop`,
+      {},
+      { headers: this.getHeaders() }
+    );
+  }
+
+  restartJob(jobId: number): Observable<{ status: string; job_id: number; message: string }> {
+    return this.http.post<{ status: string; job_id: number; message: string }>(
+      `/api/queue/${jobId}/restart`,
+      {},
+      { headers: this.getHeaders() }
+    );
+  }
+
+  deleteJob(jobId: number): Observable<{ status: string; job_id: number; message: string }> {
+    return this.http.delete<{ status: string; job_id: number; message: string }>(
+      `/api/queue/${jobId}`,
+      { headers: this.getHeaders() }
+    );
+  }
+
   triggerSync(repoId: string): Observable<{ status: string; repo_id: string; job_id: number; message: string }> {
     return this.http.post<{ status: string; repo_id: string; job_id: number; message: string }>(
       `/api/sync/${repoId}`,

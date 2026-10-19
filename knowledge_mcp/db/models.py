@@ -297,6 +297,14 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20261019_13_sync_queue_durations",
+            "up": """
+                ALTER TABLE sync_queue ADD COLUMN started_at DATETIME;
+                ALTER TABLE sync_queue ADD COLUMN finished_at DATETIME;
+            """
+        })
+
         for migration in migrations:
             if migration["id"] not in applied_migrations:
                 logger.info(f"Applying sqlite migration: {migration['id']}")
@@ -420,13 +428,58 @@ class KnowledgeDB:
         }
 
     def get_queue_jobs(self, limit: int = 50) -> list:
-        """Возвращает последние N задач из очереди синхронизации."""
+        """Возвращает последние N задач из очереди синхронизации с расчетом времени выполнения."""
+        from datetime import datetime
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, repo_id, status, attempts, error_message as last_error, run_at, created_at, updated_at, changed_files FROM sync_queue ORDER BY created_at DESC LIMIT ?",
+            """
+            SELECT id, repo_id, status, attempts, error_message as last_error, 
+                   run_at, created_at, updated_at, started_at, finished_at, changed_files 
+            FROM sync_queue 
+            ORDER BY created_at DESC 
+            LIMIT ?
+            """,
             (limit,)
         )
-        return [dict(row) for row in cursor.fetchall()]
+        jobs = []
+        fmt = "%Y-%m-%d %H:%M:%S"
+        for row in cursor.fetchall():
+            job = dict(row)
+            duration_str = None
+            duration_secs = None
+            started_at_str = job.get("started_at")
+            finished_at_str = job.get("finished_at")
+
+            if started_at_str:
+                try:
+                    clean_start = str(started_at_str).replace("T", " ").split(".")[0]
+                    t_start = datetime.strptime(clean_start, fmt)
+
+                    if finished_at_str:
+                        clean_end = str(finished_at_str).replace("T", " ").split(".")[0]
+                        t_end = datetime.strptime(clean_end, fmt)
+                        duration_secs = max(0, int((t_end - t_start).total_seconds()))
+                    elif job.get("status") == "processing":
+                        duration_secs = max(0, int((datetime.now() - t_start).total_seconds()))
+
+                    if duration_secs is not None:
+                        if duration_secs < 60:
+                            duration_str = f"{duration_secs}с"
+                        elif duration_secs < 3600:
+                            mins = duration_secs // 60
+                            secs = duration_secs % 60
+                            duration_str = f"{mins}м {secs}с"
+                        else:
+                            hrs = duration_secs // 3600
+                            mins = (duration_secs % 3600) // 60
+                            duration_str = f"{hrs}ч {mins}м"
+                except Exception as e:
+                    logger.debug(f"Error calculating duration for job {job.get('id')}: {e}")
+
+            job["duration"] = duration_str
+            job["duration_seconds"] = duration_secs
+            jobs.append(job)
+        return jobs
 
     def clear_file_chunks(self, file_id: int):
         """Удаляет все чанки, привязанные к заданному файлу (перед реиндексацией 'грязного' файла)."""
@@ -920,7 +973,10 @@ class KnowledgeDB:
                     changed_files = json.loads(changed_json) if changed_json else None
                     cursor.execute("""
                         UPDATE sync_queue
-                        SET status = 'processing', updated_at = datetime('now', 'localtime')
+                        SET status = 'processing',
+                            started_at = datetime('now', 'localtime'),
+                            finished_at = NULL,
+                            updated_at = datetime('now', 'localtime')
                         WHERE id = ?
                     """, (job_id,))
                     self.conn.commit()
@@ -938,19 +994,20 @@ class KnowledgeDB:
                 raise e
 
     def update_job_status(self, job_id: int, status: str, attempts: Optional[int] = None, error_message: Optional[str] = None) -> None:
-        """Обновляет статус и параметры задачи в очереди."""
+        """Обновляет статус и параметры задачи в очереди с фиксацией времени завершения."""
         with self.lock:
             cursor = self.conn.cursor()
+            finished_clause = ", finished_at = datetime('now', 'localtime')" if status in ("completed", "failed") else ""
             if attempts is not None:
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE sync_queue
-                    SET status = ?, attempts = ?, error_message = ?, updated_at = datetime('now', 'localtime')
+                    SET status = ?, attempts = ?, error_message = ?, updated_at = datetime('now', 'localtime'){finished_clause}
                     WHERE id = ?
                 """, (status, attempts, error_message, job_id))
             else:
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE sync_queue
-                    SET status = ?, error_message = ?, updated_at = datetime('now', 'localtime')
+                    SET status = ?, error_message = ?, updated_at = datetime('now', 'localtime'){finished_clause}
                     WHERE id = ?
                 """, (status, error_message, job_id))
             self._auto_commit()
@@ -990,10 +1047,82 @@ class KnowledgeDB:
                     attempts = ?,
                     error_message = ?,
                     run_at = datetime('now', 'localtime', '+' || ? || ' seconds'),
+                    finished_at = datetime('now', 'localtime'),
                     updated_at = datetime('now', 'localtime')
                 WHERE id = ?
             """, (attempts, error_message, delay_seconds, job_id))
             self._auto_commit()
+
+    def reset_stale_jobs(self) -> int:
+        """Сбрасывает задачи, оставшиеся в статусе processing при перезапуске сервера/воркера."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE sync_queue
+                SET status = 'failed',
+                    error_message = 'Прервано: перезапуск сервера во время выполнения',
+                    finished_at = datetime('now', 'localtime'),
+                    updated_at = datetime('now', 'localtime')
+                WHERE status = 'processing'
+            """)
+            count = cursor.rowcount
+            self._auto_commit()
+            if count > 0:
+                logger.warning(f"Reset {count} stale processing job(s) to failed state.")
+                sys_st = self.get_system_status()
+                if sys_st and sys_st["status"] == "syncing":
+                    self.update_system_status("idle", last_error=f"Сброшено {count} зависших задач при запуске")
+            return count
+
+    def stop_job(self, job_id: int) -> bool:
+        """Останавливает задачу в очереди (переводит в failed с пометкой об остановке)."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE sync_queue
+                SET status = 'failed',
+                    error_message = 'Остановлено пользователем',
+                    finished_at = datetime('now', 'localtime'),
+                    updated_at = datetime('now', 'localtime')
+                WHERE id = ? AND status IN ('pending', 'processing')
+            """, (job_id,))
+            updated = cursor.rowcount > 0
+            self._auto_commit()
+            if updated:
+                sys_st = self.get_system_status()
+                if sys_st and sys_st["status"] == "syncing":
+                    cursor.execute("SELECT COUNT(*) FROM sync_queue WHERE status = 'processing'")
+                    if cursor.fetchone()[0] == 0:
+                        self.update_system_status("idle")
+            return updated
+
+    def restart_job(self, job_id: int) -> bool:
+        """Перезапускает задачу: переводит обратно в pending для повторного выполнения."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE sync_queue
+                SET status = 'pending',
+                    attempts = 0,
+                    error_message = NULL,
+                    run_at = NULL,
+                    started_at = NULL,
+                    finished_at = NULL,
+                    updated_at = datetime('now', 'localtime')
+                WHERE id = ?
+            """, (job_id,))
+            updated = cursor.rowcount > 0
+            self._auto_commit()
+            return updated
+
+    def delete_job(self, job_id: int) -> bool:
+        """Удаляет задачу из очереди."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM sync_queue WHERE id = ?", (job_id,))
+            deleted = cursor.rowcount > 0
+            self._auto_commit()
+            return deleted
 
     def retry_failed_jobs(self) -> int:
         """Сбрасывает задачи со статусом failed/halted обратно в pending с attempts=0."""
@@ -1005,6 +1134,8 @@ class KnowledgeDB:
                     attempts = 0,
                     error_message = NULL,
                     run_at = NULL,
+                    started_at = NULL,
+                    finished_at = NULL,
                     updated_at = datetime('now', 'localtime')
                 WHERE status IN ('failed', 'halted')
             """)

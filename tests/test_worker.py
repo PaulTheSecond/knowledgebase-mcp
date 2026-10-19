@@ -395,6 +395,69 @@ class TestDaemonWorker(unittest.TestCase):
 
             worker.db.close()
 
+    def test_reset_stale_jobs(self):
+        """Проверяет сброс зависших в processing задач в failed при перезапуске."""
+        job_id = self.db.add_to_queue("stale-repo")
+        job = self.db.fetch_next_job()
+        self.assertIsNotNone(job)
+
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT status FROM sync_queue WHERE id = ?", (job_id,))
+        self.assertEqual(cursor.fetchone()[0], "processing")
+
+        # Вызываем сброс
+        count = self.db.reset_stale_jobs()
+        self.assertEqual(count, 1)
+
+        cursor.execute("SELECT status, error_message, finished_at FROM sync_queue WHERE id = ?", (job_id,))
+        status, err, finished = cursor.fetchone()
+        self.assertEqual(status, "failed")
+        self.assertIn("перезапуск", err)
+        self.assertIsNotNone(finished)
+
+    def test_stop_restart_and_delete_job(self):
+        """Проверяет ручную остановку, перезапуск и удаление задачи."""
+        job_id = self.db.add_to_queue("my-repo")
+        self.db.fetch_next_job()
+
+        # 1. Стоп
+        stopped = self.db.stop_job(job_id)
+        self.assertTrue(stopped)
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT status, error_message FROM sync_queue WHERE id = ?", (job_id,))
+        status, err = cursor.fetchone()
+        self.assertEqual(status, "failed")
+        self.assertIn("Остановлено пользователем", err)
+
+        # 2. Перезапуск
+        restarted = self.db.restart_job(job_id)
+        self.assertTrue(restarted)
+        cursor.execute("SELECT status, attempts, error_message FROM sync_queue WHERE id = ?", (job_id,))
+        status, attempts, err = cursor.fetchone()
+        self.assertEqual(status, "pending")
+        self.assertEqual(attempts, 0)
+        self.assertIsNone(err)
+
+        # 3. Удаление
+        deleted = self.db.delete_job(job_id)
+        self.assertTrue(deleted)
+        cursor.execute("SELECT COUNT(*) FROM sync_queue WHERE id = ?", (job_id,))
+        self.assertEqual(cursor.fetchone()[0], 0)
+
+    def test_job_duration_calculation(self):
+        """Проверяет расчет длительности выполнения задачи."""
+        job_id = self.db.add_to_queue("duration-repo")
+        self.db.fetch_next_job()
+        
+        # Симулируем завершение задачи
+        self.db.update_job_status(job_id, "completed")
+        jobs = self.db.get_queue_jobs()
+        found = [j for j in jobs if j["id"] == job_id][0]
+        self.assertIsNotNone(found["started_at"])
+        self.assertIsNotNone(found["finished_at"])
+        self.assertIsNotNone(found["duration"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

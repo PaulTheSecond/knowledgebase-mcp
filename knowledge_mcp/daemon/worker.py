@@ -31,11 +31,21 @@ class DaemonWorker:
         self.clones_dir = Path(os.environ.get("CLONES_DIR", "data/clones"))
         self.clones_dir.mkdir(parents=True, exist_ok=True)
         self._running = False
+        self.current_job_id: Optional[int] = None
+        self._cancelled_jobs: set[int] = set()
 
     def stop(self) -> None:
         """Останавливает цикл обработки очереди."""
         logger.info("Stopping daemon worker...")
         self._running = False
+
+    def cancel_active_job(self, job_id: int) -> bool:
+        """Помечает задачу как отмененную пользователем."""
+        self._cancelled_jobs.add(job_id)
+        if self.current_job_id == job_id:
+            logger.info(f"Cancellation requested for currently executing job {job_id}")
+            return True
+        return False
 
     def get_git_sha(self, repo_path: Path) -> Optional[str]:
         """Определяет хэш HEAD коммита репозитория.
@@ -69,130 +79,163 @@ class DaemonWorker:
         repo_id = job["repo_id"]
         attempts = job.get("attempts", 0) + 1
 
-        logger.info(f"Processing job {job_id} for repo '{repo_id}' (attempt {attempts})")
-
-        # Получаем конфигурацию репозитория из config.yaml
-        repo_config = get_repository_config(repo_id)
-        if not repo_config:
-            err = f"Repository config for '{repo_id}' not found in config.yaml"
-            logger.error(err)
-            self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err)
-            return
-
-        git_url = repo_config.get("url")
-        branch = repo_config.get("branch", "master")
-        auth = repo_config.get("auth", {})
-        auth_type = auth.get("type")
-
-        local_path = repo_config.get("local_path") or repo_config.get("path")
-        resolved_local_path = None
-        if local_path:
-            p = Path(local_path)
-            if p.exists():
-                resolved_local_path = p
-            elif Path(f"/repos/{p.name}").exists():
-                resolved_local_path = Path(f"/repos/{p.name}")
-            elif os.environ.get("REPOS_DIR") and (Path(os.environ["REPOS_DIR"]) / p.name).exists():
-                resolved_local_path = Path(os.environ["REPOS_DIR"]) / p.name
-
-        if resolved_local_path:
-            dest_path = resolved_local_path
-            is_local = True
-        else:
-            dest_path = self.clones_dir / repo_id
-            is_local = False
-
-        git_mgr = None
-        pat_token = None
-        ssh_key_path = None
-        if not is_local:
-            if auth_type == "pat":
-                token_env = auth.get("token_env", "GITHUB_PAT")
-                pat_token = os.environ.get(token_env)
-                if not pat_token:
-                    err = f"PAT token environment variable '{token_env}' is not set."
-                    logger.error(err)
-                    self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err)
-                    return
-            elif auth_type == "ssh":
-                ssh_key_path = auth.get("private_key_path")
-
-            # Настраиваем GitManager
-            git_mgr = GitManager(pat_token=pat_token, ssh_key_path=ssh_key_path)
-
-        # Обновляем глобальный статус системы на 'syncing'
-        self.db.update_system_status("syncing")
-
+        self.current_job_id = job_id
         try:
-            if not is_local:
-                # Клонируем или обновляем репозиторий
-                if not dest_path.exists() or not (dest_path / ".git").exists():
-                    logger.info(f"Cloning '{repo_id}' from remote URL")
-                    git_mgr.clone(git_url, dest_path)
-                else:
-                    logger.info(f"Pulling latest updates for '{repo_id}'")
-                    git_mgr.pull(dest_path, branch=branch)
-            else:
-                logger.info(f"Using local repository for '{repo_id}' at {dest_path}")
+            logger.info(f"Processing job {job_id} for repo '{repo_id}' (attempt {attempts})")
 
-            # Получаем HEAD SHA
-            current_sha = self.get_git_sha(dest_path)
-            if not current_sha:
-                raise RuntimeError("Failed to retrieve Git SHA after synchronization.")
-
-            # Проверяем идемпотентность по SHA коммита
-            last_indexed_sha = self.db.get_indexed_commit(repo_id)
-            if last_indexed_sha == current_sha:
-                logger.info(f"Repository '{repo_id}' is already indexed at SHA {current_sha}. Skipping indexer.")
-                self.db.update_job_status(job_id, "completed")
-                self.db.update_system_status("idle", last_indexed_at=time.time())
+            # Проверяем не была ли задача отменена до начала выполнения
+            if job_id in self._cancelled_jobs:
+                self._cancelled_jobs.discard(job_id)
+                logger.info(f"Job {job_id} was cancelled before execution.")
                 return
 
-            # Запускаем индексацию репозитория
-            changed_files = job.get("changed_files")
-            if changed_files:
-                logger.info(f"SHA changed ({last_indexed_sha} -> {current_sha}). Targeted delta-syncing {len(changed_files)} files in '{repo_id}'...")
-                self.indexer.sync_repo(repo_id, str(dest_path), target_files=changed_files)
+            # Получаем конфигурацию репозитория из config.yaml
+            repo_config = get_repository_config(repo_id)
+            if not repo_config:
+                err = f"Repository config for '{repo_id}' not found in config.yaml"
+                logger.error(err)
+                self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err)
+                return
+
+            git_url = repo_config.get("url")
+            branch = repo_config.get("branch", "master")
+            auth = repo_config.get("auth", {})
+            auth_type = auth.get("type")
+
+            local_path = repo_config.get("local_path") or repo_config.get("path")
+            resolved_local_path = None
+            if local_path:
+                p = Path(local_path)
+                if p.exists():
+                    resolved_local_path = p
+                elif Path(f"/repos/{p.name}").exists():
+                    resolved_local_path = Path(f"/repos/{p.name}")
+                elif os.environ.get("REPOS_DIR") and (Path(os.environ["REPOS_DIR"]) / p.name).exists():
+                    resolved_local_path = Path(os.environ["REPOS_DIR"]) / p.name
+
+            if resolved_local_path:
+                dest_path = resolved_local_path
+                is_local = True
             else:
-                logger.info(f"SHA changed ({last_indexed_sha} -> {current_sha}). Indexing repo '{repo_id}'...")
-                self.indexer.sync_repo(repo_id, str(dest_path))
+                dest_path = self.clones_dir / repo_id
+                is_local = False
 
-            # Сохраняем информацию об успешном индексировании коммита
-            self.db.update_indexed_commit(repo_id, current_sha)
-            self.db.update_job_status(job_id, "completed")
-            self.db.update_system_status("idle", last_indexed_at=time.time())
-            logger.info(f"Job {job_id} completed successfully for repo '{repo_id}' at SHA {current_sha}")
+            git_mgr = None
+            pat_token = None
+            ssh_key_path = None
+            if not is_local:
+                if auth_type == "pat":
+                    token_env = auth.get("token_env", "GITHUB_PAT")
+                    pat_token = os.environ.get(token_env)
+                    if not pat_token:
+                        err = f"PAT token environment variable '{token_env}' is not set."
+                        logger.error(err)
+                        self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err)
+                        return
+                elif auth_type == "ssh":
+                    ssh_key_path = auth.get("private_key_path")
 
-        except Exception as e:
-            logger.exception(f"Error processing job {job_id} for repo '{repo_id}': {e}")
-            err_msg = str(e)
+                # Настраиваем GitManager
+                git_mgr = GitManager(pat_token=pat_token, ssh_key_path=ssh_key_path)
 
-            # Расчёт задержки для экспоненциального бэк-оффа:
-            # Попытка 1: 60 сек, Попытка 2: 300 сек, Попытка 3: перевод в halted
-            retry_delays = {1: 60, 2: 300}
-            max_attempts = 3
+            # Обновляем глобальный статус системы на 'syncing'
+            self.db.update_system_status("syncing")
 
-            if attempts < max_attempts:
-                # Есть ещё попытки — возвращаем задачу в pending с задержкой
-                delay = retry_delays.get(attempts, 300)
-                logger.warning(
-                    f"Job {job_id} failed (attempt {attempts}/{max_attempts}). "
-                    f"Rescheduling with {delay}s delay."
-                )
-                self.db.reschedule_job(job_id, attempts, delay, err_msg)
-                self.db.update_system_status("idle", last_error=err_msg)
-            else:
-                # Все попытки исчерпаны — переводим задачу в failed и воркер в halted
-                logger.error(
-                    f"Job {job_id} failed after {max_attempts} attempts. "
-                    f"Halting worker. Error: {err_msg}"
-                )
-                self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err_msg)
-                self.db.update_system_status("halted", last_error=err_msg)
+            try:
+                if not is_local:
+                    # Клонируем или обновляем репозиторий
+                    if not dest_path.exists() or not (dest_path / ".git").exists():
+                        logger.info(f"Cloning '{repo_id}' from remote URL")
+                        git_mgr.clone(git_url, dest_path)
+                    else:
+                        logger.info(f"Pulling latest updates for '{repo_id}'")
+                        git_mgr.pull(dest_path, branch=branch)
+                else:
+                    logger.info(f"Using local repository for '{repo_id}' at {dest_path}")
+
+                if job_id in self._cancelled_jobs:
+                    self._cancelled_jobs.discard(job_id)
+                    logger.info(f"Job {job_id} cancelled during Git sync.")
+                    self.db.update_system_status("idle")
+                    return
+
+                # Получаем HEAD SHA
+                current_sha = self.get_git_sha(dest_path)
+                if not current_sha:
+                    raise RuntimeError("Failed to retrieve Git SHA after synchronization.")
+
+                # Проверяем идемпотентность по SHA коммита
+                last_indexed_sha = self.db.get_indexed_commit(repo_id)
+                if last_indexed_sha == current_sha:
+                    logger.info(f"Repository '{repo_id}' is already indexed at SHA {current_sha}. Skipping indexer.")
+                    self.db.update_job_status(job_id, "completed")
+                    self.db.update_system_status("idle", last_indexed_at=time.time())
+                    return
+
+                if job_id in self._cancelled_jobs:
+                    self._cancelled_jobs.discard(job_id)
+                    logger.info(f"Job {job_id} cancelled before indexing.")
+                    self.db.update_system_status("idle")
+                    return
+
+                # Запускаем индексацию репозитория
+                changed_files = job.get("changed_files")
+                if changed_files:
+                    logger.info(f"SHA changed ({last_indexed_sha} -> {current_sha}). Targeted delta-syncing {len(changed_files)} files in '{repo_id}'...")
+                    self.indexer.sync_repo(repo_id, str(dest_path), target_files=changed_files)
+                else:
+                    logger.info(f"SHA changed ({last_indexed_sha} -> {current_sha}). Indexing repo '{repo_id}'...")
+                    self.indexer.sync_repo(repo_id, str(dest_path))
+
+                # Сохраняем информацию об успешном индексировании коммита
+                self.db.update_indexed_commit(repo_id, current_sha)
+                self.db.update_job_status(job_id, "completed")
+                self.db.update_system_status("idle", last_indexed_at=time.time())
+                logger.info(f"Job {job_id} completed successfully for repo '{repo_id}' at SHA {current_sha}")
+
+            except Exception as e:
+                # Если задача была отменена пользователем вручную, не считаем это критической ошибкой воркера
+                if job_id in self._cancelled_jobs:
+                    self._cancelled_jobs.discard(job_id)
+                    logger.info(f"Job {job_id} cancelled by user during execution.")
+                    self.db.update_system_status("idle")
+                    return
+
+                logger.exception(f"Error processing job {job_id} for repo '{repo_id}': {e}")
+                err_msg = str(e)
+
+                # Расчёт задержки для экспоненциального бэк-оффа:
+                # Попытка 1: 60 сек, Попытка 2: 300 сек, Попытка 3: перевод в halted
+                retry_delays = {1: 60, 2: 300}
+                max_attempts = 3
+
+                if attempts < max_attempts:
+                    # Есть ещё попытки — возвращаем задачу в pending с задержкой
+                    delay = retry_delays.get(attempts, 300)
+                    logger.warning(
+                        f"Job {job_id} failed (attempt {attempts}/{max_attempts}). "
+                        f"Rescheduling with {delay}s delay."
+                    )
+                    self.db.reschedule_job(job_id, attempts, delay, err_msg)
+                    self.db.update_system_status("idle", last_error=err_msg)
+                else:
+                    # Все попытки исчерпаны — переводим задачу в failed и воркер в halted
+                    logger.error(
+                        f"Job {job_id} failed after {max_attempts} attempts. "
+                        f"Halting worker. Error: {err_msg}"
+                    )
+                    self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err_msg)
+                    self.db.update_system_status("halted", last_error=err_msg)
+        finally:
+            self.current_job_id = None
 
     def start(self) -> None:
         """Запускает цикл обработки очереди."""
         logger.info("Starting background daemon worker loop...")
+        stale_count = self.db.reset_stale_jobs()
+        if stale_count > 0:
+            logger.info(f"Reset {stale_count} stale processing job(s) from previous run.")
+
         self._running = True
         while self._running:
             try:

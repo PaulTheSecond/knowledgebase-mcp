@@ -25,21 +25,26 @@ logger = logging.getLogger(__name__)
 
 event_loop = None
 start_daemon = False
+worker_instance = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global event_loop
+    global event_loop, worker_instance
     event_loop = asyncio.get_running_loop()
     
-    worker = None
     scheduler = None
+    if db:
+        stale_count = db.reset_stale_jobs()
+        if stale_count > 0:
+            logger.info(f"Reset {stale_count} stale processing job(s) on server startup.")
+
     if db and start_daemon:
         import threading
         from knowledge_mcp.daemon.worker import DaemonWorker
         from knowledge_mcp.daemon.scheduler import CronScheduler
         
-        worker = DaemonWorker(db.db_path)
-        worker_thread = threading.Thread(target=worker.start, daemon=True, name="DaemonWorkerThread")
+        worker_instance = DaemonWorker(db.db_path)
+        worker_thread = threading.Thread(target=worker_instance.start, daemon=True, name="DaemonWorkerThread")
         worker_thread.start()
         logger.info("DaemonWorker background thread started.")
         
@@ -53,9 +58,10 @@ async def lifespan(app: FastAPI):
         if scheduler:
             scheduler.stop()
             logger.info("CronScheduler stopped.")
-        if worker:
-            worker.stop()
+        if worker_instance:
+            worker_instance.stop()
             logger.info("DaemonWorker stopped.")
+            worker_instance = None
         event_loop = None
 
 app = FastAPI(title="Knowledge Base Sync Trigger", lifespan=lifespan)
@@ -198,6 +204,72 @@ async def api_retry_failed_jobs(
         "status": "retried",
         "count": count,
         "message": t("queue.retried", locale=locale, count=count)
+    }
+
+@app.post("/api/queue/{job_id}/stop")
+async def api_stop_job(
+    job_id: int,
+    username: str = Depends(verify_basic_auth),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
+):
+    """Останавливает задачу в очереди."""
+    locale = _get_request_locale(accept_language)
+    if not db:
+        raise HTTPException(status_code=500, detail=t("system.not_initialized", locale=locale))
+
+    if worker_instance:
+        worker_instance.cancel_active_job(job_id)
+
+    success = db.stop_job(job_id)
+    if not success:
+        raise HTTPException(status_code=400, detail=t("queue.job_cannot_stop", locale=locale, job_id=job_id))
+    return {
+        "status": "stopped",
+        "job_id": job_id,
+        "message": t("queue.job_stopped", locale=locale, job_id=job_id)
+    }
+
+@app.post("/api/queue/{job_id}/restart")
+async def api_restart_job(
+    job_id: int,
+    username: str = Depends(verify_basic_auth),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
+):
+    """Перезапускает задачу в очереди (сбрасывает в pending)."""
+    locale = _get_request_locale(accept_language)
+    if not db:
+        raise HTTPException(status_code=500, detail=t("system.not_initialized", locale=locale))
+
+    success = db.restart_job(job_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=t("queue.job_not_found", locale=locale, job_id=job_id))
+    return {
+        "status": "restarted",
+        "job_id": job_id,
+        "message": t("queue.job_restarted", locale=locale, job_id=job_id)
+    }
+
+@app.delete("/api/queue/{job_id}")
+async def api_delete_job(
+    job_id: int,
+    username: str = Depends(verify_basic_auth),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
+):
+    """Удаляет задачу из очереди."""
+    locale = _get_request_locale(accept_language)
+    if not db:
+        raise HTTPException(status_code=500, detail=t("system.not_initialized", locale=locale))
+
+    if worker_instance:
+        worker_instance.cancel_active_job(job_id)
+
+    success = db.delete_job(job_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=t("queue.job_not_found", locale=locale, job_id=job_id))
+    return {
+        "status": "deleted",
+        "job_id": job_id,
+        "message": t("queue.job_deleted", locale=locale, job_id=job_id)
     }
 
 @app.post("/api/sync/{repo_id}")

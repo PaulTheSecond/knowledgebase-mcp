@@ -5,6 +5,11 @@ export interface QueueJob {
   attempts: number;
   last_error?: string | null;
   created_at: string;
+  updated_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration?: string | null;
+  duration_seconds?: number | null;
 }
 
 export interface SystemStatus {

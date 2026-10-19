@@ -40,11 +40,46 @@ export class QueueComponent implements OnInit {
     this.api.retryFailedJobs().subscribe({
       next: (res) => {
         this.retrying.set(false);
-        alert(res.message || this.i18n.t('queue.retried', { count: res.count }));
         this.loadQueue();
       },
       error: (err) => {
         this.retrying.set(false);
+        alert(err.error?.detail || err.message);
+      }
+    });
+  }
+
+  stopJob(jobId: number): void {
+    this.api.stopJob(jobId).subscribe({
+      next: () => {
+        this.loadQueue();
+      },
+      error: (err) => {
+        alert(err.error?.detail || err.message);
+      }
+    });
+  }
+
+  restartJob(jobId: number): void {
+    this.api.restartJob(jobId).subscribe({
+      next: () => {
+        this.loadQueue();
+      },
+      error: (err) => {
+        alert(err.error?.detail || err.message);
+      }
+    });
+  }
+
+  deleteJob(jobId: number): void {
+    if (!confirm(this.i18n.t('queue.confirm_delete', { id: jobId }))) {
+      return;
+    }
+    this.api.deleteJob(jobId).subscribe({
+      next: () => {
+        this.loadQueue();
+      },
+      error: (err) => {
         alert(err.error?.detail || err.message);
       }
     });

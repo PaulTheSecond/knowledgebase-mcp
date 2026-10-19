@@ -48,6 +48,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # Очередь задач и синхронизация
         "queue.sync_queued": "Синхронизация репозитория '{repo_id}' поставлена в очередь (задача #{job_id})",
         "queue.retried": "Сброшено задач для повторной попытки: {count}",
+        "queue.job_stopped": "Задача #{job_id} успешно остановлена",
+        "queue.job_cannot_stop": "Не удалось остановить задачу #{job_id} (задача уже завершена)",
+        "queue.job_restarted": "Задача #{job_id} успешно перезапущена",
+        "queue.job_deleted": "Задача #{job_id} успешно удалена",
+        "queue.job_not_found": "Задача #{job_id} не найдена в очереди",
 
         # Статусы фонового воркера
         "worker.idle": "Воркер: Ожидание",
@@ -98,15 +103,20 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
 
         # Settings
         "settings.saved": "Settings saved successfully",
-        "settings.invalid_payload": "Invalid settings payload: {error}",
+        "settings.invalid_payload": "Invalid settings parameters: {error}",
 
-        # Task queue and synchronization
-        "queue.sync_queued": "Repository '{repo_id}' sync queued (job #{job_id})",
-        "queue.retried": "Tasks reset for retry: {count}",
+        # Queue
+        "queue.sync_queued": "Sync for repository '{repo_id}' queued (job #{job_id})",
+        "queue.retried": "Retried failed jobs: {count}",
+        "queue.job_stopped": "Job #{job_id} stopped successfully",
+        "queue.job_cannot_stop": "Could not stop job #{job_id} (job already finished)",
+        "queue.job_restarted": "Job #{job_id} restarted successfully",
+        "queue.job_deleted": "Job #{job_id} deleted successfully",
+        "queue.job_not_found": "Job #{job_id} not found in queue",
 
-        # Daemon worker states
+        # Worker status
         "worker.idle": "Worker: Idle",
-        "worker.processing": "Worker: Processing",
+        "worker.processing": "Worker: Indexing",
         "worker.halted": "Worker: Halted (Critical Error)",
         "worker.error": "Worker: Error",
 
