@@ -20,7 +20,7 @@ export class ThemeService {
   }
 
   private getInitialTheme(): ThemeMode {
-    const saved = localStorage.getItem('kmcp_theme') as ThemeMode;
+    const saved = (localStorage.getItem('kb_theme') || localStorage.getItem('kmcp_theme')) as ThemeMode;
     if (saved && ['dark', 'light', 'system'].includes(saved)) {
       return saved;
     }
@@ -29,6 +29,7 @@ export class ThemeService {
 
   setTheme(theme: ThemeMode): void {
     this.themeSignal.set(theme);
+    localStorage.setItem('kb_theme', theme);
     localStorage.setItem('kmcp_theme', theme);
     this.applyTheme(theme);
   }
@@ -36,11 +37,13 @@ export class ThemeService {
   private applyTheme(theme: ThemeMode): void {
     const isDark = theme === 'system' ? this.mediaQuery.matches : theme === 'dark';
     if (isDark) {
-      document.documentElement.removeAttribute('data-theme');
+      document.documentElement.setAttribute('data-theme', 'dark');
+      document.body.setAttribute('data-theme', 'dark');
       document.body.classList.remove('tui-theme-light');
       document.body.classList.add('tui-theme-dark');
     } else {
       document.documentElement.setAttribute('data-theme', 'light');
+      document.body.setAttribute('data-theme', 'light');
       document.body.classList.remove('tui-theme-dark');
       document.body.classList.add('tui-theme-light');
     }

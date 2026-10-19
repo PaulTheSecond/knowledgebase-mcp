@@ -4,17 +4,18 @@
   width: 260px;
   min-width: 260px;
   height: 100vh;
-  background-color: var(--bg-sidebar, #18181b);
-  border-right: 1px solid var(--border-color, #27272a);
+  background-color: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
   user-select: none;
   box-sizing: border-box;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 
   &__brand {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 20px 18px;
-    border-bottom: 1px solid var(--border-color, #27272a);
+    border-bottom: 1px solid var(--border-color);
   }
 
   &__logo {
@@ -39,7 +40,7 @@
     font-size: 16px;
     font-weight: 700;
     letter-spacing: -0.3px;
-    color: var(--text-main, #f4f4f5);
+    color: var(--text-primary) !important;
   }
 
   &__badge {
@@ -47,7 +48,7 @@
     font-weight: 700;
     text-transform: uppercase;
     background: rgba(59, 130, 246, 0.15);
-    color: #60a5fa;
+    color: var(--accent-color);
     border: 1px solid rgba(59, 130, 246, 0.3);
     padding: 1px 6px;
     border-radius: 4px;
@@ -72,21 +73,21 @@
     text-decoration: none;
     font-size: 14px;
     font-weight: 500;
-    color: var(--text-muted, #a1a1aa);
+    color: var(--text-secondary);
     transition: all 0.15s ease-in-out;
 
     &:hover {
-      background-color: var(--hover-color, rgba(255, 255, 255, 0.05));
-      color: var(--text-main, #f4f4f5);
+      background-color: var(--bg-tertiary);
+      color: var(--text-primary);
     }
 
     &.active {
-      background: var(--active-bg, rgba(59, 130, 246, 0.12));
-      color: var(--primary-color, #3b82f6);
+      background: rgba(59, 130, 246, 0.12);
+      color: var(--accent-color);
       font-weight: 600;
 
       .sidebar__icon svg {
-        stroke: var(--primary-color, #3b82f6);
+        stroke: var(--accent-color);
       }
     }
   }
@@ -106,7 +107,7 @@
   }
 
   &__counter {
-    background: #ef4444;
+    background: var(--red-color);
     color: #ffffff;
     font-size: 11px;
     font-weight: 700;
@@ -120,8 +121,8 @@
     flex-direction: column;
     gap: 10px;
     padding: 14px 12px 18px;
-    border-top: 1px solid var(--border-color, #27272a);
-    background-color: var(--bg-sidebar-footer, rgba(0, 0, 0, 0.08));
+    border-top: 1px solid var(--border-color);
+    background-color: var(--bg-secondary);
   }
 
   &__status {
@@ -130,9 +131,10 @@
     gap: 8px;
     padding: 8px 10px;
     border-radius: 6px;
-    background: var(--card-bg, #27272a);
+    background: var(--bg-tertiary);
     font-size: 12px;
-    color: var(--text-muted, #a1a1aa);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
 
     .status-indicator {
       width: 8px;
@@ -142,19 +144,19 @@
     }
 
     &.status--idle .status-indicator {
-      background-color: #10b981;
-      box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);
+      background-color: var(--green-color);
+      box-shadow: 0 0 6px var(--green-glow);
     }
 
     &.status--processing .status-indicator {
-      background-color: #f59e0b;
-      box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+      background-color: var(--yellow-color);
+      box-shadow: 0 0 8px rgba(234, 179, 8, 0.6);
       animation: pulse 1.5s infinite ease-in-out;
     }
 
     &.status--halted .status-indicator,
     &.status--error .status-indicator {
-      background-color: #ef4444;
+      background-color: var(--red-color);
       box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
       animation: pulse 1s infinite ease-in-out;
     }
@@ -175,7 +177,7 @@
     border: none;
     border-radius: 8px;
     background: transparent;
-    color: var(--text-muted, #a1a1aa);
+    color: var(--text-secondary);
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
@@ -183,8 +185,8 @@
     transition: all 0.15s ease-in-out;
 
     &:hover {
-      background-color: var(--hover-color, rgba(255, 255, 255, 0.07));
-      color: var(--text-main, #f4f4f5);
+      background-color: var(--bg-tertiary);
+      color: var(--text-primary);
 
       .sidebar__icon svg {
         transform: rotate(30deg);
