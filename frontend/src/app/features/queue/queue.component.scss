@@ -1,3 +1,20 @@
+:host {
+  display: block;
+  color: var(--text-primary);
+}
+
+.card-header-flex {
+  h2 {
+    color: var(--text-primary) !important;
+    font-size: 20px;
+    margin-bottom: 4px;
+  }
+
+  p {
+    color: var(--text-secondary) !important;
+  }
+}
+
 .table-container {
   overflow-x: auto;
 }
@@ -11,14 +28,20 @@
     padding: 14px 16px;
     border-bottom: 1px solid var(--border-color);
     font-size: 13.5px;
+    color: var(--text-primary) !important;
   }
 
   th {
-    color: var(--text-secondary);
+    color: var(--text-secondary) !important;
     font-weight: 600;
     text-transform: uppercase;
     font-size: 11.5px;
     letter-spacing: 0.5px;
+    background-color: var(--bg-tertiary);
+  }
+
+  td {
+    color: var(--text-primary) !important;
   }
 
   tr:hover td {
@@ -31,11 +54,11 @@
 }
 
 .text-muted {
-  color: var(--text-muted);
+  color: var(--text-secondary) !important;
 }
 
 .text-danger {
-  color: var(--red-color);
+  color: var(--red-color) !important;
   cursor: help;
 }
 
@@ -51,7 +74,7 @@
   &.btn-secondary {
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-color);
-    color: var(--text-primary);
+    color: var(--text-primary) !important;
 
     &:hover {
       background-color: var(--border-color);
