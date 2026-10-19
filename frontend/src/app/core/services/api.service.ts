@@ -5,6 +5,7 @@ import { SystemStatus, QueueJob } from '../models/queue.model';
 import { SystemSettings, UpdateSettingsPayload } from '../models/settings.model';
 import { Repository } from '../models/repository.model';
 import { I18nService } from './i18n.service';
+import { AuthService } from './auth.service';
 
 @Injectable({
   providedIn: 'root'
@@ -12,11 +13,26 @@ import { I18nService } from './i18n.service';
 export class ApiService {
   private readonly http = inject(HttpClient);
   private readonly i18n = inject(I18nService);
+  private readonly auth = inject(AuthService);
 
   private getHeaders(): HttpHeaders {
-    return new HttpHeaders({
+    let headers = new HttpHeaders({
       'Accept-Language': this.i18n.currentLocale()
     });
+    const authHeader = this.auth.getAuthHeader();
+    if (authHeader) {
+      headers = headers.set('Authorization', authHeader);
+    }
+    return headers;
+  }
+
+  checkAuth(username: string, pass: string): Observable<SystemStatus> {
+    const encoded = btoa(`${username}:${pass}`);
+    const headers = new HttpHeaders({
+      'Accept-Language': this.i18n.currentLocale(),
+      'Authorization': `Basic ${encoded}`
+    });
+    return this.http.get<SystemStatus>('/api/status', { headers });
   }
 
   getStatus(): Observable<SystemStatus> {

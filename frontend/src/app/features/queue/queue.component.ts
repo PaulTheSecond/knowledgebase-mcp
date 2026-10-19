@@ -21,6 +21,7 @@ export class QueueComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadQueue();
+    window.addEventListener('kb:refresh', () => this.loadQueue());
   }
 
   loadQueue(): void {

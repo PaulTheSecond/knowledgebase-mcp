@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, inject, signal, input, output, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Repository } from '../../../core/models/repository.model';
@@ -12,10 +12,13 @@ import { I18nService } from '../../../core/services/i18n.service';
   templateUrl: './repo-dialog.component.html',
   styleUrls: ['./repo-dialog.component.scss']
 })
-export class RepoDialogComponent {
+export class RepoDialogComponent implements OnInit {
   private readonly fb = inject(FormBuilder);
   private readonly api = inject(ApiService);
   readonly i18n = inject(I18nService);
+
+  readonly repo = input<Repository | undefined>(undefined);
+  readonly close = output<boolean>();
 
   readonly isEditing = signal(false);
   readonly testing = signal(false);
@@ -34,6 +37,10 @@ export class RepoDialogComponent {
     webhooks: [true],
     cron: ['0 */4 * * *']
   });
+
+  ngOnInit(): void {
+    this.initData(this.repo());
+  }
 
   initData(repo?: Repository): void {
     if (repo) {
@@ -66,16 +73,16 @@ export class RepoDialogComponent {
   }
 
   testConnection(): void {
-    if (!this.form.value.url) return;
     this.testing.set(true);
     this.testResult.set(null);
 
+    const val = this.form.getRawValue();
     const payload = {
-      url: this.form.value.url,
-      branch: this.form.value.branch,
-      auth_type: this.form.value.authType,
-      token_env: this.form.value.tokenEnv,
-      private_key_path: this.form.value.sshPath
+      url: val.url?.trim(),
+      branch: val.branch?.trim() || 'master',
+      auth_type: val.authType,
+      token_env: val.authType === 'pat' ? val.tokenEnv : undefined,
+      private_key_path: val.authType === 'ssh' ? val.sshPath : undefined
     };
 
     this.api.testGit(payload).subscribe({
@@ -124,6 +131,7 @@ export class RepoDialogComponent {
     request$.subscribe({
       next: () => {
         this.saving.set(false);
+        this.close.emit(true);
         if (this.onClose) this.onClose(true);
       },
       error: (err) => {
@@ -134,6 +142,7 @@ export class RepoDialogComponent {
   }
 
   cancel(): void {
+    this.close.emit(false);
     if (this.onClose) this.onClose(false);
   }
 }

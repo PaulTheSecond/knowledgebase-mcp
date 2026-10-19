@@ -10,6 +10,14 @@
   </div>
 
   @if (isSettingsOpen()) {
-    <app-settings-dialog (close)="closeSettings()"></app-settings-dialog>
+    <div class="modal-backdrop" (click)="closeSettingsOnBackdrop($event)">
+      <app-settings-dialog (close)="closeSettings()"></app-settings-dialog>
+    </div>
+  }
+
+  @if (auth.isAuthModalOpen()) {
+    <div class="modal-backdrop">
+      <app-auth-dialog></app-auth-dialog>
+    </div>
   }
 </tui-root>

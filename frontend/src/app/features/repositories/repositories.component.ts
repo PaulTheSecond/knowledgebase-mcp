@@ -27,6 +27,7 @@ export class RepositoriesComponent implements OnInit, OnDestroy {
   readonly selectedRepo = signal<Repository | undefined>(undefined);
 
   private wsSub?: Subscription;
+  private readonly refreshHandler = () => this.loadRepositories();
 
   ngOnInit(): void {
     this.loadRepositories();
@@ -34,10 +35,13 @@ export class RepositoriesComponent implements OnInit, OnDestroy {
     this.wsSub = this.ws.progress$.subscribe((data: SyncProgressData) => {
       this.handleProgress(data);
     });
+
+    window.addEventListener('kb:refresh', this.refreshHandler);
   }
 
   ngOnDestroy(): void {
     this.wsSub?.unsubscribe();
+    window.removeEventListener('kb:refresh', this.refreshHandler);
   }
 
   loadRepositories(): void {
@@ -47,7 +51,7 @@ export class RepositoriesComponent implements OnInit, OnDestroy {
         this.api.getSettings().subscribe({
           next: (settingsData) => {
             const statusMap = new Map(statusData.repositories.map(r => [r.id, r]));
-            const merged = settingsData.repositories.map(repo => {
+            const merged = (settingsData.repositories || []).map(repo => {
               const stat = statusMap.get(repo.id);
               return {
                 ...repo,
@@ -58,25 +62,27 @@ export class RepositoriesComponent implements OnInit, OnDestroy {
             this.repositories.set(merged);
             this.loading.set(false);
           },
-          error: () => this.loading.set(false)
+          error: () => {
+            this.repositories.set((statusData.repositories || []) as any);
+            this.loading.set(false);
+          }
         });
       },
-      error: () => this.loading.set(false)
+      error: () => {
+        this.loading.set(false);
+      }
     });
   }
 
-  private handleProgress(data: SyncProgressData): void {
-    const current = { ...this.activeProgresses() };
+  handleProgress(data: SyncProgressData): void {
+    const active = { ...this.activeProgresses() };
     if (data.progress === 100 || data.status === 'completed' || data.status === 'failed') {
-      delete current[data.repo_id];
-      this.activeProgresses.set(current);
+      delete active[data.repo_id];
+      this.activeProgresses.set(active);
       this.loadRepositories();
     } else {
-      current[data.repo_id] = {
-        progress: data.progress,
-        status: data.status_key ? this.i18n.t(data.status_key) : data.status
-      };
-      this.activeProgresses.set(current);
+      active[data.repo_id] = { progress: data.progress, status: data.status };
+      this.activeProgresses.set(active);
     }
   }
 
@@ -92,8 +98,15 @@ export class RepositoriesComponent implements OnInit, OnDestroy {
 
   onRepoDialogClose(saved: boolean): void {
     this.showRepoModal.set(false);
+    this.selectedRepo.set(undefined);
     if (saved) {
       this.loadRepositories();
+    }
+  }
+
+  closeRepoModalOnBackdrop(event: MouseEvent): void {
+    if ((event.target as HTMLElement).classList.contains('modal-backdrop')) {
+      this.onRepoDialogClose(false);
     }
   }
 
