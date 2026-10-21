@@ -1,0 +1,139 @@
+<div class="doc-viewer-container">
+  <!-- Панель вкладок файлов (как в IDE) -->
+  <div class="doc-tabs-bar">
+    <div class="tabs-scroll-area">
+      @for (tab of tabs; track tab.id) {
+        <div 
+          class="doc-tab" 
+          [class.active]="tab.id === activeTabId"
+          (click)="selectTab(tab.id)"
+          [attr.title]="tab.filepath">
+          <span class="tab-file-badge" [attr.data-ext]="getFileIcon(tab.filepath)">{{ getFileIcon(tab.filepath) }}</span>
+          <span class="tab-title">{{ tab.filename }}</span>
+          @if (tab.startLine && tab.endLine) {
+            <span class="tab-lines-badge">{{ tab.startLine }}-{{ tab.endLine }}</span>
+          }
+          <button 
+            type="button" 
+            class="btn-tab-close" 
+            (click)="closeTab(tab.id, $event)" 
+            title="Закрыть вкладку">
+            ✕
+          </button>
+        </div>
+      }
+    </div>
+    <div class="tabs-actions">
+      <button 
+        type="button" 
+        class="btn-close-all" 
+        (click)="closeAll()" 
+        title="Закрыть панель документов">
+        ✕
+      </button>
+    </div>
+  </div>
+
+  @if (activeTab; as tab) {
+    <!-- Подпанель с метаданными и инструментами -->
+    <div class="doc-toolbar">
+      <div class="doc-filepath-info">
+        @if (tab.repoId) {
+          <span class="repo-badge">{{ tab.repoId }}</span>
+        }
+        <span class="doc-filepath" [title]="tab.filepath">{{ tab.filepath }}</span>
+        <button 
+          type="button" 
+          class="btn-tool-icon" 
+          (click)="copyPath(tab)" 
+          title="Скопировать путь к файлу">
+          @if (copiedPath()) {
+            <span class="tool-tip-success">✓</span>
+          } @else {
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          }
+        </button>
+      </div>
+
+      <div class="doc-tool-actions">
+        <!-- Переключатель режима для Markdown (Превью / Код) -->
+        @if (isMarkdown(tab.filepath)) {
+          <button 
+            type="button" 
+            class="btn-pill-toggle" 
+            [class.active]="tab.viewMode === 'rendered'"
+            (click)="toggleViewMode(tab)">
+            {{ tab.viewMode === 'rendered' ? '👁️ Превью' : '📝 Исходник' }}
+          </button>
+        }
+
+        <!-- Переключатель: весь файл или целевой фрагмент -->
+        @if (tab.startLine && tab.endLine) {
+          <button 
+            type="button" 
+            class="btn-pill-toggle" 
+            [class.active]="tab.scopeMode === 'full'"
+            (click)="toggleScopeMode(tab)"
+            title="Переключить просмотр всего файла или только найденных строк">
+            {{ tab.scopeMode === 'full' ? 'Весь файл' : 'Строки ' + tab.startLine + '-' + tab.endLine }}
+          </button>
+        }
+
+        <!-- Кнопка копирования содержимого -->
+        <button 
+          type="button" 
+          class="btn-tool-icon" 
+          (click)="copyContent(tab)" 
+          title="Скопировать содержимое">
+          @if (copiedContent()) {
+            <span class="tool-tip-success">✓ Скопировано</span>
+          } @else {
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          }
+        </button>
+      </div>
+    </div>
+
+    <!-- Основная область содержимого документа -->
+    <div class="doc-body">
+      @if (tab.loading) {
+        <div class="doc-loading-state">
+          <div class="spinner-md"></div>
+          <p>Загрузка содержимого файла...</p>
+        </div>
+      } @else if (tab.error) {
+        <div class="doc-error-state">
+          <div class="error-icon">⚠️</div>
+          <h4>Не удалось загрузить файл</h4>
+          <p>{{ tab.error }}</p>
+          <button class="btn btn-sm btn-primary" (click)="retryLoad(tab)">Повторить попытку</button>
+        </div>
+      } @else if (isMarkdown(tab.filepath) && tab.viewMode === 'rendered') {
+        <!-- Режим отрендеренного Markdown с диаграммами Mermaid -->
+        <div class="markdown-preview-container markdown-body" #markdownPreview [innerHTML]="getRenderedMarkdown(tab.fullContent)">
+        </div>
+      } @else {
+        <!-- Режим исходного кода с номерами строк и подсветкой фрагмента -->
+        <div class="code-viewer-container" #codeContainer>
+          <div class="code-lines-wrapper">
+            @for (line of getDisplayLines(tab); track line.num) {
+              <div 
+                class="code-line-row" 
+                [class.line-highlight]="line.isHighlighted"
+                [id]="'line-' + line.num">
+                <span class="line-num">{{ line.num }}</span>
+                <span class="line-text" [innerHTML]="line.html"></span>
+              </div>
+            }
+          </div>
+        </div>
+      }
+    </div>
+  }
+</div>

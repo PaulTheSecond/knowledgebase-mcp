@@ -1,0 +1,386 @@
+.doc-viewer-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg-secondary);
+  overflow: hidden;
+  position: relative;
+}
+
+// ── Вкладки файлов (IDE-style) ──
+.doc-tabs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: var(--bg-primary);
+  border-bottom: 1px solid var(--border-color);
+  min-height: 38px;
+  max-height: 38px;
+  overflow: hidden;
+  user-select: none;
+}
+
+.tabs-scroll-area {
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex: 1;
+  height: 100%;
+
+  &::-webkit-scrollbar {
+    height: 3px;
+  }
+}
+
+.doc-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  height: 100%;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  border-right: 1px solid var(--border-color);
+  background-color: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  position: relative;
+
+  &:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+  }
+
+  &.active {
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    font-weight: 500;
+
+    &::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background-color: var(--accent-color);
+    }
+  }
+}
+
+.tab-file-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  background-color: var(--bg-tertiary);
+  color: var(--accent-color);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+
+  &[data-ext="C#"] {
+    color: #a78bfa;
+    border-color: rgba(167, 139, 250, 0.4);
+    background-color: rgba(167, 139, 250, 0.1);
+  }
+
+  &[data-ext="PY"] {
+    color: #38bdf8;
+    border-color: rgba(56, 189, 248, 0.4);
+    background-color: rgba(56, 189, 248, 0.1);
+  }
+
+  &[data-ext="TS"], &[data-ext="JS"] {
+    color: #facc15;
+    border-color: rgba(250, 204, 21, 0.4);
+    background-color: rgba(250, 204, 21, 0.1);
+  }
+
+  &[data-ext="MD"] {
+    color: #34d399;
+    border-color: rgba(52, 211, 153, 0.4);
+    background-color: rgba(52, 211, 153, 0.1);
+  }
+}
+
+.tab-title {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-lines-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  background-color: rgba(59, 130, 246, 0.15);
+  color: var(--accent-color);
+  font-family: monospace;
+}
+
+.btn-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1;
+  transition: all 0.15s ease;
+
+  &:hover {
+    background-color: rgba(239, 68, 68, 0.2);
+    color: var(--red-color);
+  }
+}
+
+.tabs-actions {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+
+.btn-close-all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+
+  &:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+  }
+}
+
+// ── Панель инструментов под вкладками ──
+.doc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.doc-filepath-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.repo-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: rgba(59, 130, 246, 0.15);
+  color: var(--accent-color);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  flex-shrink: 0;
+}
+
+.doc-filepath {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+  font-family: monospace;
+  font-size: 11.5px;
+}
+
+.doc-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-pill-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+
+  &:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-color);
+  }
+
+  &.active {
+    background-color: var(--accent-color);
+    border-color: var(--accent-color);
+    color: white;
+  }
+}
+
+.btn-tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  gap: 4px;
+  transition: all 0.15s ease;
+
+  &:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-color);
+  }
+}
+
+.tool-tip-success {
+  color: var(--green-color);
+  font-weight: 600;
+}
+
+// ── Основная область просмотра (Тело) ──
+.doc-body {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+.markdown-preview-container {
+  padding: 24px 28px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.code-viewer-container {
+  min-height: 100%;
+  background-color: #0d1117;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #e6edf3;
+  overflow-x: auto;
+}
+
+.code-lines-wrapper {
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-line-row {
+  display: flex;
+  min-height: 20px;
+  align-items: flex-start;
+  transition: background-color 0.15s ease;
+
+  &:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+  }
+
+  &.line-highlight {
+    background-color: rgba(56, 139, 253, 0.15) !important;
+    border-left: 3px solid #58a6ff;
+
+    .line-num {
+      color: #58a6ff;
+      font-weight: 700;
+    }
+  }
+}
+
+.line-num {
+  width: 52px;
+  min-width: 52px;
+  padding-right: 14px;
+  text-align: right;
+  color: #6e7681;
+  user-select: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11.5px;
+}
+
+.line-text {
+  padding-left: 14px;
+  white-space: pre;
+  flex: 1;
+  overflow-x: visible;
+}
+
+// ── Состояния загрузки и ошибок ──
+.doc-loading-state, .doc-error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 30px;
+  text-align: center;
+  color: var(--text-secondary);
+
+  p {
+    margin-top: 12px;
+    font-size: 13.5px;
+  }
+}
+
+.doc-error-state {
+  .error-icon {
+    font-size: 32px;
+    margin-bottom: 8px;
+  }
+
+  h4 {
+    color: var(--red-color);
+    margin-bottom: 6px;
+    font-size: 16px;
+  }
+
+  p {
+    max-width: 400px;
+    margin-bottom: 16px;
+  }
+}
+
+.spinner-md {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(59, 130, 246, 0.2);
+  border-top-color: var(--accent-color);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
