@@ -9,6 +9,10 @@ export class ThemeService {
   private readonly themeSignal = signal<ThemeMode>(this.getInitialTheme());
   readonly currentTheme = computed(() => this.themeSignal());
   private readonly mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  readonly isDarkMode = computed(() => {
+    const theme = this.themeSignal();
+    return theme === 'system' ? this.mediaQuery.matches : theme === 'dark';
+  });
 
   constructor() {
     this.applyTheme(this.themeSignal());
