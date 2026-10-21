@@ -9,7 +9,7 @@
               <div class="sources-title">{{ i18n.t('chat.context_sources') }}</div>
               <div class="sources-list">
                 @for (src of msg.sources; track $index) {
-                  <span class="source-tag" (click)="openSource(src.filepath, src.lines)">
+                  <span class="source-tag" (click)="openSource(src.filepath, src.lines, src.repo_id)">
                     {{ src.filepath }} ({{ src.lines }})
                   </span>
                 }

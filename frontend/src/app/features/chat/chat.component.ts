@@ -7,10 +7,18 @@ import { I18nService } from '../../core/services/i18n.service';
 declare const marked: any;
 declare const Prism: any;
 
-interface ChatMessage {
+export interface ChatSource {
+  repo_id?: string;
+  filepath: string;
+  lines: string;
+  line_start?: number;
+  line_end?: number;
+}
+
+export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
-  sources?: Array<{ filepath: string; lines: string }>;
+  sources?: ChatSource[];
 }
 
 @Component({
@@ -88,7 +96,7 @@ export class ChatComponent {
       const decoder = new TextDecoder();
       let buffer = '';
       let fullText = '';
-      let sources: Array<{ filepath: string; lines: string }> | undefined;
+      let sources: ChatSource[] | undefined;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -135,7 +143,7 @@ export class ChatComponent {
     }
   }
 
-  private updateAssistantMessage(idx: number, text: string, sources?: Array<{ filepath: string; lines: string }>): void {
+  private updateAssistantMessage(idx: number, text: string, sources?: ChatSource[]): void {
     this.messages.update(msgs => {
       const updated = [...msgs];
       if (updated[idx]) {
@@ -165,7 +173,7 @@ export class ChatComponent {
     }, 50);
   }
 
-  openSource(filepath: string, lines: string): void {
+  openSource(filepath: string, lines: string, repoId?: string): void {
     let start = 1;
     let end: number | undefined;
     if (lines && lines.includes('-')) {
@@ -174,7 +182,7 @@ export class ChatComponent {
       end = parseInt(parts[1], 10) || undefined;
     }
 
-    this.api.getFileContent(filepath, start, end).subscribe({
+    this.api.getFileContent(filepath, start, end, repoId, false).subscribe({
       next: (res) => {
         this.modalFile.set({
           filepath: res.filepath,

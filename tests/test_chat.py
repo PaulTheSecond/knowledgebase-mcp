@@ -321,3 +321,99 @@ class TestChatAPI(unittest.TestCase):
         self.assertEqual(data["start_line"], 1)
         self.assertEqual(data["end_line"], 3)
         self.assertIn("import", data["content"])
+
+    @patch("knowledge_mcp.daemon.routes.chat.load_config")
+    def test_read_file_from_configured_repo(self, mock_load_config):
+        """Проверяет чтение файла из настроенного репозитория по repo_id и без него."""
+        import tempfile
+        from pathlib import Path
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_file = Path(tmp_dir) / "docs" / "guide.md"
+            repo_file.parent.mkdir(parents=True, exist_ok=True)
+            repo_file.write_text("# Guide\nLine 2\nLine 3\nLine 4\nLine 5", encoding="utf-8")
+            
+            mock_load_config.return_value = {
+                "server": {"dashboard": {"chat": {"enabled": True}}},
+                "repositories": [
+                    {
+                        "id": "my-external-repo",
+                        "local_path": tmp_dir
+                    }
+                ]
+            }
+            os.environ["DASHBOARD_PASSWORD"] = "secret"
+            
+            # Чтение с явным указанием repo_id
+            response = self.client.get(
+                "/api/chat/file?filepath=docs/guide.md&repo_id=my-external-repo&start_line=2&end_line=3",
+                auth=("admin", "secret")
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["filepath"], "docs/guide.md")
+            self.assertEqual(data["repo_id"], "my-external-repo")
+            self.assertEqual(data["start_line"], 2)
+            self.assertEqual(data["end_line"], 3)
+            self.assertEqual(data["total_lines"], 5)
+            self.assertIn("Line 2\nLine 3", data["content"])
+            self.assertFalse(data["is_full_file"])
+            
+            # Чтение всего файла (full_file=true)
+            response_full = self.client.get(
+                "/api/chat/file?filepath=docs/guide.md&repo_id=my-external-repo&start_line=2&end_line=3&full_file=true",
+                auth=("admin", "secret")
+            )
+            self.assertEqual(response_full.status_code, 200)
+            data_full = response_full.json()
+            self.assertTrue(data_full["is_full_file"])
+            self.assertEqual(data_full["start_line"], 2)
+            self.assertEqual(data_full["end_line"], 3)
+            self.assertEqual(data_full["total_lines"], 5)
+            self.assertIn("# Guide\nLine 2\nLine 3\nLine 4\nLine 5", data_full["content"])
+            
+            # Чтение без указания repo_id (автоматический поиск по репозиториям)
+            response_auto = self.client.get(
+                "/api/chat/file?filepath=docs/guide.md",
+                auth=("admin", "secret")
+            )
+            self.assertEqual(response_auto.status_code, 200)
+            self.assertEqual(response_auto.json()["repo_id"], "my-external-repo")
+
+    @patch("httpx.AsyncClient.post")
+    @patch("knowledge_mcp.daemon.routes.chat.load_config")
+    def test_sources_contain_repo_id_and_line_metadata(self, mock_load_config, mock_post):
+        """Проверяет наличие repo_id, line_start и line_end в sources."""
+        mock_load_config.return_value = {
+            "server": {"dashboard": {"chat": {"enabled": True}}}
+        }
+        os.environ["LLM_API_KEY"] = "sk-test"
+        os.environ["DASHBOARD_PASSWORD"] = "secret"
+        
+        self.mock_db.search_chunks_hybrid.return_value = [
+            {
+                "repo_id": "test-repo",
+                "path": "src/test.py",
+                "line_start": 10,
+                "line_end": 20,
+                "content": "def foo(): pass"
+            }
+        ]
+        
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Test answer"}}]
+        }
+        mock_post.return_value = mock_response
+        
+        req_body = {"messages": [{"role": "user", "content": "How foo works"}]}
+        response = self.client.post("/api/chat", json=req_body, auth=("admin", "secret"))
+        self.assertEqual(response.status_code, 200)
+        sources = response.json()["sources"]
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["repo_id"], "test-repo")
+        self.assertEqual(sources[0]["filepath"], "src/test.py")
+        self.assertEqual(sources[0]["lines"], "10-20")
+        self.assertEqual(sources[0]["line_start"], 10)
+        self.assertEqual(sources[0]["line_end"], 20)
