@@ -11,6 +11,7 @@ import {
   AfterViewChecked 
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { SafeHtml } from '@angular/platform-browser';
 import { DocTab } from '../../../core/models/doc-viewer.model';
 import { MarkdownService } from '../../../core/services/markdown.service';
 import { I18nService } from '../../../core/services/i18n.service';
@@ -103,8 +104,8 @@ export class DocViewerComponent implements AfterViewChecked {
     this.needsScroll = true;
   }
 
-  getRenderedMarkdown(content?: string): string {
-    return this.markdown.render(content || '');
+  getRenderedMarkdown(content?: string): SafeHtml {
+    return this.markdown.renderSafe(content || '');
   }
 
   getDisplayLines(tab: DocTab): CodeLineDisplay[] {

@@ -3,6 +3,14 @@ import mermaid from 'mermaid';
 import { ThemeService } from './theme.service';
 
 /**
+ * Получает рабочий инстанс Mermaid с поддержкой как ESM default экспорта, так и пространства имен.
+ */
+function getMermaid(): any {
+  const m = mermaid as any;
+  return m?.default || m;
+}
+
+/**
  * Сервис для безопасного асинхронного рендеринга Mermaid-диаграмм
  * с автоматической синхронизацией темной и светлой темы.
  */
@@ -22,12 +30,19 @@ export class MermaidService {
    */
   private applyMermaidTheme(): void {
     const isDark = this.themeService.isDarkMode();
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: isDark ? 'dark' : 'default',
-      securityLevel: 'loose',
-      fontFamily: 'Outfit, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-    });
+    const m = getMermaid();
+    if (m && typeof m.initialize === 'function') {
+      try {
+        m.initialize({
+          startOnLoad: false,
+          theme: isDark ? 'dark' : 'default',
+          securityLevel: 'loose',
+          fontFamily: 'Outfit, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        });
+      } catch (err) {
+        console.warn('Не удалось инициализировать тему Mermaid:', err);
+      }
+    }
   }
 
   /**
@@ -41,10 +56,15 @@ export class MermaidService {
       return { svg: '', error: 'Диаграмма пуста' };
     }
 
-    const id = `mermaid-diag-${++this.idCounter}-${Date.now()}`;
+    const id = `mermaid_diag_${++this.idCounter}_${Date.now()}`;
+    const m = getMermaid();
+    if (!m || typeof m.render !== 'function') {
+      return { svg: '', error: 'Модуль Mermaid не загружен' };
+    }
+
     try {
       this.applyMermaidTheme();
-      const result = await mermaid.render(id, cleanCode);
+      const result = await m.render(id, cleanCode);
       return { svg: result.svg };
     } catch (err: any) {
       // Mermaid может оставлять временный svg-элемент с ошибкой в DOM, удаляем его

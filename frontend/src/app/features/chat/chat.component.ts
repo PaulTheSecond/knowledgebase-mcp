@@ -9,6 +9,7 @@ import {
   effect 
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { SafeHtml } from '@angular/platform-browser';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../../core/services/api.service';
 import { I18nService } from '../../core/services/i18n.service';
@@ -366,8 +367,8 @@ export class ChatComponent implements AfterViewInit {
     this.scrollToBottom();
   }
 
-  renderMarkdown(content: string): string {
-    return this.markdown.render(content);
+  renderMarkdown(content: string): SafeHtml {
+    return this.markdown.renderSafe(content);
   }
 
   private highlightAndRender(): void {

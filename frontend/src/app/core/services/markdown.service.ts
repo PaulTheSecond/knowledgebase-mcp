@@ -1,4 +1,5 @@
 import { Injectable, inject } from '@angular/core';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { MermaidService } from './mermaid.service';
 
 declare const marked: any;
@@ -53,6 +54,7 @@ function escapeHtml(text: string): string {
 })
 export class MarkdownService {
   private readonly mermaidService = inject(MermaidService);
+  private readonly sanitizer = inject(DomSanitizer);
   private initialized = false;
 
   constructor() {
@@ -72,6 +74,7 @@ export class MarkdownService {
           // 1. Обработка блоков диаграмм Mermaid
           if (lang === 'mermaid') {
             const encodedCode = encodeURIComponent(rawText);
+            const escapedCode = escapeHtml(rawText);
             return `
               <div class="mermaid-block-wrapper" data-mermaid-code="${encodedCode}">
                 <div class="mermaid-block-header">
@@ -92,6 +95,7 @@ export class MarkdownService {
                   <span class="spinner-sm"></span> Отрисовка диаграммы...
                 </div>
                 <div class="mermaid-svg-container"></div>
+                <pre class="mermaid-raw-source" style="display:none"><code>${escapedCode}</code></pre>
               </div>
             `;
           }
@@ -136,6 +140,15 @@ export class MarkdownService {
   }
 
   /**
+   * Преобразует Markdown в доверенный HTML (SafeHtml) для директивы [innerHTML],
+   * предотвращая вырезание Angular DomSanitizer кнопок копирования и атрибутов.
+   */
+  renderSafe(content: string): SafeHtml {
+    const html = this.render(content);
+    return this.sanitizer.bypassSecurityTrustHtml(html);
+  }
+
+  /**
    * Запускает подсветку синтаксиса Prism для всех блоков в контейнере
    */
   highlightCode(container: HTMLElement): void {
@@ -152,10 +165,18 @@ export class MarkdownService {
     const blocks = container.querySelectorAll<HTMLElement>('.mermaid-block-wrapper:not([data-rendered])');
 
     for (const block of Array.from(blocks)) {
+      let code = '';
       const encodedCode = block.getAttribute('data-mermaid-code');
-      if (!encodedCode) continue;
+      if (encodedCode) {
+        code = decodeURIComponent(encodedCode);
+      } else {
+        const rawEl = block.querySelector<HTMLElement>('.mermaid-raw-source code');
+        if (rawEl) {
+          code = rawEl.textContent || '';
+        }
+      }
+      if (!code) continue;
 
-      const code = decodeURIComponent(encodedCode);
       const loadingEl = block.querySelector<HTMLElement>('.mermaid-diagram-loading');
       const svgContainer = block.querySelector<HTMLElement>('.mermaid-svg-container');
 
@@ -198,6 +219,11 @@ export class MarkdownService {
       const encoded = wrapper?.getAttribute('data-mermaid-code');
       if (encoded) {
         textToCopy = decodeURIComponent(encoded);
+      } else {
+        const rawEl = wrapper?.querySelector<HTMLElement>('.mermaid-raw-source code');
+        if (rawEl) {
+          textToCopy = rawEl.textContent || '';
+        }
       }
     } else {
       const wrapper = copyBtn.closest<HTMLElement>('.code-block-wrapper');
