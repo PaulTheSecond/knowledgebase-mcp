@@ -1,25 +1,14 @@
-import { Component, inject, signal, ViewChild, ElementRef } from '@angular/core';
+import { Component, inject, signal, ViewChild, ElementRef, AfterViewInit, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../../core/services/api.service';
 import { I18nService } from '../../core/services/i18n.service';
+import { ThemeService } from '../../core/services/theme.service';
+import { MarkdownService } from '../../core/services/markdown.service';
+import { ChatStorageService } from '../../core/services/chat-storage.service';
+import { ChatMessage, ChatSource } from '../../core/models/chat.model';
 
-declare const marked: any;
-declare const Prism: any;
-
-export interface ChatSource {
-  repo_id?: string;
-  filepath: string;
-  lines: string;
-  line_start?: number;
-  line_end?: number;
-}
-
-export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  sources?: ChatSource[];
-}
+export type { ChatMessage, ChatSource };
 
 @Component({
   selector: 'app-chat',
@@ -28,23 +17,58 @@ export interface ChatMessage {
   templateUrl: './chat.component.html',
   styleUrls: ['./chat.component.scss']
 })
-export class ChatComponent {
+export class ChatComponent implements AfterViewInit {
   private readonly api = inject(ApiService);
   readonly i18n = inject(I18nService);
+  private readonly theme = inject(ThemeService);
+  private readonly markdown = inject(MarkdownService);
+  private readonly chatStorage = inject(ChatStorageService);
 
   @ViewChild('messagesContainer') private messagesContainer!: ElementRef<HTMLDivElement>;
 
-  readonly messages = signal<ChatMessage[]>([
-    {
-      role: 'system',
-      content: this.i18n.t('chat.welcome')
-    }
-  ]);
-
+  readonly messages = signal<ChatMessage[]>(this.loadInitialMessages());
   readonly userInput = signal('');
   readonly isGenerating = signal(false);
+  readonly hasSavedHistory = signal<boolean>(false);
 
   readonly modalFile = signal<{ filepath: string; startLine: number; endLine: number; content: string } | null>(null);
+
+  constructor() {
+    this.hasSavedHistory.set(this.chatStorage.hasHistory());
+
+    // Перерисовывать диаграммы Mermaid при переключении темы оформления
+    effect(() => {
+      this.theme.currentTheme();
+      setTimeout(() => {
+        if (this.messagesContainer) {
+          this.markdown.renderMermaid(this.messagesContainer.nativeElement);
+        }
+      }, 100);
+    });
+  }
+
+  ngAfterViewInit(): void {
+    setTimeout(() => {
+      if (this.messagesContainer) {
+        this.markdown.highlightCode(this.messagesContainer.nativeElement);
+        this.markdown.renderMermaid(this.messagesContainer.nativeElement);
+        this.scrollToBottom();
+      }
+    }, 100);
+  }
+
+  private loadInitialMessages(): ChatMessage[] {
+    const saved = this.chatStorage.loadHistory();
+    if (saved && saved.length > 0) {
+      return saved;
+    }
+    return [
+      {
+        role: 'system',
+        content: this.i18n.t('chat.welcome')
+      }
+    ];
+  }
 
   sendMessage(): void {
     const query = this.userInput().trim();
@@ -53,6 +77,8 @@ export class ChatComponent {
     this.userInput.set('');
     const history = [...this.messages(), { role: 'user' as const, content: query }];
     this.messages.set(history);
+    this.chatStorage.saveHistory(history);
+    this.hasSavedHistory.set(true);
     this.scrollToBottom();
 
     this.isGenerating.set(true);
@@ -70,6 +96,7 @@ export class ChatComponent {
           updated[assistantMsgIndex].content = `⚠️ ${err.message}`;
           return updated;
         });
+        this.chatStorage.saveHistory(this.messages());
         this.isGenerating.set(false);
       }
     });
@@ -131,13 +158,16 @@ export class ChatComponent {
       }
 
       this.updateAssistantMessage(assistantMsgIndex, fullText, sources);
-      this.highlightCode();
+      this.chatStorage.saveHistory(this.messages());
+      this.hasSavedHistory.set(true);
+      this.highlightAndRender();
     } catch (err: any) {
       this.messages.update(msgs => {
         const updated = [...msgs];
         updated[assistantMsgIndex].content = `⚠️ Ошибка: ${err.message}`;
         return updated;
       });
+      this.chatStorage.saveHistory(this.messages());
     } finally {
       this.isGenerating.set(false);
     }
@@ -159,18 +189,36 @@ export class ChatComponent {
   }
 
   renderMarkdown(content: string): string {
-    if (typeof marked !== 'undefined') {
-      return marked.parse(content);
-    }
-    return content;
+    return this.markdown.render(content);
   }
 
-  private highlightCode(): void {
+  private highlightAndRender(): void {
     setTimeout(() => {
-      if (typeof Prism !== 'undefined' && this.messagesContainer) {
-        Prism.highlightAllUnder(this.messagesContainer.nativeElement);
+      if (this.messagesContainer) {
+        this.markdown.highlightCode(this.messagesContainer.nativeElement);
+        this.markdown.renderMermaid(this.messagesContainer.nativeElement);
       }
     }, 50);
+  }
+
+  onMessagesClick(event: MouseEvent): void {
+    this.markdown.handleCopyClick(event);
+  }
+
+  clearChat(): void {
+    const isOnlyDefault = this.messages().length === 1 && this.messages()[0].role === 'system';
+    if (isOnlyDefault) return;
+
+    if (confirm(this.i18n.t('chat.clear_confirm'))) {
+      this.chatStorage.clearHistory();
+      this.messages.set([
+        {
+          role: 'system',
+          content: this.i18n.t('chat.welcome')
+        }
+      ]);
+      this.hasSavedHistory.set(false);
+    }
   }
 
   openSource(filepath: string, lines: string, repoId?: string): void {

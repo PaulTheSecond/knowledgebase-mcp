@@ -1,15 +1,51 @@
 <div class="chat-container section-card">
-  <div class="chat-messages" #messagesContainer>
+  <!-- Верхняя панель управления чатом -->
+  <div class="chat-header-bar">
+    <div class="chat-header-info">
+      <span class="chat-title">{{ i18n.t('header.title_chat') }}</span>
+      @if (hasSavedHistory()) {
+        <span class="chat-memory-badge" [attr.title]="i18n.t('chat.memory_active')">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+            <polyline points="17 21 17 13 7 13 7 21"/>
+            <polyline points="7 3 7 8 15 8"/>
+          </svg>
+          {{ i18n.t('chat.memory_active') }}
+        </span>
+      }
+    </div>
+    <div class="chat-header-actions">
+      <button 
+        type="button" 
+        class="btn-clear-chat" 
+        (click)="clearChat()" 
+        [disabled]="isGenerating()"
+        [attr.title]="i18n.t('chat.clear_history')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+        </svg>
+        <span>{{ i18n.t('chat.new_dialog') }}</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Область сообщений -->
+  <div class="chat-messages" #messagesContainer (click)="onMessagesClick($event)">
     @for (msg of messages(); track $index) {
       <div class="message" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'" [class.system]="msg.role === 'system'">
         @if (msg.role === 'assistant') {
-          <div [innerHTML]="renderMarkdown(msg.content)"></div>
+          <div class="message-content markdown-body" [innerHTML]="renderMarkdown(msg.content)"></div>
           @if (msg.sources && msg.sources.length > 0) {
             <div class="sources-container">
               <div class="sources-title">{{ i18n.t('chat.context_sources') }}</div>
               <div class="sources-list">
                 @for (src of msg.sources; track $index) {
                   <span class="source-tag" (click)="openSource(src.filepath, src.lines, src.repo_id)">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                    </svg>
                     {{ src.filepath }} ({{ src.lines }})
                   </span>
                 }
@@ -23,6 +59,7 @@
     }
   </div>
 
+  <!-- Поле ввода вопроса -->
   <div class="chat-input-area">
     <input 
       type="text" 
@@ -45,6 +82,7 @@
   </div>
 </div>
 
+<!-- Модальное окно (временное, до этапа 4 со Split-panel) -->
 @if (modalFile(); as file) {
   <div class="modal-backdrop" (click)="closeSourceModal()">
     <div class="modal-content" (click)="$event.stopPropagation()">
