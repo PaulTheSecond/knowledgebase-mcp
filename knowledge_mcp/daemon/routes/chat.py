@@ -2,7 +2,8 @@ import os
 import logging
 import httpx
 import json
-from typing import List
+from pathlib import Path
+from typing import List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -117,7 +118,16 @@ async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_ba
         formatted_messages.append({"role": m.role, "content": m.content})
 
     endpoint_url, model_name = get_llm_settings(config)
-    sources = [{"filepath": c["path"], "lines": f"{c.get('line_start')}-{c.get('line_end')}"} for c in chunks]
+    sources = [
+        {
+            "repo_id": c.get("repo_id"),
+            "filepath": c["path"],
+            "lines": f"{c.get('line_start')}-{c.get('line_end')}",
+            "line_start": c.get("line_start"),
+            "line_end": c.get("line_end"),
+        }
+        for c in chunks
+    ]
 
     try:
         async with httpx.AsyncClient() as client:
@@ -243,7 +253,16 @@ async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_que
         formatted_messages.append({"role": m.role, "content": m.content})
 
     endpoint_url, model_name = get_llm_settings(config)
-    sources = [{"filepath": c["path"], "lines": f"{c.get('line_start')}-{c.get('line_end')}"} for c in chunks]
+    sources = [
+        {
+            "repo_id": c.get("repo_id"),
+            "filepath": c["path"],
+            "lines": f"{c.get('line_start')}-{c.get('line_end')}",
+            "line_start": c.get("line_start"),
+            "line_end": c.get("line_end"),
+        }
+        for c in chunks
+    ]
 
     async def event_generator():
         try:
@@ -321,44 +340,135 @@ SENSITIVE_FILES = {
 SENSITIVE_EXTENSIONS = {".db", ".sqlite", ".sqlite3", ".key", ".pem", ".pfx", ".token"}
 
 
+def get_configured_repo_roots(config: dict) -> List[Tuple[Optional[str], Path]]:
+    """Возвращает список корней репозиториев (repo_id, absolute_path)."""
+    repos = config.get("repositories", [])
+    clones_dir = Path(os.environ.get("CLONES_DIR", "data/clones")).resolve()
+    repos_dir_env = os.environ.get("REPOS_DIR")
+
+    roots: List[Tuple[Optional[str], Path]] = []
+    for r in repos:
+        repo_id = r.get("id")
+        local_path_str = r.get("local_path")
+        resolved_path = None
+
+        if local_path_str:
+            p = Path(local_path_str)
+            if p.exists():
+                resolved_path = p.resolve()
+            elif repos_dir_env:
+                clean_name = local_path_str.replace("\\", "/").rstrip("/").split("/")[-1]
+                candidate = Path(repos_dir_env) / clean_name
+                if candidate.exists():
+                    resolved_path = candidate.resolve()
+            if not resolved_path:
+                clean_name = local_path_str.replace("\\", "/").rstrip("/").split("/")[-1]
+                candidate = Path("C:/repos") / clean_name
+                if candidate.exists():
+                    resolved_path = candidate.resolve()
+
+        if not resolved_path and repo_id:
+            clone_path = clones_dir / repo_id
+            if clone_path.exists():
+                resolved_path = clone_path.resolve()
+
+        if resolved_path:
+            roots.append((repo_id, resolved_path))
+
+    return roots
+
+
+def _is_path_safe(target_path: Path, allowed_roots: List[Path]) -> bool:
+    """Проверяет, что путь находится внутри одной из разрешенных корневых директорий."""
+    for root in allowed_roots:
+        try:
+            if target_path.is_relative_to(root):
+                return True
+        except AttributeError:
+            if target_path.parts[:len(root.parts)] == root.parts:
+                return True
+    return False
+
+
 @router.get("/file")
 async def read_file_endpoint(
-    filepath: str, 
-    start_line: int = 1, 
-    end_line: int = None, 
-    username: str = Depends(verify_basic_auth)
+    filepath: str,
+    repo_id: Optional[str] = None,
+    start_line: int = 1,
+    end_line: Optional[int] = None,
+    full_file: bool = False,
+    username: str = Depends(verify_basic_auth),
 ):
+    """Возвращает содержимое указанного файла (весь файл или фрагмент строк).
+
+    Поддерживает поиск по всем подключенным репозиториям и безопасно проверяет
+    пути.
     """
-    Возвращает содержимое указанного файла (или фрагмент строк).
-    Защищает от Path Traversal, проверяя допустимые директории и блокируя доступ к конфигам и секретам.
-    """
-    from pathlib import Path
-    
     # 1. Защита от Path Traversal и спецсимволов
     if ".." in filepath.replace("\\", "/").split("/"):
-        raise HTTPException(status_code=403, detail="Access denied: Directory traversal sequence detected")
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: Directory traversal sequence detected",
+        )
 
+    config = load_config()
+    repo_roots = get_configured_repo_roots(config)
     clones_dir = Path(os.environ.get("CLONES_DIR", "data/clones")).resolve()
     project_dir = Path(".").resolve()
-    
-    # 2. Приводим путь к абсолютному виду
-    target_path = (clones_dir / filepath).resolve()
-    if not target_path.exists():
-        target_path = (project_dir / filepath).resolve()
-        
-    # 3. Проверка безопасности: путь должен начинаться либо с clones_dir, либо с project_dir
-    try:
-        is_inside_clones = target_path.is_relative_to(clones_dir)
-        is_inside_project = target_path.is_relative_to(project_dir)
-    except AttributeError:
-        # Для обратной совместимости с Python < 3.9 (хотя у нас 3.14)
-        is_inside_clones = target_path.parts[:len(clones_dir.parts)] == clones_dir.parts
-        is_inside_project = target_path.parts[:len(project_dir.parts)] == project_dir.parts
 
-    if not (is_inside_clones or is_inside_project):
-        raise HTTPException(status_code=403, detail="Access denied: File is outside allowed directories")
+    # Разрешенные корневые директории для проверки безопасности
+    allowed_roots = [project_dir, clones_dir] + [root for _, root in repo_roots]
 
-    # 4. Блокировка доступа к секретам, конфигурационным файлам и системным базам данных
+    target_path: Optional[Path] = None
+    found_repo_id: Optional[str] = repo_id
+    clean_filepath = filepath.replace("\\", "/").lstrip("/")
+
+    # А. Если передан конкретный repo_id, ищем сначала в нём
+    if repo_id:
+        for r_id, r_root in repo_roots:
+            if r_id == repo_id:
+                candidate = (r_root / clean_filepath).resolve()
+                if candidate.is_file():
+                    target_path = candidate
+                    break
+        if not target_path and repo_id == "knowledgebase-mcp":
+            candidate = (project_dir / clean_filepath).resolve()
+            if candidate.is_file():
+                target_path = candidate
+
+    # Б. Если repo_id не указан или файл в целевом репо не найден:
+    if not target_path:
+        for r_id, r_root in repo_roots:
+            candidate = (r_root / clean_filepath).resolve()
+            if candidate.is_file():
+                target_path = candidate
+                found_repo_id = r_id
+                break
+
+    # В. Проверяем clones_dir
+    if not target_path:
+        candidate = (clones_dir / clean_filepath).resolve()
+        if candidate.is_file():
+            target_path = candidate
+
+    # Г. Проверяем project_dir
+    if not target_path:
+        candidate = (project_dir / clean_filepath).resolve()
+        if candidate.is_file():
+            target_path = candidate
+
+    # 3. Если файл не найден
+    if not target_path or not target_path.exists() or not target_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # 4. Проверка безопасности: путь должен начинаться с одного из разрешенных корней
+    if not _is_path_safe(target_path, allowed_roots):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: File is outside allowed directories",
+        )
+
+    # 5. Блокировка доступа к секретам, конфигурационным файлам и системным базам данных
     target_name = target_path.name.lower()
     target_suffix = target_path.suffix.lower()
     parts_lower = [p.lower() for p in target_path.parts]
@@ -367,29 +477,35 @@ async def read_file_endpoint(
         target_name in SENSITIVE_FILES
         or target_suffix in SENSITIVE_EXTENSIONS
         or any(part in (".git", ".ssh", ".idea", ".vscode") for part in parts_lower)
-        or (is_inside_project and not is_inside_clones and "data" in parts_lower and target_suffix in (".db", ".yaml", ".yml"))
+        or ("data" in parts_lower and target_suffix in (".db", ".yaml", ".yml"))
     ):
-        raise HTTPException(status_code=403, detail="Access denied: Access to sensitive or configuration files is prohibited")
-        
-    if not target_path.exists() or not target_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-        
-    # 5. Читаем строки
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: Access to sensitive or configuration files is prohibited",
+        )
+
+    # 6. Читаем файл
     try:
         with open(target_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
-            
+
         total_lines = len(lines)
         start = max(1, start_line) - 1
         end = min(total_lines, end_line) if end_line else total_lines
-        
-        selected_lines = lines[start:end]
+
+        if full_file:
+            content = "".join(lines)
+        else:
+            content = "".join(lines[start:end])
+
         return {
-            "content": "".join(selected_lines),
+            "content": content,
             "filepath": filepath,
+            "repo_id": found_repo_id,
             "start_line": start + 1,
             "end_line": end,
-            "total_lines": total_lines
+            "total_lines": total_lines,
+            "is_full_file": full_file,
         }
     except Exception as e:
         logger.exception("Failed to read file")

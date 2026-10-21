@@ -135,9 +135,25 @@ export class ApiService {
     return this.http.post<{ token: string }>('/api/auth/token', {}, { headers: this.getHeaders() });
   }
 
-  getFileContent(filepath: string, startLine = 1, endLine?: number): Observable<{ filepath: string; start_line: number; end_line: number; content: string }> {
+  getFileContent(
+    filepath: string,
+    startLine = 1,
+    endLine?: number,
+    repoId?: string,
+    fullFile = true
+  ): Observable<{
+    filepath: string;
+    repo_id?: string;
+    start_line: number;
+    end_line: number;
+    total_lines: number;
+    content: string;
+    is_full_file: boolean;
+  }> {
     let url = `/api/chat/file?filepath=${encodeURIComponent(filepath)}&start_line=${startLine}`;
     if (endLine) url += `&end_line=${endLine}`;
+    if (repoId) url += `&repo_id=${encodeURIComponent(repoId)}`;
+    if (fullFile) url += `&full_file=true`;
     return this.http.get<any>(url, { headers: this.getHeaders() });
   }
 }

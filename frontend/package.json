@@ -35,6 +35,7 @@
     "@taiga-ui/polymorpheus": "^5.0.1",
     "@taiga-ui/styles": "^5.28.0",
     "marked": "^15.0.0",
+    "mermaid": "^12.2.0",
     "prismjs": "^1.29.0",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",

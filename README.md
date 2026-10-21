@@ -1,13 +1,13 @@
 # Knowledge MCP
 
-![Version v1.6.1](https://img.shields.io/badge/version-v1.6.1-blue.svg)
+![Version v1.6.2](https://img.shields.io/badge/version-v1.6.2-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg)
 ![SQLite-vec](https://img.shields.io/badge/SQLite--vec-WAL%20enabled-orange.svg)
 
 High-precision autonomous local knowledge base server (RAG) that implements the **Model Context Protocol (MCP)**. It enables AI coding assistants (Codex, Claude Code, Gemini CLI, Cursor, etc.) to navigate, search, and reason about complex codebases using a hybrid approach combining semantic, lexical, and structural call-graph analysis.
 
-Now includes a fully **autonomous background sync daemon**, **Git webhooks support**, a **No-Build SPA Web Dashboard**, an **Interactive RAG Chat** powered by local LLMs, and **storage-optimized FTS5 External Content**.
+Now includes a fully **autonomous background sync daemon**, **Git webhooks support**, a **Modern Angular 21 Web Dashboard**, an **Interactive RAG Chat** with an **IDE-Style Tabbed Document Inspector**, **Mermaid diagram rendering**, and **storage-optimized FTS5 External Content**.
 
 ---
 
@@ -39,10 +39,13 @@ Now includes a fully **autonomous background sync daemon**, **Git webhooks suppo
    - **In-Browser Settings & Management**: Manage LLM endpoints, embeddings, and Git repositories with instant connection testing (`test-git`, `test-llm`) directly from the UI.
    - Protected by HTTP Basic Auth and short-lived crypto tokens.
    - Real-time reactive WebSockets (`/ws/status`) showing repo metrics, sync progress bars, and queue status.
-6. **Interactive RAG Chat & Local LLM Integration**:
-   - Chat with your codebase in the browser tab.
-   - Compatible with OpenAI API endpoints (OmniRoute, vLLM, Ollama, Kiro, etc.).
-   - Character-by-character Server-Sent Events (SSE) streaming, syntax highlighting (Prism.js), and clickable file source tags.
+6. **Interactive RAG Chat & IDE-Style Doc Inspector**:
+   - Chat with your codebase in the browser tab powered by local LLMs (OmniRoute, vLLM, Ollama, Kiro, etc.) with character-by-character Server-Sent Events (SSE) streaming.
+   - **IDE-Style Document Viewer (Inspector)**: Clickable source citations open in a dedicated right-hand inspector panel with multi-tab support, allowing developers to inspect multiple referenced files simultaneously.
+   - **Citation Highlighting & Line Gutter**: Exact line ranges (e.g. lines 6–9) highlighted in yellow-orange with smooth auto-scroll to the citation; toggle between full document view and isolated chunk snippet.
+   - **Rendered Markdown & Raw Code View**: Switch seamlessly between formatted Markdown preview and raw syntax-highlighted code.
+   - **Mermaid Diagrams & Code Headers**: Rich SVG diagram rendering for Mermaid blocks with Dark/Light theme auto-sync, styled code headers with programming language labels and one-click clipboard copying.
+   - **Resizable Splitter & Dialogue Memory**: Drag-to-resize split view defaulting to 45% with double-click reset; browser-persisted chat history with a "New Dialog" reset action.
 
 ---
 
@@ -198,7 +201,7 @@ npm run build
 
 ### Testing & Quality Assurance
 
-- **Run Unit & Integration Tests (87 passing tests):**
+- **Run Unit & Integration Tests (92 passing tests):**
   ```bash
   pytest
   ```
@@ -232,6 +235,7 @@ The daemon provides a complete REST and real-time WebSocket API for CI/CD, webho
 | `POST` | `/api/settings/test-git` | Basic Auth | Validate Git credentials and remote branch accessibility. |
 | `POST` | `/api/settings/test-llm` | Basic Auth | Verify connectivity and health of configured LLM API. |
 | `POST` | `/api/chat` | Basic Auth | Interactive RAG Chat endpoint with character-by-character SSE streaming. |
+| `GET` | `/api/chat/file` | Basic Auth | Retrieve file content or line range (`path`, `start_line`, `end_line`, `full_file`, `repo_id`) across configured repository roots. |
 | `WS` | `/ws/status?token=...` | Temp Token | Real-time WebSocket feed of progress bars, telemetry, and queue updates. |
 | `POST` | `/webhook/git` | HMAC / Token | Universal webhook receiver for GitHub (`X-Hub-Signature-256`), Gitea, and GitLab (`X-Gitlab-Token`). |
 
@@ -290,3 +294,4 @@ Or when running via Docker:
 - [ADR-004: Autonomous Sync, Triggers & Credentials](docs/adr-004-autonomous-sync-triggers-credentials.md)
 - [ADR-005: Web Dashboard Architecture](docs/adr-005-web-dashboard-architecture.md)
 - [ADR-006: FTS5 External Content, Storage Optimization & Batching](docs/adr-006-fts5-external-content-and-large-repo-batching.md)
+- [ADR-007: Interactive Chat Doc Inspector, Mermaid & Formatting](docs/adr-007-interactive-chat-doc-inspector-and-mermaid.md)
