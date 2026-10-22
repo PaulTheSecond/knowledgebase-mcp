@@ -87,10 +87,12 @@
   gap: 12px;
 }
 
-.chat-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
+.chat-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-memory-badge {
