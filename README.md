@@ -296,3 +296,4 @@ Or when running via Docker:
 - [ADR-005: Web Dashboard Architecture](docs/adr-005-web-dashboard-architecture.md)
 - [ADR-006: FTS5 External Content, Storage Optimization & Batching](docs/adr-006-fts5-external-content-and-large-repo-batching.md)
 - [ADR-007: Interactive Chat Doc Inspector, Mermaid & Formatting](docs/adr-007-interactive-chat-doc-inspector-and-mermaid.md)
+- [ADR-008: Multi-Worktree Architecture, CAS Deduplication & Hybrid Sync Engine](docs/adr-008-multi-worktree-cas-and-hybrid-sync.md)
