@@ -1,6 +1,8 @@
 import sqlite3
 import logging
 import threading
+import hashlib
+import time
 from collections import deque
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -305,6 +307,99 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20261101_12_cas_and_multi_worktree",
+            "up": """
+                -- 1. Таблица file_contents (Content-Addressable Storage)
+                CREATE TABLE IF NOT EXISTS file_contents (
+                    hash TEXT PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    language TEXT,
+                    updated_at REAL NOT NULL
+                );
+
+                -- Заполняем file_contents для существующих файлов, если они есть
+                INSERT OR IGNORE INTO file_contents (hash, content, size, language, updated_at)
+                SELECT 
+                    f.hash,
+                    COALESCE((SELECT group_concat(c.content, x'0A') FROM (SELECT content FROM chunks WHERE file_id = f.id ORDER BY line_start ASC) c), ''),
+                    COALESCE((SELECT SUM(length(c.content)) FROM chunks c WHERE c.file_id = f.id), 0),
+                    NULL,
+                    strftime('%s', 'now')
+                FROM files f
+                WHERE f.hash IS NOT NULL AND f.hash != '';
+
+                -- 2. Миграция таблицы files на поддержку multi-worktree (project_id, branch, content_hash)
+                PRAGMA foreign_keys = OFF;
+
+                CREATE TABLE files_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL DEFAULT 'default',
+                    repo_id TEXT NOT NULL,
+                    branch TEXT NOT NULL DEFAULT 'master',
+                    path TEXT NOT NULL,
+                    content_hash TEXT REFERENCES file_contents(hash),
+                    mtime REAL NOT NULL,
+                    hash TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(project_id, repo_id, branch, path)
+                );
+
+                INSERT INTO files_new (id, project_id, repo_id, branch, path, content_hash, mtime, hash)
+                SELECT 
+                    id,
+                    'default',
+                    repo_id,
+                    'master',
+                    path,
+                    hash,
+                    mtime,
+                    hash
+                FROM files;
+
+                DROP TABLE files;
+                ALTER TABLE files_new RENAME TO files;
+
+                CREATE INDEX IF NOT EXISTS idx_files_lookup ON files(project_id, repo_id, branch);
+                CREATE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash);
+
+                PRAGMA foreign_keys = ON;
+
+                -- 3. Добавление колонки content_hash в таблицы chunks и symbols для дедупликации
+                ALTER TABLE chunks ADD COLUMN content_hash TEXT REFERENCES file_contents(hash);
+                ALTER TABLE symbols ADD COLUMN content_hash TEXT REFERENCES file_contents(hash);
+
+                UPDATE chunks
+                SET content_hash = (SELECT content_hash FROM files WHERE files.id = chunks.file_id)
+                WHERE content_hash IS NULL;
+
+                UPDATE symbols
+                SET content_hash = (SELECT content_hash FROM files WHERE files.id = symbols.file_id)
+                WHERE content_hash IS NULL;
+
+                CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash);
+                CREATE INDEX IF NOT EXISTS idx_symbols_content_hash ON symbols(content_hash);
+
+                -- 4. Таблица лога экономии токенов (Token Savings Telemetry)
+                CREATE TABLE IF NOT EXISTS token_savings_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    tool_name TEXT NOT NULL,
+                    project_id TEXT DEFAULT 'default',
+                    repo_id TEXT,
+                    branch TEXT,
+                    baseline_tokens INTEGER NOT NULL,
+                    returned_tokens INTEGER NOT NULL,
+                    saved_tokens INTEGER NOT NULL,
+                    saved_percent INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_token_savings_ts ON token_savings_log(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_token_savings_project ON token_savings_log(project_id);
+            """
+        })
+
         for migration in migrations:
             if migration["id"] not in applied_migrations:
                 logger.info(f"Applying sqlite migration: {migration['id']}")
@@ -357,68 +452,149 @@ class KnowledgeDB:
         if not self._in_transaction:
             self.conn.commit()
 
-    def get_known_files(self, repo_id: str) -> Dict[str, sqlite3.Row]:
-        """Возвращает словарь известных файлов репозитория: path -> Row(id, mtime, hash, chunks_count, symbols_count)."""
+    def get_known_files(
+        self,
+        repo_id: str,
+        project_id: str = "default",
+        branch: str = "master"
+    ) -> Dict[str, sqlite3.Row]:
+        """Возвращает словарь известных файлов репозитория: path -> Row(id, mtime, hash, content_hash, chunks_count, symbols_count)."""
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT 
-                f.id, f.path, f.mtime, f.hash,
-                EXISTS(SELECT 1 FROM chunks c WHERE c.file_id = f.id) AS chunks_count,
-                EXISTS(SELECT 1 FROM symbols s WHERE s.file_id = f.id) AS symbols_count
+                f.id, f.project_id, f.repo_id, f.branch, f.path, f.mtime, f.hash, f.content_hash,
+                EXISTS(SELECT 1 FROM chunks c WHERE c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash)) AS chunks_count,
+                EXISTS(SELECT 1 FROM symbols s WHERE s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash)) AS symbols_count
             FROM files f
-            WHERE f.repo_id = ?
-        """, (repo_id,))
+            WHERE f.project_id = ? AND f.repo_id = ? AND f.branch = ?
+        """, (project_id, repo_id, branch))
         return {row['path']: row for row in cursor.fetchall()}
 
-    def upsert_file(self, repo_id: str, path: str, mtime: float, file_hash: str) -> int:
-        """Обновляет или вставляет запись о файле. Возвращает file_id."""
+    def get_file(
+        self,
+        repo_id: str,
+        path: str,
+        project_id: str = "default",
+        branch: str = "master"
+    ) -> Optional[sqlite3.Row]:
+        """Возвращает запись файла по repo_id, path, project_id и branch."""
         cursor = self.conn.cursor()
         cursor.execute("""
-            INSERT INTO files (repo_id, path, mtime, hash)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(repo_id, path) DO UPDATE SET
-                mtime=excluded.mtime,
-                hash=excluded.hash
-        """, (repo_id, path, mtime, file_hash))
+            SELECT * FROM files
+            WHERE project_id = ? AND repo_id = ? AND branch = ? AND path = ?
+        """, (project_id, repo_id, branch, path))
+        return cursor.fetchone()
+
+    def upsert_file(
+        self,
+        repo_id: str,
+        path: str,
+        mtime: float,
+        file_hash: str,
+        project_id: str = "default",
+        branch: str = "master",
+        content_hash: Optional[str] = None
+    ) -> int:
+        """Обновляет или вставляет запись о файле с поддержкой project_id, branch и content_hash. Возвращает file_id."""
+        if content_hash is None:
+            content_hash = file_hash
+
+        cursor = self.conn.cursor()
+        if content_hash:
+            now = time.time()
+            cursor.execute("""
+                INSERT OR IGNORE INTO file_contents (hash, content, size, language, updated_at)
+                VALUES (?, '', 0, NULL, ?)
+            """, (content_hash, now))
+
+        cursor.execute("""
+            INSERT INTO files (project_id, repo_id, branch, path, mtime, hash, content_hash, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+            ON CONFLICT(project_id, repo_id, branch, path) DO UPDATE SET
+                mtime = excluded.mtime,
+                hash = excluded.hash,
+                content_hash = excluded.content_hash,
+                updated_at = excluded.updated_at
+        """, (project_id, repo_id, branch, path, mtime, file_hash, content_hash))
         self._auto_commit()
-        
-        cursor.execute("SELECT id FROM files WHERE repo_id = ? AND path = ?", (repo_id, path))
+
+        cursor.execute("""
+            SELECT id FROM files
+            WHERE project_id = ? AND repo_id = ? AND branch = ? AND path = ?
+        """, (project_id, repo_id, branch, path))
         return cursor.fetchone()['id']
 
-    def delete_file(self, file_id: int):
-        """Удаляет файл и каскадно (благодаря FOREIGN KEY) удаляет все его чанки."""
+    def delete_file(
+        self,
+        file_id_or_repo: int | str,
+        path: Optional[str] = None,
+        project_id: str = "default",
+        branch: str = "master"
+    ) -> bool:
+        """Удаляет файл по id или по (repo_id, path, project_id, branch)."""
         cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        if isinstance(file_id_or_repo, int):
+            cursor.execute("DELETE FROM files WHERE id = ?", (file_id_or_repo,))
+        else:
+            if path is not None:
+                cursor.execute("""
+                    DELETE FROM files
+                    WHERE project_id = ? AND repo_id = ? AND branch = ? AND path = ?
+                """, (project_id, file_id_or_repo, branch, path))
+            else:
+                cursor.execute("DELETE FROM files WHERE id = ?", (int(file_id_or_repo),))
+        deleted = cursor.rowcount > 0
         self._auto_commit()
+        return deleted
 
-    def delete_repo(self, repo_id: str) -> int:
+    def delete_repo(self, repo_id: str, project_id: Optional[str] = None) -> int:
         """Удаляет все файлы и чанки (каскадно), связанные с репозиторием."""
         cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM files WHERE repo_id = ?", (repo_id,))
+        if project_id:
+            cursor.execute("DELETE FROM files WHERE repo_id = ? AND project_id = ?", (repo_id, project_id))
+        else:
+            cursor.execute("DELETE FROM files WHERE repo_id = ?", (repo_id,))
         deleted_count = cursor.rowcount
         self._auto_commit()
         return deleted_count
 
-    def get_repo_stats(self, repo_id: str) -> dict:
+    def get_repo_stats(
+        self,
+        repo_id: str,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None
+    ) -> dict:
         """Возвращает метрики проиндексированных данных для конкретного репозитория."""
         cursor = self.conn.cursor()
-        
+        where_file = ["repo_id = ?"]
+        params: list[Any] = [repo_id]
+        if project_id:
+            where_file.append("project_id = ?")
+            params.append(project_id)
+        if branch:
+            where_file.append("branch = ?")
+            params.append(branch)
+        where_sql = " AND ".join(where_file)
+
         # Кол-во файлов
-        cursor.execute("SELECT COUNT(*) as cnt FROM files WHERE repo_id = ?", (repo_id,))
+        cursor.execute(f"SELECT COUNT(*) as cnt FROM files WHERE {where_sql}", params)
         files_count = cursor.fetchone()['cnt']
         
         # Кол-во чанков
-        cursor.execute(
-            "SELECT COUNT(*) as cnt FROM chunks WHERE file_id IN (SELECT id FROM files WHERE repo_id = ?)",
-            (repo_id,)
-        )
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT c.id) as cnt FROM chunks c
+            JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
+            WHERE {where_sql.replace('repo_id', 'f.repo_id').replace('project_id', 'f.project_id').replace('branch', 'f.branch')}
+        """, params)
         chunks_count = cursor.fetchone()['cnt']
         
         # Кол-во векторов
-        cursor.execute(
-            "SELECT COUNT(*) as cnt FROM chunks_vec WHERE rowid IN (SELECT rowid FROM chunks WHERE file_id IN (SELECT id FROM files WHERE repo_id = ?))",
-            (repo_id,)
-        )
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT cv.rowid) as cnt FROM chunks_vec cv
+            JOIN chunks c ON cv.rowid = c.rowid
+            JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
+            WHERE {where_sql.replace('repo_id', 'f.repo_id').replace('project_id', 'f.project_id').replace('branch', 'f.branch')}
+        """, params)
         vectors_count = cursor.fetchone()['cnt']
         
         return {
@@ -493,28 +669,59 @@ class KnowledgeDB:
         cursor.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         self._auto_commit()
 
-    def add_symbol(self, file_id: int, name: str, qualified_name: str, kind: str,
-                   language: str, line_start: int, line_end: int, signature: str, chunk_id: str) -> int:
+    def add_symbol(
+        self,
+        file_id: int,
+        name: str,
+        qualified_name: str,
+        kind: str,
+        language: str,
+        line_start: int,
+        line_end: int,
+        signature: str,
+        chunk_id: str,
+        content_hash: Optional[str] = None
+    ) -> int:
         cursor = self.conn.cursor()
+        if content_hash is None and file_id:
+            cursor.execute("SELECT content_hash FROM files WHERE id = ?", (file_id,))
+            row = cursor.fetchone()
+            if row and row['content_hash']:
+                content_hash = row['content_hash']
         cursor.execute("""
-            INSERT INTO symbols (file_id, name, qualified_name, kind, language, line_start, line_end, signature, chunk_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (file_id, name, qualified_name, kind, language, line_start, line_end, signature, chunk_id))
+            INSERT INTO symbols (file_id, name, qualified_name, kind, language, line_start, line_end, signature, chunk_id, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (file_id, name, qualified_name, kind, language, line_start, line_end, signature, chunk_id, content_hash))
         self._auto_commit()
         return cursor.lastrowid
 
     def add_symbols_batch(self, records: list[tuple]) -> list[int]:
-        """Батчевая вставка символов. records: [(file_id, name, qname, kind, lang, ls, le, sig, chunk_id), ...]
+        """Батчевая вставка символов.
+        records: [(file_id, name, qname, kind, lang, ls, le, sig, chunk_id), ...]
+        или [(file_id, name, qname, kind, lang, ls, le, sig, chunk_id, content_hash), ...]
         Возвращает список rowid вставленных символов."""
         if not records:
             return []
         cursor = self.conn.cursor()
         rowids = []
         for record in records:
-            cursor.execute("""
-                INSERT INTO symbols (file_id, name, qualified_name, kind, language, line_start, line_end, signature, chunk_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, record)
+            if len(record) == 9:
+                file_id, name, qname, kind, lang, ls, le, sig, chunk_id = record
+                content_hash = None
+                if file_id:
+                    cursor.execute("SELECT content_hash FROM files WHERE id = ?", (file_id,))
+                    row = cursor.fetchone()
+                    if row and row['content_hash']:
+                        content_hash = row['content_hash']
+                cursor.execute("""
+                    INSERT INTO symbols (file_id, name, qualified_name, kind, language, line_start, line_end, signature, chunk_id, content_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (file_id, name, qname, kind, lang, ls, le, sig, chunk_id, content_hash))
+            elif len(record) == 10:
+                cursor.execute("""
+                    INSERT INTO symbols (file_id, name, qualified_name, kind, language, line_start, line_end, signature, chunk_id, content_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, record)
             rowids.append(cursor.lastrowid)
         self._auto_commit()
         return rowids
@@ -558,17 +765,32 @@ class KnowledgeDB:
         self._auto_commit()
 
     def add_chunks_batch(self, records: list[tuple]) -> list[int]:
-        """Батчевая вставка чанков. records: [(chunk_id, file_id, content, line_start, line_end, source_kind, trust, sha), ...]
+        """Батчевая вставка чанков.
+        records: [(chunk_id, file_id, content, line_start, line_end, source_kind, trust, sha), ...]
+        или [(chunk_id, file_id, content, line_start, line_end, source_kind, trust, sha, content_hash), ...]
         Возвращает список rowid вставленных чанков."""
         if not records:
             return []
         cursor = self.conn.cursor()
         rowids = []
         for record in records:
-            cursor.execute("""
-                INSERT INTO chunks (id, file_id, content, line_start, line_end, source_kind, trust, sha)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, record)
+            if len(record) == 8:
+                chunk_id, file_id, content, line_start, line_end, source_kind, trust, sha = record
+                content_hash = None
+                if file_id:
+                    cursor.execute("SELECT content_hash FROM files WHERE id = ?", (file_id,))
+                    row = cursor.fetchone()
+                    if row and row['content_hash']:
+                        content_hash = row['content_hash']
+                cursor.execute("""
+                    INSERT INTO chunks (id, file_id, content, line_start, line_end, source_kind, trust, sha, content_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (chunk_id, file_id, content, line_start, line_end, source_kind, trust, sha, content_hash))
+            elif len(record) == 9:
+                cursor.execute("""
+                    INSERT INTO chunks (id, file_id, content, line_start, line_end, source_kind, trust, sha, content_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, record)
             rowids.append(cursor.lastrowid)
         self._auto_commit()
         return rowids
@@ -587,8 +809,7 @@ class KnowledgeDB:
                 resolved_ids.append(ref['id'])
                 
         if resolved_ids:
-            # Batch delete
-            step = 900 # SQLite limit for parameters
+            step = 900
             for i in range(0, len(resolved_ids), step):
                 batch = resolved_ids[i:i+step]
                 placeholders = ','.join('?' for _ in batch)
@@ -597,20 +818,28 @@ class KnowledgeDB:
             
         return len(resolved_ids)
 
-    def find_symbols(self, name_pattern: str, kind: Optional[str] = None, repo_ids: Optional[List[str]] = None, limit: int = 20) -> List[sqlite3.Row]:
+    def get_symbols(
+        self,
+        name_pattern: str = "%",
+        kind: Optional[str] = None,
+        repo_ids: Optional[List[str]] = None,
+        project_id: Optional[str] = "default",
+        branch: Optional[str] = "master",
+        limit: int = 20
+    ) -> List[sqlite3.Row]:
+        """Поиск символов с фильтрацией по project_id и branch."""
         cursor = self.conn.cursor()
         sql = '''
-            SELECT s.*, f.repo_id, f.path
+            SELECT DISTINCT s.*, f.repo_id, f.path, f.project_id, f.branch
             FROM symbols s
-            JOIN files f ON s.file_id = f.id
+            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
             WHERE (s.name LIKE ? OR s.qualified_name LIKE ?)
         '''
-        # Replace * with % for SQL LIKE
         sql_pattern = name_pattern.replace('*', '%')
         if '%' not in sql_pattern:
             sql_pattern = f"%{sql_pattern}%"
             
-        params = [sql_pattern, sql_pattern]
+        params: list[Any] = [sql_pattern, sql_pattern]
         
         if kind:
             sql += " AND s.kind = ?"
@@ -620,71 +849,155 @@ class KnowledgeDB:
             placeholders = ','.join('?' for _ in repo_ids)
             sql += f" AND f.repo_id IN ({placeholders})"
             params.extend(repo_ids)
+
+        if project_id is not None:
+            sql += " AND f.project_id = ?"
+            params.append(project_id)
+
+        if branch is not None:
+            sql += " AND f.branch = ?"
+            params.append(branch)
             
         sql += " LIMIT ?"
         params.append(limit)
         
         cursor.execute(sql, params)
         return cursor.fetchall()
-        
-    def get_callers(self, symbol_id: int) -> List[sqlite3.Row]:
+
+    def find_symbols(
+        self,
+        name_pattern: str,
+        kind: Optional[str] = None,
+        repo_ids: Optional[List[str]] = None,
+        limit: int = 20,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None
+    ) -> List[sqlite3.Row]:
+        """Обратно-совместимый метод поиска символов."""
+        return self.get_symbols(
+            name_pattern=name_pattern,
+            kind=kind,
+            repo_ids=repo_ids,
+            project_id=project_id,
+            branch=branch,
+            limit=limit
+        )
+
+    def get_symbol_callers(
+        self,
+        symbol_id: int,
+        project_id: Optional[str] = "default",
+        branch: Optional[str] = "master"
+    ) -> List[sqlite3.Row]:
+        """Возвращает вызывающие символы (callers) для symbol_id."""
         cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT s.*, f.repo_id, f.path, e.kind as edge_kind
+        sql = '''
+            SELECT DISTINCT s.*, f.repo_id, f.path, f.project_id, f.branch, e.kind as edge_kind
             FROM symbol_edges e
             JOIN symbols s ON e.source_id = s.id
-            JOIN files f ON s.file_id = f.id
+            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
             WHERE e.target_id = ?
-        ''', (symbol_id,))
+        '''
+        params: list[Any] = [symbol_id]
+        if project_id is not None:
+            sql += " AND f.project_id = ?"
+            params.append(project_id)
+        if branch is not None:
+            sql += " AND f.branch = ?"
+            params.append(branch)
+        cursor.execute(sql, params)
+        return cursor.fetchall()
+
+    def get_callers(self, symbol_id: int) -> List[sqlite3.Row]:
+        """Обратно-совместимый вызов получения callers."""
+        return self.get_symbol_callers(symbol_id, project_id=None, branch=None)
+
+    def get_symbol_callees(
+        self,
+        symbol_id: int,
+        project_id: Optional[str] = "default",
+        branch: Optional[str] = "master"
+    ) -> List[sqlite3.Row]:
+        """Возвращает вызываемые символы (callees) для symbol_id."""
+        cursor = self.conn.cursor()
+        sql = '''
+            SELECT DISTINCT s.*, f.repo_id, f.path, f.project_id, f.branch, e.kind as edge_kind
+            FROM symbol_edges e
+            JOIN symbols s ON e.target_id = s.id
+            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            WHERE e.source_id = ?
+        '''
+        params: list[Any] = [symbol_id]
+        if project_id is not None:
+            sql += " AND f.project_id = ?"
+            params.append(project_id)
+        if branch is not None:
+            sql += " AND f.branch = ?"
+            params.append(branch)
+        cursor.execute(sql, params)
         return cursor.fetchall()
 
     def get_callees(self, symbol_id: int) -> List[sqlite3.Row]:
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT s.*, f.repo_id, f.path, e.kind as edge_kind
-            FROM symbol_edges e
-            JOIN symbols s ON e.target_id = s.id
-            JOIN files f ON s.file_id = f.id
-            WHERE e.source_id = ?
-        ''', (symbol_id,))
-        return cursor.fetchall()
+        """Обратно-совместимый вызов получения callees."""
+        return self.get_symbol_callees(symbol_id, project_id=None, branch=None)
 
-    def get_hierarchy(self, symbol_id: int) -> List[sqlite3.Row]:
+    def get_hierarchy(
+        self,
+        symbol_id: int,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None
+    ) -> List[sqlite3.Row]:
         cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT s.*, f.repo_id, f.path, e.kind as edge_kind
+        sql = '''
+            SELECT DISTINCT s.*, f.repo_id, f.path, f.project_id, f.branch, e.kind as edge_kind
             FROM symbol_edges e
             JOIN symbols s ON e.target_id = s.id
-            JOIN files f ON s.file_id = f.id
+            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
             WHERE e.source_id = ? AND e.kind IN ('INHERITS', 'IMPLEMENTS')
-        ''', (symbol_id,))
+        '''
+        params: list[Any] = [symbol_id]
+        if project_id is not None:
+            sql += " AND f.project_id = ?"
+            params.append(project_id)
+        if branch is not None:
+            sql += " AND f.branch = ?"
+            params.append(branch)
+        cursor.execute(sql, params)
         return cursor.fetchall()
 
-    def get_impact_analysis(self, symbol_id: int, max_depth: int = 3) -> List[Dict[str, Any]]:
-        """
-        Рекурсивный поиск зависимостей (кто сломается, если изменить этот символ).
-        Возвращает список словарей с найденными символами и их 'depth'.
-        Использует deque для BFS — O(1) popleft вместо O(n) pop(0).
-        """
+    def get_impact_analysis(
+        self,
+        symbol_id: int,
+        max_depth: int = 3,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()
         
         visited = set()
-        queue: deque = deque([(symbol_id, 1)])  # (id, depth)
+        queue: deque = deque([(symbol_id, 1)])
         impacted = []
         
         while queue:
-            current_id, depth = queue.popleft()  # O(1)
+            current_id, depth = queue.popleft()
             if depth > max_depth:
                 continue
                 
-            # Ищем тех, кто вызывает (CALLS) или наследует (INHERITS, IMPLEMENTS) от current_id
-            cursor.execute('''
-                SELECT s.*, f.repo_id, f.path, e.kind as edge_kind
+            sql = '''
+                SELECT DISTINCT s.*, f.repo_id, f.path, f.project_id, f.branch, e.kind as edge_kind
                 FROM symbol_edges e
                 JOIN symbols s ON e.source_id = s.id
-                JOIN files f ON s.file_id = f.id
+                JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
                 WHERE e.target_id = ? AND e.kind IN ('CALLS', 'INHERITS', 'IMPLEMENTS', 'IMPORTS', 'USES')
-            ''', (current_id,))
+            '''
+            params: list[Any] = [current_id]
+            if project_id is not None:
+                sql += " AND f.project_id = ?"
+                params.append(project_id)
+            if branch is not None:
+                sql += " AND f.branch = ?"
+                params.append(branch)
+            cursor.execute(sql, params)
             
             callers = cursor.fetchall()
             for r in callers:
@@ -696,20 +1009,33 @@ class KnowledgeDB:
                         'depth': depth,
                         'edge_kind': r['edge_kind']
                     })
-                    queue.append((caller_id, depth + 1))  # O(1)
+                    queue.append((caller_id, depth + 1))
                     
         return impacted
 
-    def add_chunk(self, chunk_id: str, file_id: int, content: str, 
-                  source_kind: str, trust: str, 
-                  line_start: Optional[int] = None, line_end: Optional[int] = None, 
-                  sha: Optional[str] = None) -> int:
+    def add_chunk(
+        self,
+        chunk_id: str,
+        file_id: int,
+        content: str, 
+        source_kind: str,
+        trust: str, 
+        line_start: Optional[int] = None,
+        line_end: Optional[int] = None, 
+        sha: Optional[str] = None,
+        content_hash: Optional[str] = None
+    ) -> int:
         """Добавляет чанк в базу и возвращает его sqlite internal rowid (нужно для vec0)."""
         cursor = self.conn.cursor()
+        if content_hash is None and file_id:
+            cursor.execute("SELECT content_hash FROM files WHERE id = ?", (file_id,))
+            row = cursor.fetchone()
+            if row and row['content_hash']:
+                content_hash = row['content_hash']
         cursor.execute("""
-            INSERT INTO chunks (id, file_id, content, line_start, line_end, source_kind, trust, sha)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (chunk_id, file_id, content, line_start, line_end, source_kind, trust, sha))
+            INSERT INTO chunks (id, file_id, content, line_start, line_end, source_kind, trust, sha, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (chunk_id, file_id, content, line_start, line_end, source_kind, trust, sha, content_hash))
         self._auto_commit()
         return cursor.lastrowid
 
@@ -728,7 +1054,6 @@ class KnowledgeDB:
             return
         cursor = self.conn.cursor()
         
-        # Подготавливаем сериализованные данные для executemany
         batch_data = [
             (rowid, sqlite_vec.serialize_float32(vector))
             for rowid, vector in records
@@ -740,77 +1065,371 @@ class KnowledgeDB:
         """, batch_data)
         self._auto_commit()
         
-    def get_chunks_without_embeddings(self, repo_id: str) -> List[tuple[str, int, str]]:
+    def get_chunks_without_embeddings(
+        self,
+        repo_id: str,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None
+    ) -> List[tuple[str, int, str]]:
         """Возвращает список чанков, у которых еще нет векторного представления (recovery после сбоя)."""
         cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT c.content, c.rowid, f.path
+        sql = '''
+            SELECT DISTINCT c.content, c.rowid, f.path
             FROM chunks c
-            JOIN files f ON c.file_id = f.id
+            JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
             WHERE f.repo_id = ? AND c.rowid NOT IN (SELECT rowid FROM chunks_vec)
-        ''', (repo_id,))
+        '''
+        params: list[Any] = [repo_id]
+        if project_id is not None:
+            sql += " AND f.project_id = ?"
+            params.append(project_id)
+        if branch is not None:
+            sql += " AND f.branch = ?"
+            params.append(branch)
+        cursor.execute(sql, params)
         return [(row[0], row[1], row[2]) for row in cursor.fetchall()]
 
     def get_chunk_by_id(self, chunk_id: str) -> Optional[sqlite3.Row]:
         """Возвращает чанк вместе с данными файла по chunk_id. None если не найден."""
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT c.*, f.repo_id, f.path
+            SELECT c.*, f.repo_id, f.path, f.project_id, f.branch
             FROM chunks c
-            JOIN files f ON c.file_id = f.id
+            LEFT JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
             WHERE c.id = ?
+            LIMIT 1
         ''', (chunk_id,))
         return cursor.fetchone()
+
+    def upsert_file_content(self, content: str, language: Optional[str] = None) -> str:
+        """Сохраняет или обновляет сырой контент файла в CAS таблице file_contents.
         
-    def get_file_content(self, path: str, repo_id: Optional[str] = None) -> Optional[str]:
-        """Возвращает полный контент файла, собирая его из всех чанков в правильном порядке."""
+        Возвращает SHA-256 хэш содержимого.
+        """
+        content_bytes = content.encode('utf-8')
+        content_hash = hashlib.sha256(content_bytes).hexdigest()
+        size = len(content_bytes)
+        now = time.time()
+        
         cursor = self.conn.cursor()
-        sql = '''
-            SELECT c.content
-            FROM chunks c
-            JOIN files f ON c.file_id = f.id
-            WHERE f.path = ?
-        '''
-        params = [path]
-        if repo_id:
-            sql += " AND f.repo_id = ?"
-            params.append(repo_id)
-        sql += " ORDER BY c.line_start ASC"
+        cursor.execute("""
+            INSERT INTO file_contents (hash, content, size, language, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(hash) DO UPDATE SET
+                content = excluded.content,
+                size = excluded.size,
+                language = COALESCE(excluded.language, file_contents.language),
+                updated_at = excluded.updated_at
+        """, (content_hash, content, size, language, now))
+        self._auto_commit()
+        return content_hash
+
+    def get_file_content(
+        self,
+        content_hash_or_path: str,
+        repo_id: Optional[str] = None,
+        project_id: str = "default",
+        branch: str = "master"
+    ) -> Optional[dict | str]:
+        """Возвращает контент файла.
         
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
-        if not rows:
+        Если передан content_hash (или запись найдена в file_contents),
+        возвращает dict: {'hash', 'content', 'size', 'language', 'updated_at'}.
+        
+        Если передан path и repo_id (для обратной совместимости с MCP server),
+        возвращает контент в виде строки str.
+        """
+        cursor = self.conn.cursor()
+        
+        # 1. Если явно передан repo_id, то ищем файл по логическому пути в files
+        if repo_id is not None:
+            cursor.execute("""
+                SELECT f.id, f.content_hash, fc.content
+                FROM files f
+                LEFT JOIN file_contents fc ON f.content_hash = fc.hash
+                WHERE f.project_id = ? AND f.repo_id = ? AND f.branch = ? AND f.path = ?
+            """, (project_id, repo_id, branch, content_hash_or_path))
+            file_row = cursor.fetchone()
+            if not file_row:
+                cursor.execute("""
+                    SELECT f.id, f.content_hash, fc.content
+                    FROM files f
+                    LEFT JOIN file_contents fc ON f.content_hash = fc.hash
+                    WHERE f.repo_id = ? AND f.path = ?
+                    ORDER BY f.id DESC LIMIT 1
+                """, (repo_id, content_hash_or_path))
+                file_row = cursor.fetchone()
+                
+            if file_row:
+                if file_row['content'] is not None and file_row['content'] != '':
+                    return file_row['content']
+                cursor.execute("""
+                    SELECT content FROM chunks
+                    WHERE file_id = ?
+                    ORDER BY line_start ASC
+                """, (file_row['id'],))
+                rows = cursor.fetchall()
+                if rows:
+                    return "\n".join(r['content'] for r in rows)
             return None
-            
-        return "\n".join(row['content'] for row in rows)
+
+        # 2. Проверяем, существует ли запись в file_contents по hash
+        cursor.execute("""
+            SELECT hash, content, size, language, updated_at
+            FROM file_contents
+            WHERE hash = ?
+        """, (content_hash_or_path,))
+        fc_row = cursor.fetchone()
+        if fc_row and fc_row['content'] != '':
+            return dict(fc_row)
+
+        # 3. Если в file_contents не найдено (или контент пуст), проверяем путь в files
+        cursor.execute("""
+            SELECT f.id, f.content_hash, fc.content
+            FROM files f
+            LEFT JOIN file_contents fc ON f.content_hash = fc.hash
+            WHERE f.path = ?
+            ORDER BY f.id DESC LIMIT 1
+        """, (content_hash_or_path,))
+        file_row = cursor.fetchone()
+        if file_row:
+            if file_row['content'] is not None and file_row['content'] != '':
+                return file_row['content']
+            cursor.execute("""
+                SELECT content FROM chunks
+                WHERE file_id = ?
+                ORDER BY line_start ASC
+            """, (file_row['id'],))
+            rows = cursor.fetchall()
+            if rows:
+                return "\n".join(r['content'] for r in rows)
+
+        if fc_row:
+            return dict(fc_row)
+
+        return None
+
+    def get_cas_stats(self, project_id: Optional[str] = None) -> dict:
+        """Возвращает статистику CAS-дедупликации:
+        - logical_files_count: количество логических файлов в files
+        - unique_contents_count: количество уникальных физических контентов в file_contents
+        - virtual_size_bytes: виртуальный размер (сумма размеров всех логических файлов)
+        - real_size_bytes: реальный физический размер контента в байтах
+        - saved_size_bytes: сэкономленный размер на диске в байтах
+        - saved_percent: процент сэкономленного дискового пространства
+        """
+        cursor = self.conn.cursor()
+        if project_id:
+            cursor.execute("""
+                SELECT COUNT(f.id) as files_count,
+                       COALESCE(SUM(COALESCE(fc.size, 0)), 0) as virtual_size
+                FROM files f
+                LEFT JOIN file_contents fc ON f.content_hash = fc.hash
+                WHERE f.project_id = ?
+            """, (project_id,))
+            row_files = cursor.fetchone()
+            logical_files = row_files['files_count']
+            virtual_size = row_files['virtual_size']
+
+            cursor.execute("""
+                SELECT COUNT(DISTINCT fc.hash) as contents_count,
+                       COALESCE(SUM(fc.size), 0) as real_size
+                FROM file_contents fc
+                WHERE fc.hash IN (
+                    SELECT content_hash FROM files WHERE project_id = ? AND content_hash IS NOT NULL
+                )
+            """, (project_id,))
+            row_contents = cursor.fetchone()
+            unique_contents = row_contents['contents_count']
+            real_size = row_contents['real_size']
+        else:
+            cursor.execute("""
+                SELECT COUNT(f.id) as files_count,
+                       COALESCE(SUM(COALESCE(fc.size, 0)), 0) as virtual_size
+                FROM files f
+                LEFT JOIN file_contents fc ON f.content_hash = fc.hash
+            """)
+            row_files = cursor.fetchone()
+            logical_files = row_files['files_count']
+            virtual_size = row_files['virtual_size']
+
+            cursor.execute("""
+                SELECT COUNT(*) as contents_count,
+                       COALESCE(SUM(size), 0) as real_size
+                FROM file_contents
+            """)
+            row_contents = cursor.fetchone()
+            unique_contents = row_contents['contents_count']
+            real_size = row_contents['real_size']
+
+        saved_bytes = max(0, virtual_size - real_size)
+        saved_percent = round((saved_bytes / virtual_size * 100.0), 2) if virtual_size > 0 else 0.0
+
+        return {
+            "logical_files_count": logical_files,
+            "files_count": logical_files,
+            "unique_contents_count": unique_contents,
+            "physical_contents_count": unique_contents,
+            "virtual_size_bytes": virtual_size,
+            "real_size_bytes": real_size,
+            "physical_size_bytes": real_size,
+            "saved_size_bytes": saved_bytes,
+            "saved_bytes": saved_bytes,
+            "saved_percent": saved_percent,
+            "savings_percent": saved_percent,
+        }
+
+    def clean_unreferenced_contents(self) -> int:
+        """Очищает записи в file_contents, на которые больше нет ссылок ни из одного файла (CAS GC)."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            DELETE FROM file_contents
+            WHERE hash NOT IN (SELECT DISTINCT content_hash FROM files WHERE content_hash IS NOT NULL)
+        """)
+        count = cursor.rowcount
+        self._auto_commit()
+        return count
+
+    def log_token_savings(
+        self,
+        tool_name: str,
+        baseline_tokens: int,
+        returned_tokens: int,
+        project_id: str = "default",
+        repo_id: Optional[str] = None,
+        branch: Optional[str] = None
+    ) -> int:
+        """Логирует сэкономленные токены контекста при вызове инструментов."""
+        saved_tokens = max(0, baseline_tokens - returned_tokens)
+        saved_percent = round((saved_tokens / baseline_tokens * 100)) if baseline_tokens > 0 else 0
         
-    def search_chunks_fts(self, query: str, repo_ids: Optional[List[str]] = None, limit: int = 10) -> List[sqlite3.Row]:
-        """Полнотекстовый поиск по чанкам."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO token_savings_log (
+                tool_name, project_id, repo_id, branch,
+                baseline_tokens, returned_tokens, saved_tokens, saved_percent
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (tool_name, project_id, repo_id, branch, baseline_tokens, returned_tokens, saved_tokens, saved_percent))
+        self._auto_commit()
+        return cursor.lastrowid
+
+    def get_token_savings_summary(self, days: int = 7, project_id: Optional[str] = None) -> dict:
+        """Возвращает сводку телеметрии экономии токенов за указанный период (в днях)."""
+        cursor = self.conn.cursor()
+        where_clauses = []
+        params: list[Any] = []
+        
+        if days is not None and days > 0:
+            where_clauses.append("timestamp >= datetime('now', ?)")
+            params.append(f"-{days} days")
+            
+        if project_id:
+            where_clauses.append("project_id = ?")
+            params.append(project_id)
+            
+        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        
+        cursor.execute(f"""
+            SELECT 
+                COALESCE(SUM(baseline_tokens), 0) as total_baseline,
+                COALESCE(SUM(returned_tokens), 0) as total_returned,
+                COALESCE(SUM(saved_tokens), 0) as total_saved,
+                COALESCE(AVG(saved_percent), 0.0) as avg_saved_percent,
+                COUNT(*) as total_calls
+            FROM token_savings_log
+            {where_sql}
+        """, params)
+        row = cursor.fetchone()
+        
+        total_baseline = row['total_baseline']
+        total_returned = row['total_returned']
+        total_saved = row['total_saved']
+        avg_saved_percent = round(float(row['avg_saved_percent']), 2)
+        overall_saved_percent = round((total_saved / total_baseline * 100), 2) if total_baseline > 0 else 0.0
+        total_calls = row['total_calls']
+        
+        cursor.execute(f"""
+            SELECT 
+                tool_name,
+                COALESCE(SUM(baseline_tokens), 0) as total_baseline,
+                COALESCE(SUM(returned_tokens), 0) as total_returned,
+                COALESCE(SUM(saved_tokens), 0) as total_saved,
+                COALESCE(AVG(saved_percent), 0.0) as avg_saved_percent,
+                COUNT(*) as calls_count
+            FROM token_savings_log
+            {where_sql}
+            GROUP BY tool_name
+            ORDER BY total_saved DESC
+        """, params)
+        
+        by_tool = {}
+        for r in cursor.fetchall():
+            tool_name = r['tool_name']
+            t_baseline = r['total_baseline']
+            t_saved = r['total_saved']
+            by_tool[tool_name] = {
+                "total_baseline_tokens": t_baseline,
+                "total_returned_tokens": r['total_returned'],
+                "total_saved_tokens": t_saved,
+                "saved_tokens": t_saved,
+                "avg_saved_percent": round(float(r['avg_saved_percent']), 2),
+                "saved_percent": round((t_saved / t_baseline * 100), 2) if t_baseline > 0 else 0.0,
+                "calls_count": r['calls_count']
+            }
+            
+        return {
+            "total_saved_tokens": total_saved,
+            "total_saved": total_saved,
+            "saved_tokens": total_saved,
+            "avg_saved_percent": avg_saved_percent,
+            "average_saved_percent": avg_saved_percent,
+            "overall_saved_percent": overall_saved_percent,
+            "total_baseline_tokens": total_baseline,
+            "total_returned_tokens": total_returned,
+            "total_calls": total_calls,
+            "by_tool": by_tool,
+            "tools_breakdown": by_tool
+        }
+
+    def search_chunks_fts(
+        self,
+        query: str,
+        repo_ids: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None,
+        limit: int = 10
+    ) -> List[sqlite3.Row]:
+        """Полнотекстовый поиск по чанкам с поддержкой project_id и branch."""
         cursor = self.conn.cursor()
         
-        # Санитизация запроса: удаляем кавычки и оборачиваем каждое слово,
-        # чтобы FTS5 не падал на спецсимволах типа '.' или '-'
-        # OR вместо AND: FTS5 даёт максимальный recall, BM25 сам ранжирует по кол-ву совпадений.
-        # Жёсткий AND лишний: финальный приоритет определяет RRF через vector + graph каналы.
         safe_terms = [f'"{term}"' for term in query.replace('"', ' ').split() if term]
         safe_query = ' OR '.join(safe_terms)
         if not safe_query:
             return []
 
         sql = '''
-            SELECT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
-                   f.repo_id, f.path, bm25(chunks_fts) as rank
+            SELECT DISTINCT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
+                   f.repo_id, f.path, f.project_id, f.branch, bm25(chunks_fts) as rank
             FROM chunks_fts fts
             JOIN chunks c ON fts.rowid = c.rowid
-            JOIN files f ON c.file_id = f.id
+            JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
             WHERE chunks_fts MATCH ?
         '''
-        params = [safe_query]
+        params: list[Any] = [safe_query]
         
         if repo_ids:
             placeholders = ','.join('?' for _ in repo_ids)
             sql += f" AND f.repo_id IN ({placeholders})"
             params.extend(repo_ids)
+
+        if project_id is not None:
+            sql += " AND f.project_id = ?"
+            params.append(project_id)
+
+        if branch is not None:
+            sql += " AND f.branch = ?"
+            params.append(branch)
             
         sql += " ORDER BY rank LIMIT ?"
         params.append(limit)
@@ -818,26 +1437,32 @@ class KnowledgeDB:
         cursor.execute(sql, params)
         return cursor.fetchall()
 
-    def search_chunks_graph(self, query: str, repo_ids: Optional[List[str]] = None, limit: int = 10) -> List[sqlite3.Row]:
+    def search_chunks_graph(
+        self,
+        query: str,
+        repo_ids: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None,
+        limit: int = 10
+    ) -> List[sqlite3.Row]:
         """Графовый поиск: поиск релевантных кусков кода по именам из запроса."""
         import re
         cursor = self.conn.cursor()
         
-        # Извлекаем слова-кандидаты (длина > 3)
         words = set(re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', query))
         candidates = [w for w in words if len(w) > 3]
         if not candidates:
             return []
             
         placeholders = ','.join('?' for _ in candidates)
-        params = list(candidates)
+        params: list[Any] = list(candidates)
         
         sql = f'''
-            SELECT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
-                   f.repo_id, f.path, 1.0 as rank
+            SELECT DISTINCT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
+                   f.repo_id, f.path, f.project_id, f.branch, 1.0 as rank
             FROM symbols s
             JOIN chunks c ON s.chunk_id = c.id
-            JOIN files f ON c.file_id = f.id
+            JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
             WHERE s.name IN ({placeholders}) COLLATE NOCASE
         '''
         
@@ -845,6 +1470,14 @@ class KnowledgeDB:
             repo_placeholders = ','.join('?' for _ in repo_ids)
             sql += f" AND f.repo_id IN ({repo_placeholders})"
             params.extend(repo_ids)
+
+        if project_id is not None:
+            sql += " AND f.project_id = ?"
+            params.append(project_id)
+
+        if branch is not None:
+            sql += " AND f.branch = ?"
+            params.append(branch)
             
         sql += " LIMIT ?"
         params.append(limit)
@@ -852,27 +1485,44 @@ class KnowledgeDB:
         cursor.execute(sql, params)
         return cursor.fetchall()
 
-    def search_chunks_hybrid(self, query: str, query_vector: Optional[List[float]] = None, repo_ids: Optional[List[str]] = None, limit: int = 10) -> List[sqlite3.Row]:
+    def search_chunks_hybrid(
+        self,
+        query: str,
+        query_vector: Optional[List[float]] = None,
+        repo_ids: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None,
+        limit: int = 10
+    ) -> List[sqlite3.Row]:
         """Гибридный поиск RRF: объединяет FTS5, KNN по векторам (если есть), и Graph Search."""
         cursor = self.conn.cursor()
         
-        fts_res = self.search_chunks_fts(query, repo_ids, limit=50)
-        graph_res = self.search_chunks_graph(query, repo_ids, limit=20)
+        fts_res = self.search_chunks_fts(query, repo_ids, project_id=project_id, branch=branch, limit=50)
+        graph_res = self.search_chunks_graph(query, repo_ids, project_id=project_id, branch=branch, limit=20)
         
         vec_res = []
         if query_vector is not None:
             vec_sql = '''
-                SELECT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
-                       f.repo_id, f.path, vec_distance_L2(cv.embedding, ?) as distance
+                SELECT DISTINCT c.id, c.content, c.source_kind, c.trust, c.line_start, c.line_end, 
+                       f.repo_id, f.path, f.project_id, f.branch, vec_distance_L2(cv.embedding, ?) as distance
                 FROM chunks_vec cv
                 JOIN chunks c ON cv.rowid = c.rowid
-                JOIN files f ON c.file_id = f.id
+                JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
             '''
-            params = [sqlite_vec.serialize_float32(query_vector)]
+            params: list[Any] = [sqlite_vec.serialize_float32(query_vector)]
+            where_clauses = []
             if repo_ids:
                 placeholders = ','.join('?' for _ in repo_ids)
-                vec_sql += f" WHERE f.repo_id IN ({placeholders})"
+                where_clauses.append(f"f.repo_id IN ({placeholders})")
                 params.extend(repo_ids)
+            if project_id is not None:
+                where_clauses.append("f.project_id = ?")
+                params.append(project_id)
+            if branch is not None:
+                where_clauses.append("f.branch = ?")
+                params.append(branch)
+            if where_clauses:
+                vec_sql += " WHERE " + " AND ".join(where_clauses)
                 
             vec_sql += " ORDER BY distance ASC LIMIT 50"
             cursor.execute(vec_sql, params)
@@ -905,6 +1555,21 @@ class KnowledgeDB:
             
         sorted_results = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         return [chunks_map[cid] for cid, _ in sorted_results[:limit]]
+
+    def search_chunks(
+        self,
+        query: str,
+        repo_ids: Optional[List[str]] = None,
+        project_id: Optional[str] = "default",
+        branch: Optional[str] = "master",
+        query_vector: Optional[List[float]] = None,
+        limit: int = 10
+    ) -> List[sqlite3.Row]:
+        """Универсальный метод поиска чанков с поддержкой project_id и branch."""
+        if query_vector is not None:
+            return self.search_chunks_hybrid(query, query_vector=query_vector, repo_ids=repo_ids, project_id=project_id, branch=branch, limit=limit)
+        return self.search_chunks_fts(query, repo_ids=repo_ids, project_id=project_id, branch=branch, limit=limit)
+
 
     def get_system_status(self) -> Optional[sqlite3.Row]:
         """Возвращает текущий статус системы."""
