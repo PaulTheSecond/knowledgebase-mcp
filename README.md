@@ -289,6 +289,7 @@ Or when running via Docker:
 ## 📐 Architecture & Roadmap
 
 - [Roadmap: Autonomous Sync, Dashboard & Horizons](docs/roadmap_autonomous_sync.md)
+- [Container Registry & Docker Hub Distribution Guide](docs/deployment-and-docker-registry.md)
 - [ADR-001: Local MCP RAG Foundation](docs/adr-001-local-mcp-rag-knowledge-base.md)
 - [ADR-002: Hybrid Semantic & Graph Indexing](docs/adr-002-hybrid-semantic-graph-indexing.md)
 - [ADR-004: Autonomous Sync, Triggers & Credentials](docs/adr-004-autonomous-sync-triggers-credentials.md)

@@ -32,9 +32,10 @@ timeline
          : Multi-tab doc viewer & citation line highlighting
          : Resizable splitter (45% default) & LocalStorage memory
          : Mermaid SVG rendering & Prism code headers
-    v1.7 : Hardening & Resource Telemetry
+    v1.7 : Hardening, Telemetry & Container Distribution
          : Memory and disk consumption telemetry in Web UI
          : Queue filtering & retry controls
+         : Docker Hub automated CI/CD publication & RU mirrors
     v1.8 : Multi-Branch & Release Tags
          : Multi-branch & release tag indexing support
     v2.0 (Horizon) : Visual Knowledge Graph Explorer
@@ -85,11 +86,15 @@ timeline
 - **Resizable Splitter & Dialogue Memory:** Drag-to-resize split view defaulting to 45% with double-click reset; browser-persisted chat history with a "New Dialog" reset action.
 - **Configured Repo Path Resolution:** Backend `/api/chat/file` path resolution across all configured repository roots (`local_path`, `clones_dir`, `project_dir`) supporting `full_file=true`.
 
-## v1.7: Operational Hardening & Health Metrics — 📋 *Planned*
+## v1.7: Operational Hardening, Health Metrics & Container Distribution — 📋 *Planned*
 *Estimate: Minor update*
 - Memory and disk consumption telemetry in Web UI.
 - Queue management extensions (filter by status, manual retry for halted tasks).
 - Configurable token context limits for RAG chat.
+- **Automated Container Registry Publication (Docker Hub / YCR):**
+  - Implement GitHub Actions CI/CD workflow (`.github/workflows/docker-publish.yml`) for automated Docker Hub image builds (`:latest`, semver tags).
+  - Document caching mirrors (`registry-mirrors`) for seamless pulling in Russian network environments.
+  - See detailed deployment guide: [Container Registry Publication & Distribution Guide](deployment-and-docker-registry.md).
 
 ## v1.8: Multi-Branch & Release Tag Indexing — 📋 *Planned*
 *Estimate: Minor update*
