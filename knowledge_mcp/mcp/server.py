@@ -448,6 +448,9 @@ def knowledge_find_symbol(
     if not db_instance:
         raise RuntimeError("KnowledgeDB is not initialized.")
 
+    # JIT-проверка перед поиском символов
+    _run_jit_check(repo_ids=repo_ids, project_id=project_id, branch=branch, db_instance=db_instance)
+
     results = db_instance.find_symbols(
         name_pattern=name_pattern,
         kind=kind,
