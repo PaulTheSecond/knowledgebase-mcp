@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "knowledgebase": {
+      "command": "python",
+      "args": [
+        "-m",
+        "knowledge_mcp.main",
+        "mcp"
+      ]
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "command": "python -m knowledge_mcp.main sync-file --check-status"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "python -m knowledge_mcp.main sync-file --file \"$FILE\""
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob",
+        "command": "echo \"[KnowledgeBase MCP] Рекомендуется использовать knowledge_search или knowledge_review_context для точного семантического и графового анализа перед глобальным Grep/Glob.\""
+      }
+    ]
+  }
+}

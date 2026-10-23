@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "knowledgebase": {
+      "command": "python",
+      "args": [
+        "-m",
+        "knowledge_mcp.main",
+        "mcp"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

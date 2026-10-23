@@ -339,6 +339,15 @@ async def serve_spa_or_static(full_path: str = ""):
     raise HTTPException(status_code=404, detail="Dashboard index.html not found. Please build frontend first.")
 
 def main():
+    if sys.platform == "win32":
+        try:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            if hasattr(sys.stderr, "reconfigure"):
+                sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(description="Knowledge MCP - Indexer & Trigger Server")
     # Дефолт берётся из переменной окружения DB_PATH (Docker задаёт её автоматически),
     # а без неё — data/knowledge.db для локального запуска
@@ -367,13 +376,119 @@ def main():
     mcp_parser.add_argument("--with-embeddings", action="store_true",
                             help="Enable vector search (loads ~150MB model, high quality RAG)")
 
+    # Режим генерации интеграционных пресетов для AI-агентов (Claude, Antigravity, Cursor, Codex)
+    preset_parser = subparsers.add_parser("preset", help="Generate or display integration presets for AI agents")
+    preset_parser.add_argument("agent", nargs="?", default="all",
+                               choices=["claude", "antigravity", "cursor", "codex", "all"],
+                               help="Target AI agent (default: all)")
+    preset_parser.add_argument("--output-dir", type=str, default=None,
+                               help="Directory to save preset files (if omitted, snippets are printed to stdout)")
+
+    # Режим быстрой синхронизации одного файла (хуки PostToolUse)
+    sync_file_parser = subparsers.add_parser("sync-file", help="JIT index or check single file for agent hooks")
+    sync_file_parser.add_argument("--file", type=str, default=None, help="Path to modified or created file")
+    sync_file_parser.add_argument("--project-id", type=str, default=None, help="Optional project ID override")
+    sync_file_parser.add_argument("--repo-id", type=str, default=None, help="Optional repo ID override")
+    sync_file_parser.add_argument("--branch", type=str, default=None, help="Optional branch override")
+    sync_file_parser.add_argument("--check-status", action="store_true", help="Quickly verify DB status and active workspaces")
+
     args = parser.parse_args()
 
     if not args.command:
         parser.print_help()
         sys.exit(1)
 
-    if args.command == "mcp":
+    if args.command == "preset":
+        from knowledge_mcp.core.agent_presets import AgentPresetManager
+        if args.output_dir:
+            created = AgentPresetManager.export_presets(args.agent, args.output_dir)
+            print(f"[KnowledgeBase MCP] Успешно создано {len(created)} файл(ов) пресета в '{args.output_dir}':")
+            for f in created:
+                print(f"  - {f}")
+        else:
+            AgentPresetManager.print_presets(args.agent)
+        return
+    elif args.command == "sync-file":
+        db_path = getattr(args, "db_path", os.environ.get("DB_PATH", "data/knowledge.db"))
+        db = KnowledgeDB(db_path)
+
+        if getattr(args, "check_status", False):
+            from knowledge_mcp.core.config import load_config, get_projects
+            cfg = load_config()
+            repos_count = len(cfg.get("repositories", []))
+            projects_count = len(get_projects())
+
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM files")
+            files_count = cursor.fetchone()[0]
+
+            print("[KnowledgeBase MCP] Status: OK")
+            print(f"Database: {db_path} (accessible)")
+            print(f"Workspaces: {projects_count} project(s), {repos_count} repository(ies)")
+            print(f"Indexed files in CAS: {files_count}")
+            db.close()
+            return
+
+        if not getattr(args, "file", None):
+            logger.error("Требуется указать --file <путь> или --check-status")
+            sys.exit(1)
+
+        target_file = Path(args.file).resolve()
+        from knowledge_mcp.core.workspace_scanner import WorkspaceScanner
+        from knowledge_mcp.core.jit_sync import JITSyncEngine
+        from knowledge_mcp.core.indexer import Indexer
+
+        project_id = getattr(args, "project_id", None)
+        repo_id = getattr(args, "repo_id", None)
+        branch = getattr(args, "branch", None)
+        repo_root = None
+
+        if not (project_id and repo_id and branch):
+            discovered = WorkspaceScanner.resolve_active_target(target_file)
+            if discovered:
+                project_id = project_id or discovered.project_id
+                repo_id = repo_id or discovered.repo_id
+                branch = branch or discovered.branch
+                repo_root = discovered.absolute_path
+
+        if not repo_root:
+            curr = target_file.parent if target_file.is_file() else target_file
+            while curr != curr.parent:
+                if (curr / ".git").exists():
+                    repo_root = curr
+                    break
+                curr = curr.parent
+
+            if repo_root:
+                repo_id = repo_id or repo_root.name
+                branch = branch or WorkspaceScanner.get_git_branch(repo_root)
+                project_id = project_id or "default"
+            else:
+                repo_root = target_file.parent
+                repo_id = repo_id or "default"
+                branch = branch or "master"
+                project_id = project_id or "default"
+
+        fast_indexer = Indexer(db, use_embeddings=False)
+        jit = JITSyncEngine(fast_indexer)
+        ok = jit.index_single_file(
+            target_file,
+            project_id=project_id,
+            repo_id=repo_id,
+            branch=branch,
+            db=db,
+            repo_root=repo_root
+        )
+        if ok:
+            action = "Indexed" if target_file.exists() else "Deleted"
+            print(f"[JIT] {action} {target_file.name} in repo '{repo_id}' (branch: '{branch}', project: '{project_id}')")
+        else:
+            logger.warning(f"[JIT] Could not index single file: {target_file}")
+            db.close()
+            sys.exit(1)
+        db.close()
+        return
+    elif args.command == "mcp":
         # MCP-сервер имеет собственную лёгкую инициализацию (без Indexer/LocalEmbedder),
         # чтобы handshake проходил мгновенно и не блокировался загрузкой ML-модели.
         import asyncio

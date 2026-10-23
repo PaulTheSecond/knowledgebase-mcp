@@ -127,18 +127,32 @@ class JITSyncEngine:
         project_id: str,
         repo_id: str,
         branch: str,
-        db: KnowledgeDB
+        db: KnowledgeDB,
+        repo_root: Optional[Path | str] = None,
+        rel_path: Optional[str] = None
     ) -> bool:
         """
-        Метод для вызова из хуков Claude Code (PostToolUse на Edit|Write).
+        Метод для вызова из хуков Claude Code (PostToolUse на Edit|Write)
+        и CLI-команды sync-file.
         Мгновенно переиндексирует ровно один измененный файл.
         """
         file_path = Path(file_path).resolve()
         indexer = self._get_indexer(db)
 
+        if rel_path is None:
+            if repo_root is not None:
+                try:
+                    rel_path = file_path.relative_to(Path(repo_root).resolve()).as_posix()
+                except ValueError:
+                    rel_path = file_path.name
+            else:
+                rel_path = file_path.name
+
+        rel_path = rel_path.replace("\\", "/")
+
         try:
             if not file_path.exists():
-                db.delete_file(repo_id, file_path.name, project_id=project_id, branch=branch)
+                db.delete_file(repo_id, rel_path, project_id=project_id, branch=branch)
                 return True
 
             file_id = indexer.index_file(
@@ -146,7 +160,8 @@ class JITSyncEngine:
                 repo_id=repo_id,
                 project_id=project_id,
                 branch=branch,
-                rel_path=file_path.name
+                rel_path=rel_path,
+                repo_root=repo_root
             )
             return file_id > 0
         except Exception as e:
