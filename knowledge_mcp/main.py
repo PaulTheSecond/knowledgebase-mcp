@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 event_loop = None
 start_daemon = False
 worker_instance = None
+watcher_instance = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -71,6 +72,8 @@ from knowledge_mcp.daemon.routes.settings import router as settings_router
 
 app.include_router(chat_router)
 app.include_router(settings_router)
+from knowledge_mcp.daemon.routes.telemetry import router as telemetry_router
+app.include_router(telemetry_router)
 
 @app.websocket("/ws/status")
 async def websocket_status_endpoint(websocket: WebSocket):

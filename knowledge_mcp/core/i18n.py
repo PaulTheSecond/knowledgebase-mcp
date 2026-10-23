@@ -69,6 +69,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "ws.embeddings": "Вычисление векторных эмбеддингов ({current}/{total})...",
         "ws.completed": "Синхронизация успешно завершена",
         "ws.failed": "Ошибка синхронизации: {error}",
+
+        # Дашборд и телеметрия
+        "nav.dashboard": "Дашборд",
+        "dashboard.title": "Телеметрия и статус системы",
+        "dashboard.tokens_saved": "Сэкономлено токенов",
+        "dashboard.disk_saved": "Сэкономлено на диске",
+        "dashboard.cas_title": "CAS-дедупликация диска",
+        "dashboard.watcher_status": "Файловый наблюдатель",
     },
     "en": {
         # Authentication
@@ -129,6 +137,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "ws.embeddings": "Generating vector embeddings ({current}/{total})...",
         "ws.completed": "Synchronization completed successfully",
         "ws.failed": "Synchronization error: {error}",
+
+        # Dashboard & telemetry
+        "nav.dashboard": "Dashboard",
+        "dashboard.title": "System Telemetry & Status",
+        "dashboard.tokens_saved": "Tokens Saved",
+        "dashboard.disk_saved": "Disk Saved",
+        "dashboard.cas_title": "CAS Disk Deduplication",
+        "dashboard.watcher_status": "File Watcher",
     }
 }
 

@@ -24,6 +24,9 @@ export class HeaderComponent {
   readonly currentTitle = computed(() => {
     // В зависимости от текущего роута выводим локализованный заголовок
     const url = this.navEnd()?.urlAfterRedirects || this.router.url || '';
+    if (url.includes('/dashboard')) {
+      return this.i18n.t('header.title_dashboard');
+    }
     if (url.includes('/queue')) {
       return this.i18n.t('header.title_queue');
     }

@@ -16,6 +16,22 @@
 
   <nav class="sidebar__nav">
     <a 
+      routerLink="/dashboard" 
+      routerLinkActive="active" 
+      class="sidebar__nav-item"
+      [attr.title]="i18n.t('nav.dashboard')">
+      <span class="sidebar__icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="9"/>
+          <rect x="14" y="3" width="7" height="5"/>
+          <rect x="14" y="12" width="7" height="9"/>
+          <rect x="3" y="16" width="7" height="5"/>
+        </svg>
+      </span>
+      <span class="sidebar__nav-text">{{ i18n.t('nav.dashboard') }}</span>
+    </a>
+
+    <a 
       routerLink="/repositories" 
       routerLinkActive="active" 
       class="sidebar__nav-item"

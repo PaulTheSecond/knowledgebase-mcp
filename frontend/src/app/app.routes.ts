@@ -4,7 +4,11 @@ export const routes: Routes = [
   {
     path: '',
     pathMatch: 'full',
-    redirectTo: 'repositories'
+    redirectTo: 'dashboard'
+  },
+  {
+    path: 'dashboard',
+    loadComponent: () => import('./features/dashboard/dashboard.component').then(m => m.DashboardComponent)
   },
   {
     path: 'repositories',
@@ -20,6 +24,6 @@ export const routes: Routes = [
   },
   {
     path: '**',
-    redirectTo: 'repositories'
+    redirectTo: 'dashboard'
   }
 ];

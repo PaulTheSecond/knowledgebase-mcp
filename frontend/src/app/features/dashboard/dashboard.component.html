@@ -1,0 +1,273 @@
+<div class="dashboard-container">
+  <!-- Верхний блок заголовка страницы -->
+  <div class="section-card dashboard-hero">
+    <div class="card-header-flex">
+      <div>
+        <h2 style="font-size: 22px; margin-bottom: 6px;">{{ i18n.t('dashboard.title') }}</h2>
+        <p class="text-secondary" style="margin: 0;">{{ i18n.t('dashboard.subtitle') }}</p>
+      </div>
+      <button 
+        type="button" 
+        class="btn btn-icon btn-secondary" 
+        (click)="loadMetrics()" 
+        [attr.title]="i18n.t('dashboard.refresh')" 
+        [attr.aria-label]="i18n.t('dashboard.refresh')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"/>
+          <polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  @if (loading() && !metrics()) {
+    <div class="section-card text-center" style="padding: 48px 24px;">
+      <div class="spinner"></div>
+      <p class="text-secondary" style="margin-top: 16px;">{{ i18n.t('dashboard.loading') }}</p>
+    </div>
+  } @else if (error()) {
+    <div class="section-card" style="border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.05); padding: 32px 24px;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <h3 class="text-danger" style="margin-bottom: 8px;">{{ error() }}</h3>
+          <p class="text-secondary" style="margin: 0;">Пожалуйста, проверьте статус сервера бэкенда и сетевое соединение.</p>
+        </div>
+        <button type="button" class="btn btn-primary" (click)="loadMetrics()">{{ i18n.t('dashboard.refresh') }}</button>
+      </div>
+    </div>
+  } @else if (metrics(); as data) {
+
+    <!-- Сетка основных виджетов -->
+    <div class="dashboard-grid">
+
+      <!-- ================= ВИДЖЕТ 1: ЭКОНОМИЯ ТОКЕНОВ ================= -->
+      <div class="section-card widget-card widget-tokens">
+        <div class="widget-header">
+          <div class="widget-icon widget-icon--tokens">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </div>
+          <div>
+            <h3 class="widget-title">{{ i18n.t('dashboard.token_savings_title') }}</h3>
+            <span class="widget-subtitle">Телеметрия за последние 7 дней</span>
+          </div>
+        </div>
+
+        <div class="kpi-row">
+          <div class="kpi-item kpi-item--primary">
+            <span class="kpi-label">{{ i18n.t('dashboard.tokens_saved') }}</span>
+            <div class="kpi-value text-success">
+              {{ formatTokens(data.token_savings.total_saved_tokens) }}
+            </div>
+            <span class="kpi-hint">Сэкономленный бюджет LLM</span>
+          </div>
+
+          <div class="kpi-item">
+            <span class="kpi-label">{{ i18n.t('dashboard.context_savings') }}</span>
+            <div class="kpi-value text-accent">
+              {{ formatPercent(data.token_savings.avg_saved_percent) }}
+            </div>
+            <span class="kpi-hint">Средний процент сжатия контекста</span>
+          </div>
+
+          <div class="kpi-item">
+            <span class="kpi-label">{{ i18n.t('dashboard.total_calls') }}</span>
+            <div class="kpi-value">
+              {{ data.token_savings.total_calls || 0 }}
+            </div>
+            <span class="kpi-hint">Запросов через MCP-инструменты</span>
+          </div>
+        </div>
+
+        <!-- Разбивка экономии токенов по инструментам -->
+        <div class="widget-section" style="margin-top: 24px;">
+          <h4 class="section-heading">{{ i18n.t('dashboard.tools_breakdown') }}</h4>
+          @if (toolsList().length === 0) {
+            <p class="text-muted" style="margin-top: 12px; font-size: 13.5px;">
+              {{ i18n.t('dashboard.no_token_data') }}
+            </p>
+          } @else {
+            <div class="table-container" style="margin-top: 12px;">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>{{ i18n.t('dashboard.tool_name') }}</th>
+                    <th>{{ i18n.t('dashboard.calls_count') }}</th>
+                    <th>{{ i18n.t('dashboard.baseline_tokens') }}</th>
+                    <th>{{ i18n.t('dashboard.saved_tokens') }}</th>
+                    <th>{{ i18n.t('dashboard.saved_percent') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (tool of toolsList(); track tool.name) {
+                    <tr>
+                      <td style="font-weight: 600; color: var(--text-primary);">{{ tool.displayName }}</td>
+                      <td><span class="badge-status info">{{ tool.stats.calls_count }}</span></td>
+                      <td>{{ formatTokens(tool.stats.total_baseline_tokens) }}</td>
+                      <td class="text-success" style="font-weight: 600;">+{{ formatTokens(tool.stats.total_saved_tokens) }}</td>
+                      <td>
+                        <span class="badge-status success">{{ formatPercent(tool.stats.avg_saved_percent) }}</span>
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+        </div>
+      </div>
+
+      <!-- ================= ВИДЖЕТ 2: CAS-СЖАТИЕ ДИСКА ================= -->
+      <div class="section-card widget-card widget-cas">
+        <div class="widget-header">
+          <div class="widget-icon widget-icon--cas">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <ellipse cx="12" cy="5" rx="9" ry="3"/>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+            </svg>
+          </div>
+          <div>
+            <h3 class="widget-title">{{ i18n.t('dashboard.cas_title') }}</h3>
+            <span class="widget-subtitle">Content-Addressable Storage дедупликация</span>
+          </div>
+        </div>
+
+        <div class="cas-summary-banner">
+          <div class="banner-stat">
+            <span class="stat-label">{{ i18n.t('dashboard.real_db_size') }}</span>
+            <span class="stat-value">{{ formatBytes(data.cas.real_size_bytes) }}</span>
+            <span class="stat-sub">SQLite на диске</span>
+          </div>
+          <div class="banner-divider">vs</div>
+          <div class="banner-stat">
+            <span class="stat-label">{{ i18n.t('dashboard.virtual_db_size') }}</span>
+            <span class="stat-value text-muted">{{ formatBytes(data.cas.virtual_size_bytes) }}</span>
+            <span class="stat-sub">Без дедупликации</span>
+          </div>
+          <div class="banner-divider">=</div>
+          <div class="banner-stat banner-stat--highlight">
+            <span class="stat-label">{{ i18n.t('dashboard.disk_saved') }}</span>
+            <span class="stat-value text-success">-{{ formatBytes(data.cas.saved_size_bytes) }}</span>
+            <span class="badge-status success" style="margin-top: 4px;">{{ formatPercent(data.cas.saved_percent) }} экономии</span>
+          </div>
+        </div>
+
+        <!-- Прогресс-бар экономии дискового пространства -->
+        <div class="cas-progress-section">
+          <div class="progress-labels">
+            <span>{{ i18n.t('dashboard.disk_savings_percent') }}: <strong>{{ formatPercent(data.cas.saved_percent) }}</strong></span>
+            <span class="text-secondary">Сэкономлено: {{ formatBytes(data.cas.saved_size_bytes) }} / Всего: {{ formatBytes(data.cas.virtual_size_bytes) }}</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" [style.width.%]="data.cas.saved_percent || 0"></div>
+          </div>
+        </div>
+
+        <!-- Дополнительные параметры дедупликации -->
+        <div class="cas-stats-grid">
+          <div class="stat-pill">
+            <span class="pill-label">Логических файлов:</span>
+            <span class="pill-value">{{ data.cas.logical_files_count || 0 }}</span>
+          </div>
+          <div class="stat-pill">
+            <span class="pill-label">Уникальных контентов:</span>
+            <span class="pill-value">{{ data.cas.unique_contents_count || 0 }}</span>
+          </div>
+          <div class="stat-pill">
+            <span class="pill-label">Коэффициент сжатия:</span>
+            <span class="pill-value text-success font-semibold">{{ casDeduplicationRatio() }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= ВИДЖЕТ 3: СИСТЕМНЫЙ СТАТУС И ВОРКСПЕЙСЫ ================= -->
+      <div class="section-card widget-card widget-system">
+        <div class="widget-header">
+          <div class="widget-icon widget-icon--system">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+              <line x1="8" y1="21" x2="16" y2="21"/>
+              <line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+          </div>
+          <div>
+            <h3 class="widget-title">{{ i18n.t('dashboard.system_status_title') }}</h3>
+            <span class="widget-subtitle">Службы фоновой синхронизации и активные проекты</span>
+          </div>
+        </div>
+
+        <div class="system-status-grid">
+          <!-- Блок File Watcher -->
+          <div class="status-box">
+            <div class="status-box__top">
+              <span class="status-box__title">{{ i18n.t('dashboard.watcher_status') }}</span>
+              @if (data.watcher.active) {
+                <span class="badge-status success pulse-badge">
+                  <span class="pulse-dot"></span> {{ i18n.t('dashboard.watcher_active') }}
+                </span>
+              } @else {
+                <span class="badge-status info">
+                  {{ i18n.t('dashboard.watcher_inactive') }}
+                </span>
+              }
+            </div>
+            <p class="status-box__desc">
+              Отслеживание изменений на уровне ядра ОС (Win32 ReadDirectoryChangesW).
+            </p>
+            <div class="status-box__meta">
+              <span class="text-secondary">{{ i18n.t('dashboard.watched_paths') }}:</span>
+              <strong>{{ data.watcher.watched_paths_count }}</strong>
+            </div>
+          </div>
+
+          <!-- Блок JIT Sync -->
+          <div class="status-box">
+            <div class="status-box__top">
+              <span class="status-box__title">{{ i18n.t('dashboard.jit_title') }}</span>
+              <span class="badge-status info">
+                {{ i18n.t('dashboard.jit_status') }}
+              </span>
+            </div>
+            <p class="status-box__desc">
+              {{ i18n.t('dashboard.jit_desc') }}
+            </p>
+            <div class="status-box__meta">
+              <span class="text-secondary">Гарантия актуальности:</span>
+              <strong class="text-success">100% Zero Stale Context</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Список проектов и ворктри -->
+        <div class="widget-section" style="margin-top: 24px;">
+          <h4 class="section-heading">{{ i18n.t('dashboard.projects_title') }}</h4>
+          @if (!data.projects || data.projects.length === 0) {
+            <p class="text-muted" style="margin-top: 12px; font-size: 13.5px;">
+              {{ i18n.t('dashboard.no_projects') }}
+            </p>
+          } @else {
+            <div class="projects-list">
+              @for (project of data.projects; track project.id) {
+                <div class="project-item">
+                  <div class="project-info">
+                    <span class="project-name">{{ project.name }}</span>
+                    <span class="project-id text-muted">{{ project.id }}</span>
+                  </div>
+                  <div class="project-meta">
+                    <span class="badge-status info">
+                      {{ project.targets_count }} {{ i18n.t('dashboard.targets_count') }}
+                    </span>
+                  </div>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      </div>
+
+    </div>
+  }
+</div>

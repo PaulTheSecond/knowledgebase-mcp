@@ -4,6 +4,7 @@ import { Observable } from 'rxjs';
 import { SystemStatus, QueueJob } from '../models/queue.model';
 import { SystemSettings, UpdateSettingsPayload } from '../models/settings.model';
 import { Repository } from '../models/repository.model';
+import { TelemetryMetrics } from '../models/telemetry.model';
 import { I18nService } from './i18n.service';
 import { AuthService } from './auth.service';
 
@@ -33,6 +34,10 @@ export class ApiService {
       'Authorization': `Basic ${encoded}`
     });
     return this.http.get<SystemStatus>('/api/status', { headers });
+  }
+
+  getTelemetryMetrics(): Observable<TelemetryMetrics> {
+    return this.http.get<TelemetryMetrics>('/api/telemetry/metrics', { headers: this.getHeaders() });
   }
 
   getStatus(): Observable<SystemStatus> {
