@@ -69,7 +69,6 @@ class Indexer:
             '.opencode/', '.roo/', '.github/', '.nuget/',
             'mcp.json', 'opencode.json', '.task-cache.json',
             'gitlab-task-collector.config.json',
-            'AGENTS.md', 'Claude.md', 'gemini.md',
             # Конфиги сборки и IDE
             '.editorconfig', '.arscontexta', '.mailmap', '.roomodes',
             'Directory.Build.props', 'Directory.Packages.props',
@@ -272,18 +271,55 @@ class Indexer:
 
         return chunks_raw, symbols_raw, edges_raw
 
-    def _parse_markdown(self, filepath: Path) -> tuple[list, list, list]:
-        """Парсинг Markdown (чистая функция, нет обращений к БД)."""
+    @staticmethod
+    def _detect_language(filepath: Path) -> str:
+        """Определяет язык файла по расширению."""
+        ext = filepath.suffix.lower()
+        mapping = {
+            '.cs': 'c_sharp',
+            '.ts': 'typescript',
+            '.tsx': 'typescript',
+            '.js': 'javascript',
+            '.jsx': 'javascript',
+            '.py': 'python',
+            '.sql': 'sql',
+            '.md': 'markdown',
+            '.mdx': 'markdown',
+            '.json': 'json',
+            '.yaml': 'yaml',
+            '.yml': 'yaml',
+        }
+        return mapping.get(ext, 'text')
+
+    def _parse_markdown(self, filepath: Path, rel_path: str = "") -> tuple[list, list, list]:
+        """Парсинг Markdown (.kb/, CLAUDE.md, docs) с разметкой source_kind='rules' или 'documentation'."""
         sections = self.md_parser.parse_file(filepath)
+        fname = filepath.name.lower()
+        norm_rel = rel_path.replace('\\', '/').lower()
+        if fname in ('claude.md', '.cursorrules') or 'rules' in fname or norm_rel.startswith('.kb/') or '/.kb/' in norm_rel:
+            source_kind = 'rules'
+            trust = 'verified'
+        else:
+            source_kind = 'documentation'
+            trust = 'hint'
+
         chunks_raw = [
-            (sec.content, 'docs', 'hint', sec.line_start, sec.line_end)
+            (sec.content, source_kind, trust, sec.line_start, sec.line_end)
             for sec in sections if sec.content.strip()
         ]
+        if not chunks_raw:
+            try:
+                content = filepath.read_text(encoding='utf-8', errors='replace')
+                if content.strip():
+                    lines_count = len(content.splitlines())
+                    chunks_raw = [(content, source_kind, trust, 1, lines_count)]
+            except Exception:
+                pass
         return chunks_raw, [], []
 
     def _parse_fallback(self, filepath: Path) -> tuple[list, list, list]:
         """Fallback: читает файл целиком (чистая функция, нет обращений к БД)."""
-        content = filepath.read_text(encoding='utf-8')
+        content = filepath.read_text(encoding='utf-8', errors='replace')
         if not content.strip():
             return [], [], []
         lines_count = len(content.splitlines())
@@ -296,13 +332,19 @@ class Indexer:
         Безопасен для вызова из ThreadPoolExecutor.
         """
         ext = filepath.suffix.lower()
+        fname = filepath.name.lower()
+        norm_rel = rel_path.replace('\\', '/').lower()
         try:
-            if ext == '.cs':
-                return self._parse_csharp(filepath)
+            if ext in ('.md', '.mdx') or norm_rel.startswith(('docs/', 'knowledge/', '.kb/')) or '/.kb/' in norm_rel or fname in ('claude.md', '.cursorrules'):
+                return self._parse_markdown(filepath, rel_path)
+            elif ext == '.cs':
+                res = self._parse_csharp(filepath)
+                if res and (res[0] or res[1]):
+                    return res
+                # Fallback на Tree-sitter парсер, если Roslyn кэш пуст
+                return self._parse_code(filepath)
             elif ext in LANGUAGE_MAP:
                 return self._parse_code(filepath)
-            elif ext in ('.md', '.mdx') or rel_path.startswith(('docs/', 'knowledge/')):
-                return self._parse_markdown(filepath)
             else:
                 return self._parse_fallback(filepath)
         except Exception as e:
@@ -319,9 +361,10 @@ class Indexer:
         rel_path: str,
         parsed: tuple[list, list, list],
         chunks_to_embed: list,
+        content_hash: Optional[str] = None
     ) -> ReindexStatus:
         """
-        Записывает результаты парсинга в БД батчевыми операциями.
+        Записывает результаты парсинга в БД батчевыми операциями с поддержкой content_hash и TESTED_BY.
         Возвращает ReindexStatus.
         """
         chunks_raw, symbols_raw, edges_raw = parsed
@@ -329,13 +372,19 @@ class Indexer:
         if not chunks_raw and not symbols_raw:
             return ReindexStatus.PROCESSED_NO_EMBEDDING
 
-        # --- Батчевая вставка чанков ---
+        if content_hash is None and file_id:
+            cursor = self.db.conn.cursor()
+            cursor.execute("SELECT content_hash FROM files WHERE id = ?", (file_id,))
+            row = cursor.fetchone()
+            if row and row['content_hash']:
+                content_hash = row['content_hash']
+
+        # --- Батчевая вставка чанков с content_hash ---
         chunk_records = [
-            (str(uuid.uuid4()), file_id, body, ls, le, sk, tr, None)
+            (str(uuid.uuid4()), file_id, body, ls, le, sk, tr, None, content_hash)
             for body, sk, tr, ls, le in chunks_raw
         ]
         rowids = self.db.add_chunks_batch(chunk_records)
-        # chunk_id (uuid string) по индексу
         chunk_ids = [r[0] for r in chunk_records]
 
         # Добавляем в очередь эмбеддингов
@@ -345,29 +394,25 @@ class Indexer:
                 chunks_to_embed.append((body, rowids[i], rel_path))
                 embed_added = True
 
-        # --- Батчевая вставка символов ---
+        # --- Батчевая вставка символов с content_hash ---
         if symbols_raw:
             sym_records = [
-                (file_id, name, qname, kind, lang, ls, le, sig, chunk_ids[body_idx])
+                (file_id, name, qname, kind, lang, ls, le, sig, chunk_ids[body_idx], content_hash)
                 for name, qname, kind, lang, ls, le, sig, body_idx in symbols_raw
             ]
             sym_rowids = self.db.add_symbols_batch(sym_records)
-            # Строим map: qualified_name / ast_node_id → symbol rowid
             qname_to_sym_id: dict = {}
             ast_to_sym_id: dict = {}
             for i, (name, qname, kind, lang, ls, le, sig, body_idx) in enumerate(symbols_raw):
                 qname_to_sym_id[qname] = sym_rowids[i]
+                if name not in qname_to_sym_id:
+                    qname_to_sym_id[name] = sym_rowids[i]
                 if not qname_to_sym_id.get('file_level'):
                     qname_to_sym_id['file_level'] = sym_rowids[i]
-            # Для .cs — ast_node_id хранится в edges_raw (is_ast_id=True)
-            # Перестраиваем map через порядок symbols_raw (соответствует csharp_cache['symbols'])
+
             if edges_raw and edges_raw[0][3]:  # is_ast_id
-                # ast_id_to_chunk_idx был построен в _parse_csharp по порядку,
-                # т.е. i-й символ соответствует i-й записи csharp_cache['symbols']
-                # Восстанавливаем через кэш напрямую
                 resolved_key = None
                 for rk, cv in self.csharp_cache.items():
-                    # Ищем по relative path приближённо через суффикс
                     if str(rk).replace('\\', '/').endswith(rel_path):
                         resolved_key = rk
                         break
@@ -381,6 +426,33 @@ class Indexer:
             edge_records = []
             unresolved_records = []
             for src_key, target_name, kind, is_ast_id in edges_raw:
+                if kind == 'TESTED_BY':
+                    # Направление TESTED_BY: source = протестированный символ, target = тест
+                    test_id = qname_to_sym_id.get(target_name) or (ast_to_sym_id.get(target_name) if is_ast_id else None)
+                    if not test_id:
+                        test_id = qname_to_sym_id.get(src_key) or (ast_to_sym_id.get(src_key) if is_ast_id else None)
+                        tested_name = target_name
+                    else:
+                        tested_name = src_key
+
+                    if test_id:
+                        tested_id = qname_to_sym_id.get(tested_name)
+                        if not tested_id:
+                            targets = self.db.find_symbols(tested_name, limit=5)
+                            exact = [t for t in targets if t['name'] == tested_name and t['id'] != test_id]
+                            if exact:
+                                tested_id = exact[0]['id']
+                            elif targets:
+                                valid = [t for t in targets if t['id'] != test_id]
+                                if valid:
+                                    tested_id = valid[0]['id']
+
+                        if tested_id and tested_id != test_id:
+                            edge_records.append((tested_id, test_id, 'TESTED_BY'))
+                        else:
+                            unresolved_records.append((test_id, tested_name, 'TESTED_BY'))
+                    continue
+
                 if is_ast_id:
                     source_id = ast_to_sym_id.get(src_key)
                 else:
@@ -388,7 +460,6 @@ class Indexer:
                 if not source_id:
                     continue
 
-                # Ищем target: сначала локально, затем в БД
                 target_id = qname_to_sym_id.get(target_name)
                 if not target_id:
                     targets = self.db.find_symbols(target_name, limit=1)
@@ -508,6 +579,91 @@ class Indexer:
     # ──────────────────────────────────────────────────────────────────────
     # Публичный API
     # ──────────────────────────────────────────────────────────────────────
+
+    def index_file(
+        self,
+        file_path: Path | str,
+        repo_id: str,
+        project_id: str = "default",
+        branch: str = "master",
+        rel_path: Optional[str] = None,
+        repo_root: Optional[Path | str] = None,
+        force: bool = False
+    ) -> int:
+        """
+        Индексирует один файл с поддержкой CAS-дедупликации, связей TESTED_BY и FTS5.
+        Если файл с таким content_hash уже проиндексирован (например, в другой ветке/ворктри),
+        пропускает повторное построение chunks, embeddings и symbols, привязывая существующий
+        content_hash к новой записи в files — это сердцевина CAS-дедупликации!
+        """
+        file_path = Path(file_path).resolve()
+        if not file_path.is_file():
+            logger.warning(f"File does not exist: {file_path}")
+            return 0
+
+        if rel_path is None:
+            if repo_root is not None:
+                try:
+                    rel_path = file_path.relative_to(Path(repo_root).resolve()).as_posix()
+                except ValueError:
+                    rel_path = file_path.name
+            else:
+                rel_path = file_path.name
+        rel_path = rel_path.replace('\\', '/')
+
+        try:
+            content_bytes = file_path.read_bytes()
+        except Exception as e:
+            logger.error(f"Cannot read file {file_path}: {e}")
+            return 0
+
+        content_hash = hashlib.sha256(content_bytes).hexdigest()
+        content_str = content_bytes.decode('utf-8', errors='replace')
+        mtime = file_path.stat().st_mtime
+        language = self._detect_language(file_path)
+
+        # 1. Сохраняем сырой контент в CAS таблицу file_contents
+        self.db.upsert_file_content(content_str, language=language)
+
+        # 2. Проверяем наличие chunks для данного content_hash в БД (CAS-дедупликация)
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT 1 FROM chunks WHERE content_hash = ? LIMIT 1", (content_hash,))
+        content_already_indexed = cursor.fetchone() is not None
+
+        # 3. Сохраняем/обновляем запись в files
+        file_id = self.db.upsert_file(
+            repo_id=repo_id,
+            path=rel_path,
+            mtime=mtime,
+            file_hash=content_hash,
+            project_id=project_id,
+            branch=branch,
+            content_hash=content_hash
+        )
+
+        # 4. Если контент уже был проиндексирован, пропускаем перепарсинг chunks/symbols/embeddings
+        if content_already_indexed and not force:
+            logger.info(f"CAS hit: file '{rel_path}' ({content_hash[:8]}) already indexed. Deduplicating.")
+            return file_id
+
+        # 5. Иначе парсим файл, создаем чанки, символы и рёбра
+        self.db.clear_file_chunks(file_id)
+        self.db.clear_file_symbols(file_id)
+
+        parsed = self._parse_file_pure(file_path, rel_path)
+        if parsed is not None:
+            chunks_to_embed = []
+            self._flush_parsed_file(file_id, rel_path, parsed, chunks_to_embed, content_hash=content_hash)
+            if self.use_embeddings and self.embedder and chunks_to_embed:
+                self._embed_pending_chunks(repo_id, chunks_to_embed, {rel_path: 'pending'})
+
+        # 6. Разрешаем отложенные ссылки
+        try:
+            self.db.resolve_pending_references()
+        except Exception as ex:
+            logger.debug(f"Error resolving pending refs in index_file: {ex}")
+
+        return file_id
 
     def sync_repo(self, repo_id: str, repo_path: str | Path, allowed_top_level: list[str] | None = None, force: bool = False, target_files: list[str] | None = None):
         """
@@ -659,23 +815,40 @@ class Indexer:
                             updated_count += 1
                         else:
                             added_count += 1
-                        file_id = self.db.upsert_file(repo_id, rel_path, mtime, file_hash)
-                        self.db.clear_file_chunks(file_id)
-                        self.db.clear_file_symbols(file_id)
 
-                        # Парсинг AST в главном потоке, чтобы избежать блокировок GIL
-                        # и конфликтов внутреннего состояния Tree-sitter Parser
-                        parsed = self._parse_file_pure(filepath, rel_path)
+                        # Сохраняем сырой контент в CAS таблицу file_contents
+                        try:
+                            content_str = filepath.read_text(encoding='utf-8', errors='replace')
+                        except Exception:
+                            content_str = ""
+                        self.db.upsert_file_content(content_str, language=self._detect_language(filepath))
 
-                        if parsed is None:
-                            # Ошибка парсинга
-                            sync_buffer[rel_path] = 'skipped_parse_error'
+                        # Проверяем CAS-кэш: есть ли уже чанки для такого file_hash
+                        cursor = self.db.conn.cursor()
+                        cursor.execute("SELECT 1 FROM chunks WHERE content_hash = ? LIMIT 1", (file_hash,))
+                        has_chunks = cursor.fetchone() is not None
+
+                        file_id = self.db.upsert_file(repo_id, rel_path, mtime, file_hash, content_hash=file_hash)
+
+                        if has_chunks and not force:
+                            sync_buffer[rel_path] = 'completed'
                         else:
-                            reindex_result = self._flush_parsed_file(file_id, rel_path, parsed, chunks_to_embed)
-                            if reindex_result == ReindexStatus.QUEUED_FOR_EMBEDDING:
-                                sync_buffer[rel_path] = 'waiting_for_embedding'
+                            self.db.clear_file_chunks(file_id)
+                            self.db.clear_file_symbols(file_id)
+
+                            # Парсинг AST в главном потоке
+                            parsed = self._parse_file_pure(filepath, rel_path)
+
+                            if parsed is None:
+                                sync_buffer[rel_path] = 'skipped_parse_error'
                             else:
-                                sync_buffer[rel_path] = 'completed'
+                                reindex_result = self._flush_parsed_file(
+                                    file_id, rel_path, parsed, chunks_to_embed, content_hash=file_hash
+                                )
+                                if reindex_result == ReindexStatus.QUEUED_FOR_EMBEDDING:
+                                    sync_buffer[rel_path] = 'waiting_for_embedding'
+                                else:
+                                    sync_buffer[rel_path] = 'completed'
 
                     # Коммитим батчами каждые BATCH_COMMIT_SIZE файлов, чтобы не держать
                     # гигантскую транзакцию в памяти и не вызывать disk I/O error в SQLite

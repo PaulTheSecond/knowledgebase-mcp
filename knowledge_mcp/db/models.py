@@ -805,7 +805,12 @@ class KnowledgeDB:
         for ref in unresolved:
             targets = self.find_symbols(ref['target_qualified_name'], limit=1)
             if targets:
-                self.add_symbol_edge(ref['source_id'], targets[0]['id'], ref['kind'])
+                if ref['kind'] == 'TESTED_BY':
+                    # Для TESTED_BY: source_id это тест, а target это протестированный символ.
+                    # Рёбра TESTED_BY имеют направление: source = протестированный символ, target = тест.
+                    self.add_symbol_edge(targets[0]['id'], ref['source_id'], 'TESTED_BY')
+                else:
+                    self.add_symbol_edge(ref['source_id'], targets[0]['id'], ref['kind'])
                 resolved_ids.append(ref['id'])
                 
         if resolved_ids:
