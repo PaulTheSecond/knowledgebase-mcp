@@ -1309,15 +1309,21 @@ class KnowledgeDB:
         saved_percent = round((saved_tokens / baseline_tokens * 100)) if baseline_tokens > 0 else 0
         
         cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO token_savings_log (
-                tool_name, project_id, repo_id, branch,
-                baseline_tokens, returned_tokens, saved_tokens, saved_percent
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (tool_name, project_id, repo_id, branch, baseline_tokens, returned_tokens, saved_tokens, saved_percent))
-        self._auto_commit()
-        return cursor.lastrowid
+        try:
+            cursor.execute("""
+                INSERT INTO token_savings_log (
+                    tool_name, project_id, repo_id, branch,
+                    baseline_tokens, returned_tokens, saved_tokens, saved_percent
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (tool_name, project_id, repo_id, branch, baseline_tokens, returned_tokens, saved_tokens, saved_percent))
+            self._auto_commit()
+            return cursor.lastrowid
+        except sqlite3.OperationalError as e:
+            if "readonly" in str(e).lower():
+                logger.warning(f"Cannot log token savings: database is read-only: {e}")
+                return 0
+            raise
 
     def get_token_savings_summary(self, days: int = 7, project_id: Optional[str] = None) -> dict:
         """Возвращает сводку телеметрии экономии токенов за указанный период (в днях)."""
