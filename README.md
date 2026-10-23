@@ -1,13 +1,13 @@
 # Knowledge MCP
 
-![Version v1.6.2](https://img.shields.io/badge/version-v1.6.2-blue.svg)
+![Version v1.8.0](https://img.shields.io/badge/version-v1.8.0-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg)
 ![SQLite-vec](https://img.shields.io/badge/SQLite--vec-WAL%20enabled-orange.svg)
 
 High-precision autonomous local knowledge base server (RAG) that implements the **Model Context Protocol (MCP)**. It enables AI coding assistants (Codex, Claude Code, Gemini CLI, Cursor, etc.) to navigate, search, and reason about complex codebases using a hybrid approach combining semantic, lexical, and structural call-graph analysis.
 
-Now includes a fully **autonomous background sync daemon**, **Git webhooks support**, a **Modern Angular 21 Web Dashboard**, an **Interactive RAG Chat** with an **IDE-Style Tabbed Document Inspector**, **Mermaid diagram rendering**, and **storage-optimized FTS5 External Content**.
+Now includes **Multi-Worktree & Repo-Group Support**, **Content-Addressable Storage (CAS) Deduplication**, a **Hybrid JIT Sync Engine (<5ms)**, a **Modern Angular 21 Telemetry Dashboard**, an **Interactive RAG Chat** with an **IDE-Style Tabbed Document Inspector**, **Code Review Blast-Radius Analysis**, **Institutional Memory Hub**, and **Zero-Footprint Presets for Claude Code, Antigravity, Cursor, and Codex**.
 
 ---
 
@@ -34,12 +34,18 @@ Now includes a fully **autonomous background sync daemon**, **Git webhooks suppo
    - Scheduled periodic re-indexing via standard Cron expressions.
 5. **Modern Web Dashboard & Telemetry (Angular 21 + Taiga UI 5)**:
    - Modern, high-performance SPA dashboard built with Angular 21 and Taiga UI 5 design system.
+   - **Dedicated Telemetry & Overview Page (`/dashboard`)**: Real-time widgets tracking token savings (e.g. "1.8M tokens / 94% context compression"), CAS disk deduplication savings (e.g. "72% space saved"), and active file watcher status.
    - **Bilingual & Localization (RU / EN)**: Full multilingual support on both frontend and backend (`Accept-Language`), with default locale stored in SQLite.
    - **Theming**: Dark, Light, and System color schemes with reactive design-token styling.
    - **In-Browser Settings & Management**: Manage LLM endpoints, embeddings, and Git repositories with instant connection testing (`test-git`, `test-llm`) directly from the UI.
    - Protected by HTTP Basic Auth and short-lived crypto tokens.
    - Real-time reactive WebSockets (`/ws/status`) showing repo metrics, sync progress bars, and queue status.
-6. **Interactive RAG Chat & IDE-Style Doc Inspector**:
+6. **Multi-Worktree & CAS Deduplication Engine (v1.8)**:
+   - **Content-Addressable Storage (CAS)**: Files, chunks, and symbols keyed to content SHA-256 hashes, sharing identical data across multiple worktrees and branches. Database stays ~72 MB instead of expanding into gigabytes.
+   - **Hybrid JIT Sync Engine**: 2–5 ms `git status` check before MCP tool execution, ensuring changes from IDEs or branch switches are immediately indexed without polling or stale data.
+   - **Win32 Kernel File Watcher**: Non-intrusive background file system watcher (`ReadDirectoryChangesW`) for seamless IDE changes.
+   - **100% Backward Compatibility**: Standard single-repo configurations work out-of-the-box with zero migration friction.
+7. **Interactive RAG Chat & IDE-Style Doc Inspector**:
    - Chat with your codebase in the browser tab powered by local LLMs (OmniRoute, vLLM, Ollama, Kiro, etc.) with character-by-character Server-Sent Events (SSE) streaming.
    - **IDE-Style Document Viewer (Inspector)**: Clickable source citations open in a dedicated right-hand inspector panel with multi-tab support, allowing developers to inspect multiple referenced files simultaneously.
    - **Citation Highlighting & Line Gutter**: Exact line ranges (e.g. lines 6–9) highlighted in yellow-orange with smooth auto-scroll to the citation; toggle between full document view and isolated chunk snippet.
@@ -54,15 +60,18 @@ Now includes a fully **autonomous background sync daemon**, **Git webhooks suppo
 Connected AI agents have access to rich read-only tools:
 
 ### Search & Retrieval
-- **`knowledge_search`**: Triple hybrid search across all configured repositories. Returns code chunks with trust levels (`verified` for source code, `hint` for docs).
+- **`knowledge_search`**: Triple hybrid search across all configured repositories and worktrees with `project_id` and `branch` filtering. Returns code chunks with trust levels (`verified` for source code, `hint` for docs), alongside calculated `context_savings`.
 - **`knowledge_get_chunk`**: Retrieve complete chunk content and associated metadata by UUID.
-- **`knowledge_read_file`**: Retrieve the complete raw content of an indexed file from the knowledge base by its path.
+- **`knowledge_read_file`**: Retrieve the complete raw content of an indexed file from the knowledge base by its path, project, and branch.
 
-### Symbol & Graph Navigation
+### Symbol, Graph Navigation & Review
 - **`knowledge_find_symbol`**: Search classes, interfaces, and methods using wildcards (e.g. `*Repository`).
 - **`knowledge_get_callers` / `knowledge_get_callees`**: Inspect method invocation call trees.
 - **`knowledge_get_hierarchy`**: Explore class inheritance and interface implementation graphs.
 - **`knowledge_impact_analysis`**: Recursive dependency analysis calculating the blast radius of symbol changes.
+- **`knowledge_review_context`**: Automated pre-MR change review tool that computes changed symbols, caller blast-radius, associated tests, test coverage gaps, and risk scores.
+- **`knowledge_find_tests`**: Instant test discovery for functions/classes via `TESTED_BY` AST edges.
+- **`knowledge_get_project_rules`**: Query architectural invariants, coding rules, and DB restrictions (from `.kb/` or `CLAUDE.md`) by topic with zero token bloating.
 
 ### Management
 - **`knowledge_sync_repo`**: Enqueue an asynchronous background sync job for a repository.
@@ -201,15 +210,14 @@ npm run build
 
 ### Testing & Quality Assurance
 
-- **Run Unit & Integration Tests (92 passing tests):**
+- **Run Unit & Integration Tests (137 passing tests):**
   ```bash
   pytest
   ```
 
-- **Run Mutation Testing (`mutmut`):**
+- **Generate Agent Presets (Claude Code, Antigravity, Cursor, Codex):**
   ```bash
-  mutmut run
-  mutmut results
+  python -m knowledge_mcp.main preset all --output-dir .agent_config
   ```
 
 ---
@@ -220,7 +228,8 @@ The daemon provides a complete REST and real-time WebSocket API for CI/CD, webho
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `GET` | `/` | Basic Auth | Angular 21 SPA Web Dashboard. |
+| `GET` | `/` | Basic Auth | Angular 21 SPA Web Dashboard (defaults to `/dashboard`). |
+| `GET` | `/api/telemetry/metrics` | Basic Auth | Real-time telemetry metrics: CAS disk compression, token savings summary, watcher status. |
 | `POST` | `/api/auth/token` | Basic Auth | Issue a temporary cryptographic session token for WebSockets / SSE. |
 | `GET` | `/api/status` | Basic Auth | System telemetry: state (`idle`/`syncing`/`halted`), error, repo metrics (files, chunks, vectors). |
 | `GET` | `/api/queue` | Basic Auth | List recent background synchronization queue tasks and their states. |
@@ -297,3 +306,4 @@ Or when running via Docker:
 - [ADR-006: FTS5 External Content, Storage Optimization & Batching](docs/adr-006-fts5-external-content-and-large-repo-batching.md)
 - [ADR-007: Interactive Chat Doc Inspector, Mermaid & Formatting](docs/adr-007-interactive-chat-doc-inspector-and-mermaid.md)
 - [ADR-008: Multi-Worktree Architecture, CAS Deduplication & Hybrid Sync Engine](docs/adr-008-multi-worktree-cas-and-hybrid-sync.md)
+- [Zero-Footprint Agent Integration Guide (Claude, Antigravity, Cursor, Codex)](docs/agent-integration-guide.md)

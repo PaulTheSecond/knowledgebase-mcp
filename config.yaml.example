@@ -40,3 +40,26 @@ repositories:
         enabled: true
         secret_env: "WEBHOOK_SECRET"
       cron: "0 */4 * * *"
+
+# Мульти-репозиторные воркспейсы и структуры Git Worktree (v1.8)
+# projects:
+#   - id: "orbita"
+#     name: "Orbita ATS Workspace"
+#     workspace_root: "C:/Repos/DVCN/Orbita"
+#     type: "worktree_workspace"
+#     base_path: "worktrees/master"
+#     tasks_path: "worktrees/{task}"
+#     docs_paths: [".kb", "CLAUDE.md"]
+#     repositories:
+#       - id: "backend"
+#         path: "backend"
+#         language: "csharp"
+#       - id: "frontend"
+#         path: "frontend"
+#         language: "typescript"
+#       - id: "smartapp-backend"
+#         path: "smartapp-backend"
+#         language: "csharp"
+#       - id: "smartapp-frontend"
+#         path: "smartapp-frontend"
+#         language: "typescript"
