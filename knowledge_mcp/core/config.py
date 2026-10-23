@@ -31,16 +31,21 @@ def load_config() -> Dict[str, Any]:
                 "enabled": False,
                 "model_name": "intfloat/multilingual-e5-small"
             },
-            "repositories": []
+            "repositories": [],
+            "projects": []
         }
 
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-            return data if isinstance(data, dict) else {}
+            if isinstance(data, dict):
+                data.setdefault("repositories", [])
+                data.setdefault("projects", [])
+                return data
+            return {"repositories": [], "projects": []}
     except Exception as e:
         logger.error(f"Failed to parse config.yaml: {e}")
-        return {}
+        return {"repositories": [], "projects": []}
 
 def save_config(config_data: Dict[str, Any]) -> None:
     """Безопасно и атомарно сохраняет конфигурацию в config.yaml."""
@@ -58,6 +63,8 @@ def save_config(config_data: Dict[str, Any]) -> None:
             tmp_path.unlink()
         logger.error(f"Failed to save config.yaml: {e}")
         raise e
+
+# --- Методы для работы с одиночными репозиториями (100% обратная совместимость) ---
 
 def get_repository_config(repo_id: str) -> Optional[Dict[str, Any]]:
     """Находит конфигурацию репозитория по его ID."""
@@ -98,6 +105,113 @@ def delete_repository_config(repo_id: str) -> bool:
         save_config(config)
         return True
     return False
+
+# --- Методы для работы с мульти-репозиторными воркспейсами и проектами ---
+
+def get_projects() -> List[Dict[str, Any]]:
+    """Возвращает список сконфигурированных проектов/воркспейсов."""
+    config = load_config()
+    return config.get("projects", [])
+
+def get_project_config(project_id: str) -> Optional[Dict[str, Any]]:
+    """Находит конфигурацию проекта по его ID."""
+    config = load_config()
+    for proj in config.get("projects", []):
+        if proj.get("id") == project_id:
+            return proj
+    return None
+
+def add_or_update_project(project_dict: Dict[str, Any]) -> None:
+    """Добавляет новый проект или обновляет существующий по его ID."""
+    config = load_config()
+    projects: List[Dict[str, Any]] = config.setdefault("projects", [])
+    
+    project_id = project_dict.get("id")
+    found_idx = None
+    for idx, p in enumerate(projects):
+        if p.get("id") == project_id:
+            found_idx = idx
+            break
+            
+    if found_idx is not None:
+        projects[found_idx] = project_dict
+    else:
+        projects.append(project_dict)
+        
+    save_config(config)
+
+def delete_project_config(project_id: str) -> bool:
+    """Удаляет конфигурацию проекта из config.yaml по ID."""
+    config = load_config()
+    projects = config.get("projects", [])
+    initial_len = len(projects)
+    projects = [p for p in projects if p.get("id") != project_id]
+    
+    if len(projects) < initial_len:
+        config["projects"] = projects
+        save_config(config)
+        return True
+    return False
+
+def resolve_workspace_targets(project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Разрешает и возвращает список всех активных целей (ворктри, репозиториев, документации)
+    для указанного проекта или для всех настроенных проектов/репозиториев.
+    """
+    from knowledge_mcp.core.workspace_scanner import WorkspaceScanner
+    
+    scanner = WorkspaceScanner()
+    targets: List[Dict[str, Any]] = []
+    
+    # 1. Если указан конкретный project_id
+    if project_id is not None:
+        proj = get_project_config(project_id)
+        if proj:
+            discovered = scanner.scan_workspace(proj)
+            targets.extend(t.to_dict() for t in discovered)
+        elif project_id == "default":
+            # Разрешаем стандартные одиночные репозитории
+            config = load_config()
+            for repo in config.get("repositories", []):
+                repo_path = Path(repo["local_path"]).resolve() if repo.get("local_path") else None
+                branch = repo.get("branch", "master")
+                if repo_path and repo_path.exists():
+                    branch = scanner.get_git_branch(repo_path)
+                targets.append({
+                    "project_id": "default",
+                    "repo_id": repo.get("id"),
+                    "branch": branch,
+                    "task_name": None,
+                    "absolute_path": repo_path,
+                    "is_base": True,
+                    "is_doc": False,
+                    "language": repo.get("language"),
+                })
+        return targets
+
+    # 2. Если project_id не указан (все проекты и репозитории)
+    for proj in get_projects():
+        discovered = scanner.scan_workspace(proj)
+        targets.extend(t.to_dict() for t in discovered)
+
+    config = load_config()
+    for repo in config.get("repositories", []):
+        repo_path = Path(repo["local_path"]).resolve() if repo.get("local_path") else None
+        branch = repo.get("branch", "master")
+        if repo_path and repo_path.exists():
+            branch = scanner.get_git_branch(repo_path)
+        targets.append({
+            "project_id": repo.get("project_id", "default"),
+            "repo_id": repo.get("id"),
+            "branch": branch,
+            "task_name": None,
+            "absolute_path": repo_path,
+            "is_base": True,
+            "is_doc": False,
+            "language": repo.get("language"),
+        })
+
+    return targets
 
 def mask_secret(value: Optional[str]) -> str:
     """Маскирует секретные токены и пароли для безопасного отображения в UI."""
