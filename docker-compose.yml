@@ -11,6 +11,9 @@ services:
       - ./data:/data
       # Директория с локальными исходниками на хосте (монтируется как read-only)
       - ${REPOS_DIR:-./src}:/repos:ro
+      # Горячий маппинг обновленного кода v1.8 и скомпилированного дашборда
+      - ./knowledge_mcp:/app/knowledge_mcp
+      - ./frontend/dist/dashboard/browser:/app/frontend/dist/dashboard/browser
     env_file:
       - path: .env
         required: false

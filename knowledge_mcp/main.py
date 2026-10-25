@@ -156,12 +156,40 @@ async def get_status(username: str = Depends(verify_basic_auth)):
         stats = db.get_repo_stats(repo_id)
         repos_data.append({
             "id": repo_id,
-            "url": repo.get("url"),
+            "url": repo.get("url") or repo.get("local_path", ""),
             "branch": repo.get("branch", "master"),
             "files_count": stats["files_count"],
             "chunks_count": stats["chunks_count"],
             "vectors_count": stats["vectors_count"]
         })
+
+    # Проектные воркспейсы (Multi-repo Worktrees / v1.8)
+    for project in config.get("projects", []):
+        proj_id = project.get("id")
+        ws_root = project.get("workspace_root", "")
+        base_path = project.get("base_path", "worktrees/master")
+        for p_repo in project.get("repositories", []):
+            r_id = p_repo.get("id")
+            stats = db.get_repo_stats(r_id, project_id=proj_id)
+            branch = "master" if r_id != "browser-extension" else "main"
+            repos_data.append({
+                "id": f"{proj_id}/{r_id}",
+                "url": f"{ws_root}/{base_path}/{p_repo.get('path', r_id)}",
+                "branch": branch,
+                "files_count": stats["files_count"],
+                "chunks_count": stats["chunks_count"],
+                "vectors_count": stats["vectors_count"]
+            })
+        doc_stats = db.get_repo_stats("docs", project_id=proj_id)
+        if doc_stats["files_count"] > 0:
+            repos_data.append({
+                "id": f"{proj_id}/docs",
+                "url": f"{ws_root} (Docs & .kb)",
+                "branch": "master",
+                "files_count": doc_stats["files_count"],
+                "chunks_count": doc_stats["chunks_count"],
+                "vectors_count": doc_stats["vectors_count"]
+            })
 
     sys_status = "idle"
     last_error = None

@@ -582,17 +582,17 @@ class KnowledgeDB:
         
         # Кол-во чанков
         cursor.execute(f"""
-            SELECT COUNT(DISTINCT c.id) as cnt FROM chunks c
-            JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
+            SELECT COUNT(c.id) as cnt FROM chunks c
+            JOIN files f ON c.file_id = f.id
             WHERE {where_sql.replace('repo_id', 'f.repo_id').replace('project_id', 'f.project_id').replace('branch', 'f.branch')}
         """, params)
         chunks_count = cursor.fetchone()['cnt']
         
         # Кол-во векторов
         cursor.execute(f"""
-            SELECT COUNT(DISTINCT cv.rowid) as cnt FROM chunks_vec cv
+            SELECT COUNT(cv.rowid) as cnt FROM chunks_vec cv
             JOIN chunks c ON cv.rowid = c.rowid
-            JOIN files f ON (c.file_id = f.id OR (c.content_hash IS NOT NULL AND c.content_hash = f.content_hash))
+            JOIN files f ON c.file_id = f.id
             WHERE {where_sql.replace('repo_id', 'f.repo_id').replace('project_id', 'f.project_id').replace('branch', 'f.branch')}
         """, params)
         vectors_count = cursor.fetchone()['cnt']

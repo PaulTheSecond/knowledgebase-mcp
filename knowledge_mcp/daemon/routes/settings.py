@@ -122,6 +122,27 @@ async def get_all_settings(
             safe_r["auth"] = auth_copy
         safe_repos.append(safe_r)
 
+    # Проектные воркспейсы (Multi-repo Worktrees / v1.8)
+    for project in config.get("projects", []):
+        proj_id = project.get("id")
+        ws_root = project.get("workspace_root", "")
+        base_path = project.get("base_path", "worktrees/master")
+        for p_repo in project.get("repositories", []):
+            r_id = p_repo.get("id")
+            branch = "master" if r_id != "browser-extension" else "main"
+            safe_repos.append({
+                "id": f"{proj_id}/{r_id}",
+                "url": f"{ws_root}/{base_path}/{p_repo.get('path', r_id)}",
+                "branch": branch,
+                "auth": {"type": "none"}
+            })
+        safe_repos.append({
+            "id": f"{proj_id}/docs",
+            "url": f"{ws_root} (Docs & .kb)",
+            "branch": "master",
+            "auth": {"type": "none"}
+        })
+
     return {
         "ui": {
             "default_locale": current_locale,

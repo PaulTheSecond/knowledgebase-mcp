@@ -7,7 +7,7 @@ import subprocess
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Optional, List, Dict, Any, Tuple
 import concurrent.futures
 
 import pathspec
