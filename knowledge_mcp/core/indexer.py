@@ -657,15 +657,18 @@ class Indexer:
             if self.use_embeddings and self.embedder and chunks_to_embed:
                 self._embed_pending_chunks(repo_id, chunks_to_embed, {rel_path: 'pending'})
 
-        # 6. Разрешаем отложенные ссылки
-        try:
-            self.db.resolve_pending_references()
-        except Exception as ex:
-            logger.debug(f"Error resolving pending refs in index_file: {ex}")
-
         return file_id
 
-    def sync_repo(self, repo_id: str, repo_path: str | Path, allowed_top_level: list[str] | None = None, force: bool = False, target_files: list[str] | None = None):
+    def sync_repo(
+        self,
+        repo_id: str,
+        repo_path: str | Path,
+        allowed_top_level: list[str] | None = None,
+        force: bool = False,
+        target_files: list[str] | None = None,
+        project_id: str = "default",
+        branch: str = "master"
+    ):
         """
         Инкрементальная синхронизация репозитория (дельта-скан).
         Сравнивает mtime и hash, удаляет старые файлы, парсит новые/измененные.
@@ -674,13 +677,15 @@ class Indexer:
         При передаче target_files проверяются и обновляются только указанные файлы (дельта вебхука).
         """
         repo_path = Path(repo_path).resolve()
-        logger.info(f"Starting sync for repo '{repo_id}' at {repo_path} (force={force}, target_files={len(target_files) if target_files else 'all'})")
+        logger.info(f"Starting sync for repo '{repo_id}' (project='{project_id}', branch='{branch}') at {repo_path} (force={force}, target_files={len(target_files) if target_files else 'all'})")
 
         from knowledge_mcp.daemon.status_ws import broadcast_sync
         broadcast_sync({
             "type": "sync_progress",
             "data": {
                 "repo_id": repo_id,
+                "project_id": project_id,
+                "branch": branch,
                 "progress": 5,
                 "status": "scanning"
             }
@@ -702,7 +707,7 @@ class Indexer:
             self._run_roslyn_analysis(repo_path, spec)
 
         # Конвертируем sqlite3.Row в чистые dict для thread-safety
-        known_files_raw = self.db.get_known_files(repo_id)
+        known_files_raw = self.db.get_known_files(repo_id, project_id=project_id, branch=branch)
         known_files = {path: dict(row) for path, row in known_files_raw.items()}
 
         current_files = set()
@@ -807,7 +812,7 @@ class Indexer:
                         unchanged_count += 1
                         sync_buffer[rel_path] = 'completed'
                     elif status == 'touch':
-                        self.db.upsert_file(repo_id, rel_path, mtime, file_hash)
+                        self.db.upsert_file(repo_id, rel_path, mtime, file_hash, project_id=project_id, branch=branch)
                         unchanged_count += 1
                         sync_buffer[rel_path] = 'completed'
                     elif status in ('updated', 'added'):
@@ -828,7 +833,7 @@ class Indexer:
                         cursor.execute("SELECT 1 FROM chunks WHERE content_hash = ? LIMIT 1", (file_hash,))
                         has_chunks = cursor.fetchone() is not None
 
-                        file_id = self.db.upsert_file(repo_id, rel_path, mtime, file_hash, content_hash=file_hash)
+                        file_id = self.db.upsert_file(repo_id, rel_path, mtime, file_hash, project_id=project_id, branch=branch, content_hash=file_hash)
 
                         if has_chunks and not force:
                             sync_buffer[rel_path] = 'completed'
@@ -911,4 +916,38 @@ class Indexer:
             self.db.optimize()
         except Exception as e:
             logger.warning(f"Failed to optimize database after sync: {e}")
+
+    def sync_project(self, project_config: dict, force: bool = False) -> dict:
+        """Синхронизирует мульти-репозиторный воркспейс со всеми репозиториями и документацией."""
+        from knowledge_mcp.core.workspace_scanner import WorkspaceScanner
+        scanner = WorkspaceScanner()
+        targets = scanner.scan_workspace(project_config)
+        logger.info(f"Syncing project '{project_config.get('id')}' with {len(targets)} targets...")
+
+        results = {"total_targets": len(targets), "repos_synced": 0, "docs_synced": 0, "errors": 0}
+        for target in targets:
+            try:
+                if target.is_doc:
+                    self.index_file(
+                        target.absolute_path,
+                        repo_id=target.repo_id,
+                        project_id=target.project_id,
+                        branch=target.branch,
+                        force=force
+                    )
+                    results["docs_synced"] += 1
+                else:
+                    self.sync_repo(
+                        repo_id=target.repo_id,
+                        repo_path=target.absolute_path,
+                        project_id=target.project_id,
+                        branch=target.branch,
+                        force=force
+                    )
+                    results["repos_synced"] += 1
+            except Exception as e:
+                logger.error(f"Failed syncing target {target.absolute_path}: {e}")
+                results["errors"] += 1
+
+        return results
 

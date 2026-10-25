@@ -795,33 +795,49 @@ class KnowledgeDB:
         self._auto_commit()
         return rowids
 
-    def resolve_pending_references(self) -> int:
-        """Пытается найти таргеты для ссылок из unresolved_refs."""
+    def resolve_pending_references(self, limit: int = 5000) -> int:
+        """
+        Пытается найти таргеты для ссылок из unresolved_refs через быстрый пакетный JOIN.
+        Ограничен limit для защиты от зависания при большом числе системных/внешних ссылок.
+        """
         cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM unresolved_refs")
-        unresolved = cursor.fetchall()
+        cursor.execute("""
+            SELECT u.id, u.source_id, u.kind, s.id as target_id
+            FROM unresolved_refs u
+            JOIN symbols s ON (s.qualified_name = u.target_qualified_name OR s.name = u.target_qualified_name)
+            LIMIT ?
+        """, (limit,))
+        matches = cursor.fetchall()
+        if not matches:
+            return 0
         
-        resolved_ids = []
-        for ref in unresolved:
-            targets = self.find_symbols(ref['target_qualified_name'], limit=1)
-            if targets:
-                if ref['kind'] == 'TESTED_BY':
-                    # Для TESTED_BY: source_id это тест, а target это протестированный символ.
-                    # Рёбра TESTED_BY имеют направление: source = протестированный символ, target = тест.
-                    self.add_symbol_edge(targets[0]['id'], ref['source_id'], 'TESTED_BY')
-                else:
-                    self.add_symbol_edge(ref['source_id'], targets[0]['id'], ref['kind'])
-                resolved_ids.append(ref['id'])
-                
-        if resolved_ids:
-            step = 900
-            for i in range(0, len(resolved_ids), step):
-                batch = resolved_ids[i:i+step]
-                placeholders = ','.join('?' for _ in batch)
-                cursor.execute(f"DELETE FROM unresolved_refs WHERE id IN ({placeholders})", batch)
-            self._auto_commit()
+        edges_to_insert = []
+        ids_to_delete = []
+        for row in matches:
+            ref_id = row['id']
+            src_id = row['source_id']
+            kind = row['kind']
+            target_id = row['target_id']
+            if kind == 'TESTED_BY':
+                edges_to_insert.append((target_id, src_id, 'TESTED_BY'))
+            else:
+                edges_to_insert.append((src_id, target_id, kind))
+            ids_to_delete.append(ref_id)
             
-        return len(resolved_ids)
+        if edges_to_insert:
+            cursor.executemany(
+                "INSERT OR IGNORE INTO symbol_edges (source_id, target_id, kind) VALUES (?, ?, ?)",
+                edges_to_insert
+            )
+            
+        step = 900
+        for i in range(0, len(ids_to_delete), step):
+            batch = ids_to_delete[i:i+step]
+            placeholders = ','.join('?' for _ in batch)
+            cursor.execute(f"DELETE FROM unresolved_refs WHERE id IN ({placeholders})", batch)
+        self._auto_commit()
+            
+        return len(ids_to_delete)
 
     def get_symbols(
         self,
