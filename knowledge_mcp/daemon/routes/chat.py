@@ -76,7 +76,8 @@ async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_ba
     if not db_inst or not indexer_inst:
         raise HTTPException(status_code=500, detail="Search engine not initialized")
 
-    api_key = os.environ.get("LLM_API_KEY")
+    chat_cfg = config.get("server", {}).get("dashboard", {}).get("chat", {})
+    api_key = os.environ.get("LLM_API_KEY") or chat_cfg.get("api_key")
     if not api_key:
         raise HTTPException(status_code=500, detail="LLM_API_KEY environment variable is not set")
 
@@ -159,8 +160,27 @@ async def sync_chat_endpoint(req: ChatRequest, username: str = Depends(verify_ba
                     "sources": sources
                 }
                 
-            res_data = response.json()
-            content = res_data["choices"][0]["message"]["content"]
+            try:
+                res_data = response.json()
+                content = res_data["choices"][0]["message"]["content"]
+            except Exception:
+                # Если LLM-прокси вернул SSE-чанки в синхронном ответе
+                lines = response.text.splitlines()
+                collected = []
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                        try:
+                            cj = json.loads(line[6:])
+                            if "choices" in cj and len(cj["choices"]) > 0:
+                                delta = cj["choices"][0].get("delta", {}) or cj["choices"][0].get("message", {})
+                                c = delta.get("content", "")
+                                if c:
+                                    collected.append(c)
+                        except Exception:
+                            pass
+                content = "".join(collected) if collected else response.text
+
             return {
                 "message": {
                     "role": "assistant",
@@ -212,7 +232,8 @@ async def stream_chat_endpoint(req: ChatRequest, token: str = Depends(verify_que
     if not db_inst or not indexer_inst:
         raise HTTPException(status_code=500, detail="Search engine not initialized")
 
-    api_key = os.environ.get("LLM_API_KEY")
+    chat_cfg = config.get("server", {}).get("dashboard", {}).get("chat", {})
+    api_key = os.environ.get("LLM_API_KEY") or chat_cfg.get("api_key")
     if not api_key:
         raise HTTPException(status_code=500, detail="LLM_API_KEY environment variable is not set")
 

@@ -3,6 +3,11 @@ import yaml
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения из .env
+load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logger = logging.getLogger(__name__)
 

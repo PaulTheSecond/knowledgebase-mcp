@@ -201,8 +201,10 @@ async def update_settings(
         chat_cfg["enabled"] = payload.chat_enabled
     if payload.llm_base_url is not None:
         chat_cfg["api_base"] = payload.llm_base_url.strip()
+        os.environ["LLM_BASE_URL"] = payload.llm_base_url.strip()
     if payload.llm_model is not None:
         chat_cfg["model"] = payload.llm_model.strip()
+        os.environ["LLM_MODEL"] = payload.llm_model.strip()
 
     emb_cfg = config.setdefault("embeddings", {})
     if payload.embeddings_enabled is not None:

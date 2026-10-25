@@ -5,6 +5,14 @@ import logging
 from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
+from pathlib import Path
+from typing import Optional
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения из .env файла в корне проекта
+load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, WebSocket, WebSocketDisconnect, Header
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -376,11 +384,19 @@ def main():
         except Exception:
             pass
 
+    def get_effective_db_path() -> str:
+        db_env = os.environ.get("DB_PATH", "data/knowledge.db")
+        if sys.platform == "win32" and db_env.startswith("/data/") and not Path(db_env).exists():
+            candidate = Path(db_env.lstrip("/"))
+            if candidate.exists() or Path("data").exists():
+                return str(candidate)
+        return db_env
+
     parser = argparse.ArgumentParser(description="Knowledge MCP - Indexer & Trigger Server")
     # Дефолт берётся из переменной окружения DB_PATH (Docker задаёт её автоматически),
     # а без неё — data/knowledge.db для локального запуска
     parser.add_argument("--db-path", type=str,
-                        default=os.environ.get("DB_PATH", "data/knowledge.db"),
+                        default=get_effective_db_path(),
                         help="Path to SQLite DB (default: $DB_PATH or data/knowledge.db)")
     
     subparsers = parser.add_subparsers(dest="command", help="Commands")

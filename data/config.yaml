@@ -7,8 +7,9 @@ server:
     password_env: DASHBOARD_PASSWORD
     chat:
       enabled: true
-      api_base: http://host.docker.internal:20128/v1
+      api_base: http://127.0.0.1:20128/v1
       model: kr/claude-sonnet-4.5
+      api_key: sk-1a88d79028c9b93b-6m30qv-e5a42f22
 embeddings:
   enabled: false
   model_name: intfloat/multilingual-e5-small
