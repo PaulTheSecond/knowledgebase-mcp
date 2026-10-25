@@ -24,13 +24,22 @@ security = HTTPBasic()
 
 
 def get_dashboard_password() -> Optional[str]:
-    """Возвращает пароль для панели управления из переменных окружения.
-
-    Если переменная DASHBOARD_PASSWORD не установлена или пуста, возвращает None.
-    """
+    """Возвращает пароль для панели управления из переменных окружения или .env (дефолт: admin)."""
     password = os.environ.get("DASHBOARD_PASSWORD")
     if not password:
-        return None
+        from pathlib import Path
+        for env_path in (Path(".env"), Path(__file__).resolve().parents[2] / ".env"):
+            if env_path.exists():
+                try:
+                    with open(env_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.startswith("DASHBOARD_PASSWORD="):
+                                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                                if val:
+                                    return val
+                except Exception:
+                    pass
+        return "admin"
     return password
 
 
