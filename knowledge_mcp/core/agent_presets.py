@@ -234,7 +234,8 @@ class AgentPresetManager:
         actions_taken: List[str] = []
 
         repo_root = Path(__file__).resolve().parent.parent.parent
-        db_path = os.environ.get("DB_PATH", str(repo_root / "data" / "knowledge.db"))
+        raw_db = os.environ.get("DB_PATH", str(repo_root / "data" / "knowledge.db"))
+        db_path = str(Path(raw_db).resolve())
 
         for ag in agents_to_install:
             if ag == "claude":
@@ -269,15 +270,24 @@ class AgentPresetManager:
                 hooks = data.setdefault("hooks", {})
                 # SessionStart
                 session_start = hooks.setdefault("SessionStart", [])
-                if not any("sync-file --check-status" in h.get("command", "") for h in session_start):
-                    session_start.append({"command": f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file --check-status'})
+                status_hook = next((h for h in session_start if "sync-file --check-status" in h.get("command", "")), None)
+                expected_status_cmd = f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file --check-status'
+                if status_hook:
+                    status_hook["command"] = expected_status_cmd
+                else:
+                    session_start.append({"command": expected_status_cmd})
 
                 # PostToolUse
                 post_tool = hooks.setdefault("PostToolUse", [])
-                if not any("sync-file --file" in h.get("command", "") for h in post_tool):
+                post_hook = next((h for h in post_tool if "sync-file --file" in h.get("command", "")), None)
+                expected_post_cmd = f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file --file "$FILE"'
+                if post_hook:
+                    post_hook["command"] = expected_post_cmd
+                    post_hook["matcher"] = "Edit|Write"
+                else:
                     post_tool.append({
                         "matcher": "Edit|Write",
-                        "command": f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file --file "$FILE"'
+                        "command": expected_post_cmd
                     })
 
                 # PreToolUse

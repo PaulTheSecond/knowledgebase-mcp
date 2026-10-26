@@ -15,7 +15,10 @@ dependencies = [
     "sqlite-vec>=0.1.0",
     "httpx>=0.24.0",
     "pyyaml>=6.0",
-    "pathspec>=0.11.0"
+    "pathspec>=0.11.0",
+    "python-dotenv>=1.0.0",
+    "mcp>=1.29.1",
+    "watchdog>=3.0.0"
 ]
 
 [project.scripts]
@@ -28,3 +31,4 @@ include = ["knowledge_mcp*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
