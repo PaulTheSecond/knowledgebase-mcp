@@ -697,14 +697,7 @@ class Indexer:
 
         spec = self._get_ignore_spec(repo_path)
 
-        # Семантический анализ .NET проектов через Roslyn
-        has_csharp = (
-            any(f.endswith('.cs') or f.endswith('.csproj') for f in target_files)
-            if target_files is not None
-            else True
-        )
-        if has_csharp:
-            self._run_roslyn_analysis(repo_path, spec)
+        # Семантический анализ Roslyn запускается ниже только при наличии новых или изменённых C# файлов (CAS-кэш)
 
         # Конвертируем sqlite3.Row в чистые dict для thread-safety
         known_files_raw = self.db.get_known_files(repo_id, project_id=project_id, branch=branch)
@@ -783,8 +776,20 @@ class Indexer:
             # Хэширование файлов параллельно
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_HASH_WORKERS) as executor:
                 total_files = len(files_to_check)
-                logger.info(f"Found {total_files} files to check. Starting content hashing and AST parsing...")
-                results = executor.map(check_file, files_to_check)
+                logger.info(f"Found {total_files} files to check. Starting content hashing...")
+                results = list(executor.map(check_file, files_to_check))
+
+                # Определяем, есть ли .cs файлы, которым действительно требуется глубокий анализ Roslyn
+                cs_files_needing_analysis = [
+                    res[1] for res in results
+                    if res[4] in ('updated', 'added') and res[1].suffix.lower() == '.cs'
+                ]
+
+                if cs_files_needing_analysis or (force and any(item[1].suffix.lower() == '.cs' for item in files_to_check)):
+                    logger.info(f"Detected {len(cs_files_needing_analysis)} modified/new C# file(s). Running Roslyn semantic analysis...")
+                    self._run_roslyn_analysis(repo_path, spec)
+                else:
+                    logger.info(f"All C# files in '{repo_id}' are unchanged/cached by CAS. Skipping heavy Roslyn analysis.")
 
                 processed = 0
                 log_step = max(1, total_files // 10) if total_files > 0 else 1
