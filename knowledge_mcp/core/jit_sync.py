@@ -155,6 +155,12 @@ class JITSyncEngine:
                 db.delete_file(repo_id, rel_path, project_id=project_id, branch=branch)
                 return True
 
+            if repo_root is not None:
+                spec = indexer._get_ignore_spec(Path(repo_root))
+                if spec.match_file(rel_path):
+                    logger.info(f"[JIT] Skipped ignored file: {rel_path}")
+                    return True
+
             file_id = indexer.index_file(
                 file_path,
                 repo_id=repo_id,

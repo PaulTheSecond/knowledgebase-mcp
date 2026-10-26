@@ -75,6 +75,10 @@ class Indexer:
             '.editorconfig', '.arscontexta', '.mailmap', '.roomodes',
             'Directory.Build.props', 'Directory.Packages.props',
             'nuget.config', 'packages.txt',
+            # Автогенерированный C# код (.NET, EF Core migrations, WinForms/WPF designers)
+            '*.Designer.cs', '*.designer.cs',
+            '*.generated.cs', '*.g.cs', '*.g.i.cs',
+            '*DataContextModelSnapshot.cs', '*ModelSnapshot.cs',
         ]
 
         gitignore_path = root_path / '.gitignore'
@@ -783,6 +787,13 @@ class Indexer:
             else:
                 rel_path = file_path.name
         rel_path = rel_path.replace('\\', '/')
+
+        # Пропускаем исключенные системные и автогенерированные файлы (*.Designer.cs, *ModelSnapshot.cs и т.д.)
+        if repo_root is not None:
+            spec = self._get_ignore_spec(Path(repo_root))
+            if spec.match_file(rel_path):
+                logger.info(f"Skipping ignored auto-generated file: {rel_path}")
+                return 0
 
         try:
             content_bytes = file_path.read_bytes()

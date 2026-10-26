@@ -95,6 +95,16 @@ namespace RoslynParser
                 {
                     if (document.FilePath == null) continue;
                     
+                    var fp = document.FilePath;
+                    if (fp.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase) ||
+                        fp.EndsWith(".designer.cs", StringComparison.OrdinalIgnoreCase) ||
+                        fp.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase) ||
+                        fp.EndsWith(".g.i.cs", StringComparison.OrdinalIgnoreCase) ||
+                        fp.EndsWith("ModelSnapshot.cs", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    
                     if (targetFiles != null && !targetFiles.Contains(Path.GetFullPath(document.FilePath)))
                     {
                         continue;

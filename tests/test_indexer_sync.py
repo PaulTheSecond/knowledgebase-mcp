@@ -99,7 +99,7 @@ class TestIndexerSyncAndRoslyn(unittest.TestCase):
         }
 
         # Запускаем синхронизацию БЕЗ флага force
-        with patch.object(indexer, "_run_roslyn_analysis"):
+        with patch.object(indexer, "_run_roslyn_analysis", return_value=(True, None)):
             indexer.sync_repo(repo_id, self.repo_dir, force=False)
 
         # Проверяем, что файл был переиндексирован и теперь имеет чанки и символы
