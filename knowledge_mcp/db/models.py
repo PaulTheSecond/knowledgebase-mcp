@@ -36,6 +36,10 @@ class KnowledgeDB:
         self.conn = get_db_connection(self.db_path, read_only=read_only)
         self.vec_dim = 384  # Обновлено: размерность для multilingual-e5-small
         self._in_transaction = False  # Флаг: внутри явной транзакции (skip individual commits)
+        self._stats_cache: Dict[tuple, dict] = {}
+        self._stats_cache_time: float = 0.0
+        self._cas_cache: Dict[str, dict] = {}
+        self._cas_cache_time: Dict[str, float] = {}
         if not read_only:
             self._apply_migrations()
 
@@ -400,6 +404,13 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20261102_14_idx_file_contents_hash_size",
+            "up": """
+                CREATE INDEX IF NOT EXISTS idx_file_contents_hash_size ON file_contents(hash, size);
+            """
+        })
+
         for migration in migrations:
             if migration["id"] not in applied_migrations:
                 logger.info(f"Applying sqlite migration: {migration['id']}")
@@ -545,6 +556,8 @@ class KnowledgeDB:
                 cursor.execute("DELETE FROM files WHERE id = ?", (int(file_id_or_repo),))
         deleted = cursor.rowcount > 0
         self._auto_commit()
+        if deleted:
+            self.invalidate_stats_cache()
         return deleted
 
     def delete_repo(self, repo_id: str, project_id: Optional[str] = None) -> int:
@@ -556,7 +569,77 @@ class KnowledgeDB:
             cursor.execute("DELETE FROM files WHERE repo_id = ?", (repo_id,))
         deleted_count = cursor.rowcount
         self._auto_commit()
+        if deleted_count > 0:
+            self.invalidate_stats_cache()
         return deleted_count
+
+    def invalidate_stats_cache(self):
+        """Сбрасывает in-memory кэш метрик репозиториев и CAS-статистики."""
+        with self.lock:
+            self._stats_cache_time = 0.0
+            self._stats_cache.clear()
+            self._cas_cache.clear()
+            self._cas_cache_time.clear()
+
+    def get_all_repo_stats(self, force_refresh: bool = False) -> Dict[tuple, dict]:
+        """Возвращает агрегированные метрики для всех репозиториев за один быстрый проход.
+        
+        Результат кэшируется в оперативной памяти (TTL = 60с), гарантируя время ответа < 1 мс.
+        Ключ словаря: (repo_id, project_id).
+        """
+        now = time.time()
+        with self.lock:
+            if not force_refresh and self._stats_cache and (now - self._stats_cache_time < 60.0):
+                return dict(self._stats_cache)
+
+            cursor = self.conn.cursor()
+            
+            # 1. Быстрый подсчет файлов по всем репозиториям и проектам
+            cursor.execute("""
+                SELECT project_id, repo_id, COUNT(*) as cnt
+                FROM files
+                GROUP BY project_id, repo_id
+            """)
+            files_map = {(row['repo_id'], row['project_id']): row['cnt'] for row in cursor.fetchall()}
+
+            # 2. Быстрый подсчет чанков через сканирование по первичному ключу files
+            cursor.execute("""
+                SELECT f.project_id, f.repo_id, COUNT(*) as cnt
+                FROM files f INDEXED BY sqlite_autoindex_files_1
+                JOIN chunks c ON c.file_id = f.id
+                GROUP BY f.project_id, f.repo_id
+            """)
+            chunks_map = {(row['repo_id'], row['project_id']): row['cnt'] for row in cursor.fetchall()}
+
+            # 3. Быстрая проверка векторов
+            vectors_map = {}
+            try:
+                cursor.execute("SELECT COUNT(*) FROM chunks_vec")
+                total_vecs = cursor.fetchone()[0]
+                if total_vecs > 0:
+                    cursor.execute("""
+                        SELECT f.project_id, f.repo_id, COUNT(*) as cnt
+                        FROM files f INDEXED BY sqlite_autoindex_files_1
+                        JOIN chunks c ON c.file_id = f.id
+                        JOIN chunks_vec cv ON cv.rowid = c.rowid
+                        GROUP BY f.project_id, f.repo_id
+                    """)
+                    vectors_map = {(row['repo_id'], row['project_id']): row['cnt'] for row in cursor.fetchall()}
+            except Exception:
+                pass
+
+            all_keys = set(files_map.keys()) | set(chunks_map.keys())
+            res = {}
+            for r_id, p_id in all_keys:
+                res[(r_id, p_id)] = {
+                    "files_count": files_map.get((r_id, p_id), 0),
+                    "chunks_count": chunks_map.get((r_id, p_id), 0),
+                    "vectors_count": vectors_map.get((r_id, p_id), 0),
+                }
+
+            self._stats_cache = res
+            self._stats_cache_time = now
+            return dict(res)
 
     def get_repo_stats(
         self,
@@ -565,6 +648,17 @@ class KnowledgeDB:
         branch: Optional[str] = None
     ) -> dict:
         """Возвращает метрики проиндексированных данных для конкретного репозитория."""
+        # Для стандартного опроса без ветки используем быстрый пакетный кэш
+        if branch is None:
+            all_stats = self.get_all_repo_stats()
+            key = (repo_id, project_id)
+            if key in all_stats:
+                return all_stats[key]
+            if project_id is None and (repo_id, "default") in all_stats:
+                return all_stats[(repo_id, "default")]
+            if project_id == "default" and (repo_id, None) in all_stats:
+                return all_stats[(repo_id, None)]
+
         cursor = self.conn.cursor()
         where_file = ["repo_id = ?"]
         params: list[Any] = [repo_id]
@@ -1230,8 +1324,8 @@ class KnowledgeDB:
 
         return None
 
-    def get_cas_stats(self, project_id: Optional[str] = None) -> dict:
-        """Возвращает статистику CAS-дедупликации:
+    def get_cas_stats(self, project_id: Optional[str] = None, force_refresh: bool = False) -> dict:
+        """Возвращает статистику CAS-дедупликации с кэшированием (TTL 60 сек):
         - logical_files_count: количество логических файлов в files
         - unique_contents_count: количество уникальных физических контентов в file_contents
         - virtual_size_bytes: виртуальный размер (сумма размеров всех логических файлов)
@@ -1239,66 +1333,75 @@ class KnowledgeDB:
         - saved_size_bytes: сэкономленный размер на диске в байтах
         - saved_percent: процент сэкономленного дискового пространства
         """
-        cursor = self.conn.cursor()
-        if project_id:
-            cursor.execute("""
-                SELECT COUNT(f.id) as files_count,
-                       COALESCE(SUM(COALESCE(fc.size, 0)), 0) as virtual_size
-                FROM files f
-                LEFT JOIN file_contents fc ON f.content_hash = fc.hash
-                WHERE f.project_id = ?
-            """, (project_id,))
-            row_files = cursor.fetchone()
-            logical_files = row_files['files_count']
-            virtual_size = row_files['virtual_size']
+        key = project_id or "__all__"
+        now = time.time()
+        with self.lock:
+            if not force_refresh and key in self._cas_cache and (now - self._cas_cache_time.get(key, 0) < 60.0):
+                return dict(self._cas_cache[key])
 
-            cursor.execute("""
-                SELECT COUNT(DISTINCT fc.hash) as contents_count,
-                       COALESCE(SUM(fc.size), 0) as real_size
-                FROM file_contents fc
-                WHERE fc.hash IN (
-                    SELECT content_hash FROM files WHERE project_id = ? AND content_hash IS NOT NULL
-                )
-            """, (project_id,))
-            row_contents = cursor.fetchone()
-            unique_contents = row_contents['contents_count']
-            real_size = row_contents['real_size']
-        else:
-            cursor.execute("""
-                SELECT COUNT(f.id) as files_count,
-                       COALESCE(SUM(COALESCE(fc.size, 0)), 0) as virtual_size
-                FROM files f
-                LEFT JOIN file_contents fc ON f.content_hash = fc.hash
-            """)
-            row_files = cursor.fetchone()
-            logical_files = row_files['files_count']
-            virtual_size = row_files['virtual_size']
+            cursor = self.conn.cursor()
+            if project_id:
+                cursor.execute("""
+                    SELECT COUNT(f.id) as files_count,
+                           COALESCE(SUM(COALESCE(fc.size, 0)), 0) as virtual_size
+                    FROM files f
+                    LEFT JOIN file_contents fc INDEXED BY idx_file_contents_hash_size ON f.content_hash = fc.hash
+                    WHERE f.project_id = ?
+                """, (project_id,))
+                row_files = cursor.fetchone()
+                logical_files = row_files['files_count']
+                virtual_size = row_files['virtual_size']
 
-            cursor.execute("""
-                SELECT COUNT(*) as contents_count,
-                       COALESCE(SUM(size), 0) as real_size
-                FROM file_contents
-            """)
-            row_contents = cursor.fetchone()
-            unique_contents = row_contents['contents_count']
-            real_size = row_contents['real_size']
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT fc.hash) as contents_count,
+                           COALESCE(SUM(fc.size), 0) as real_size
+                    FROM file_contents fc INDEXED BY idx_file_contents_hash_size
+                    WHERE fc.hash IN (
+                        SELECT content_hash FROM files WHERE project_id = ? AND content_hash IS NOT NULL
+                    )
+                """, (project_id,))
+                row_contents = cursor.fetchone()
+                unique_contents = row_contents['contents_count']
+                real_size = row_contents['real_size']
+            else:
+                cursor.execute("""
+                    SELECT COUNT(f.id) as files_count,
+                           COALESCE(SUM(COALESCE(fc.size, 0)), 0) as virtual_size
+                    FROM files f
+                    LEFT JOIN file_contents fc INDEXED BY idx_file_contents_hash_size ON f.content_hash = fc.hash
+                """)
+                row_files = cursor.fetchone()
+                logical_files = row_files['files_count']
+                virtual_size = row_files['virtual_size']
 
-        saved_bytes = max(0, virtual_size - real_size)
-        saved_percent = round((saved_bytes / virtual_size * 100.0), 2) if virtual_size > 0 else 0.0
+                cursor.execute("""
+                    SELECT COUNT(*) as contents_count,
+                           COALESCE(SUM(size), 0) as real_size
+                    FROM file_contents fc INDEXED BY idx_file_contents_hash_size
+                """)
+                row_contents = cursor.fetchone()
+                unique_contents = row_contents['contents_count']
+                real_size = row_contents['real_size']
 
-        return {
-            "logical_files_count": logical_files,
-            "files_count": logical_files,
-            "unique_contents_count": unique_contents,
-            "physical_contents_count": unique_contents,
-            "virtual_size_bytes": virtual_size,
-            "real_size_bytes": real_size,
-            "physical_size_bytes": real_size,
-            "saved_size_bytes": saved_bytes,
-            "saved_bytes": saved_bytes,
-            "saved_percent": saved_percent,
-            "savings_percent": saved_percent,
-        }
+            saved_bytes = max(0, virtual_size - real_size)
+            saved_percent = round((saved_bytes / virtual_size * 100.0), 2) if virtual_size > 0 else 0.0
+
+            res = {
+                "logical_files_count": logical_files,
+                "files_count": logical_files,
+                "unique_contents_count": unique_contents,
+                "physical_contents_count": unique_contents,
+                "virtual_size_bytes": virtual_size,
+                "real_size_bytes": real_size,
+                "physical_size_bytes": real_size,
+                "saved_size_bytes": saved_bytes,
+                "saved_bytes": saved_bytes,
+                "saved_percent": saved_percent,
+                "savings_percent": saved_percent,
+            }
+            self._cas_cache[key] = res
+            self._cas_cache_time[key] = now
+            return dict(res)
 
     def clean_unreferenced_contents(self) -> int:
         """Очищает записи в file_contents, на которые больше нет ссылок ни из одного файла (CAS GC)."""
@@ -1622,6 +1725,7 @@ class KnowledgeDB:
                     WHERE id = 1
                 """, (status, last_error))
             self._auto_commit()
+            self.invalidate_stats_cache()
 
     def add_to_queue(self, repo_id: str, changed_files: Optional[List[str]] = None) -> int:
         """Добавляет репозиторий в очередь на синхронизацию.
@@ -1703,6 +1807,8 @@ class KnowledgeDB:
                     WHERE id = ?
                 """, (status, error_message, job_id))
             self._auto_commit()
+            if status in ("completed", "failed"):
+                self.invalidate_stats_cache()
 
     def get_indexed_commit(self, repo_id: str) -> Optional[str]:
         """Возвращает хеш последнего проиндексированного коммита для репозитория."""

@@ -46,6 +46,9 @@ async def lifespan(app: FastAPI):
         stale_count = db.reset_stale_jobs()
         if stale_count > 0:
             logger.info(f"Reset {stale_count} stale processing job(s) on server startup.")
+        # Предварительный фоновый прогрев кэша статистики
+        asyncio.create_task(asyncio.to_thread(db.get_all_repo_stats, True))
+        asyncio.create_task(asyncio.to_thread(db.get_cas_stats, None, True))
 
     if db and start_daemon:
         import threading
@@ -149,19 +152,16 @@ async def get_token(username: str = Depends(verify_basic_auth)):
     token = generate_temp_token(username)
     return {"token": token}
 
-@app.get("/api/status")
-async def get_status(username: str = Depends(verify_basic_auth)):
-    """Возвращает статус системы и расширенную телеметрию репозиториев."""
-    if not db:
-        raise HTTPException(status_code=500, detail="Components not initialized")
-    row = db.get_system_status()
+def _compute_status_data(db_instance: KnowledgeDB) -> dict:
+    row = db_instance.get_system_status()
+    all_stats = db_instance.get_all_repo_stats()
     
     from knowledge_mcp.core.config import load_config
     config = load_config()
     repos_data = []
     for repo in config.get("repositories", []):
         repo_id = repo.get("id")
-        stats = db.get_repo_stats(repo_id)
+        stats = all_stats.get((repo_id, None)) or all_stats.get((repo_id, "default")) or {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
         repos_data.append({
             "id": repo_id,
             "url": repo.get("url") or repo.get("local_path", ""),
@@ -178,7 +178,7 @@ async def get_status(username: str = Depends(verify_basic_auth)):
         base_path = project.get("base_path", "worktrees/master")
         for p_repo in project.get("repositories", []):
             r_id = p_repo.get("id")
-            stats = db.get_repo_stats(r_id, project_id=proj_id)
+            stats = all_stats.get((r_id, proj_id)) or {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
             branch = "master" if r_id != "browser-extension" else "main"
             repos_data.append({
                 "id": f"{proj_id}/{r_id}",
@@ -188,7 +188,7 @@ async def get_status(username: str = Depends(verify_basic_auth)):
                 "chunks_count": stats["chunks_count"],
                 "vectors_count": stats["vectors_count"]
             })
-        doc_stats = db.get_repo_stats("docs", project_id=proj_id)
+        doc_stats = all_stats.get(("docs", proj_id)) or {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
         if doc_stats["files_count"] > 0:
             repos_data.append({
                 "id": f"{proj_id}/docs",
@@ -217,12 +217,19 @@ async def get_status(username: str = Depends(verify_basic_auth)):
         "chat_enabled": chat_enabled
     }
 
-@app.get("/api/queue")
-async def api_get_queue(username: str = Depends(verify_basic_auth)):
-    """Возвращает последние 50 задач из очереди синхронизации."""
+@app.get("/api/status")
+async def get_status(username: str = Depends(verify_basic_auth)):
+    """Возвращает статус системы и расширенную телеметрию репозиториев (non-blocking)."""
     if not db:
         raise HTTPException(status_code=500, detail="Components not initialized")
-    jobs = db.get_queue_jobs(limit=50)
+    return await asyncio.to_thread(_compute_status_data, db)
+
+@app.get("/api/queue")
+async def api_get_queue(username: str = Depends(verify_basic_auth)):
+    """Возвращает последние 50 задач из очереди синхронизации (non-blocking)."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Components not initialized")
+    jobs = await asyncio.to_thread(db.get_queue_jobs, 50)
     return {"jobs": jobs}
 
 def _get_request_locale(accept_language: Optional[str] = None) -> str:

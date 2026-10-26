@@ -34,18 +34,17 @@ def get_watcher_status() -> Dict[str, Any]:
     }
 
 
-@router.get("/metrics")
-async def get_telemetry_metrics(username: str = Depends(verify_basic_auth)):
-    """Возвращает сводные метрики телеметрии: CAS-дедупликацию, экономию токенов LLM,
-    статус File Watcher и обзор мульти-репо проектов.
-    """
-    db = get_db()
-    if not db:
-        raise HTTPException(status_code=500, detail="Database component is not initialized")
+import asyncio
+import time
 
-    cas_stats = db.get_cas_stats()
-    token_savings = db.get_token_savings_summary(days=7)
-    watcher_status = get_watcher_status()
+_projects_data_cache: List[Dict[str, Any]] = []
+_projects_data_cache_time: float = 0.0
+
+def _get_projects_data_cached() -> List[Dict[str, Any]]:
+    global _projects_data_cache, _projects_data_cache_time
+    now = time.time()
+    if _projects_data_cache and (now - _projects_data_cache_time < 60.0):
+        return list(_projects_data_cache)
 
     projects_data: List[Dict[str, Any]] = []
     try:
@@ -61,9 +60,30 @@ async def get_telemetry_metrics(username: str = Depends(verify_basic_auth)):
     except Exception as ex:
         logger.warning(f"Error resolving projects telemetry: {ex}")
 
+    _projects_data_cache = projects_data
+    _projects_data_cache_time = now
+    return list(projects_data)
+
+def _get_telemetry_sync(db) -> Dict[str, Any]:
+    cas_stats = db.get_cas_stats()
+    token_savings = db.get_token_savings_summary(days=7)
+    watcher_status = get_watcher_status()
+    projects_data = _get_projects_data_cached()
+
     return {
         "cas": cas_stats,
         "token_savings": token_savings,
         "watcher": watcher_status,
         "projects": projects_data
     }
+
+@router.get("/metrics")
+async def get_telemetry_metrics(username: str = Depends(verify_basic_auth)):
+    """Возвращает сводные метрики телеметрии: CAS-дедупликацию, экономию токенов LLM,
+    статус File Watcher и обзор мульти-репо проектов (non-blocking).
+    """
+    db = get_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database component is not initialized")
+
+    return await asyncio.to_thread(_get_telemetry_sync, db)
