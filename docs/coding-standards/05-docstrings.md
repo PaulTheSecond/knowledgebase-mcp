@@ -1,49 +1,49 @@
 # 05. Docstrings & Documentation Standards
 
 ## Google-Style Docstrings
-Все публичные модули, классы, методы и функции должны документироваться с использованием формата Google-Style.
+All public modules, classes, methods, and functions must be documented using Google-Style docstrings.
 
-### Пример оформления функции:
+### Function Docstring Example:
 ```python
 def fetch_git_commit_sha(repo_path: str, branch: str = "main") -> str:
-    """Извлекает хэш последнего коммита для указанной ветки.
+    """Retrieves the latest commit hash for the specified Git branch.
 
     Args:
-        repo_path: Абсолютный путь к клонированному репозиторию на диске.
-        branch: Имя ветки для проверки коммита. По умолчанию "main".
+        repo_path: Absolute filesystem path to the cloned repository.
+        branch: Target branch name. Defaults to "main".
 
     Returns:
-        Строка с полным 40-символьным хэшем SHA-1 коммита.
+        String containing the full 40-character SHA-1 commit hash.
 
     Raises:
-        ValueError: Если ветка не найдена в репозитории.
-        subprocess.SubprocessError: При ошибке выполнения команды git CLI.
+        ValueError: If the specified branch cannot be found in the repository.
+        subprocess.SubprocessError: If the underlying Git CLI command fails.
     """
-    # Реализация
+    # Implementation
 ```
 
-### Пример оформления класса:
+### Class Docstring Example:
 ```python
 class DatabaseManager:
-    """Управляет подключениями и транзакциями в базе данных SQLite.
+    """Manages connections and transactions for the SQLite knowledge base.
 
     Attributes:
-        db_path: Путь к файлу базы данных SQLite на диске.
-        connection: Текущее открытое соединение или None.
+        db_path: Path to the SQLite database file on disk.
+        connection: Currently open database connection or None.
     """
 
     def __init__(self, db_path: str) -> None:
-        """Инициализирует менеджер базы данных с указанным путем."""
+        """Initializes the database manager with the given database path."""
         self.db_path = db_path
         self.connection = None
 ```
 
-## Требования к документированию
-1. **Однострочные docstrings:** Допускаются для простых геттеров или свойств, где смысл полностью понятен из названия:
+## Documentation Guidelines
+1. **One-Line Docstrings:** Permissible for trivial properties or getters where meaning is unambiguous:
    ```python
    @property
    def is_active(self) -> bool:
-       """Возвращает True, если воркер в данный момент обрабатывает очередь."""
+       """Returns True if the worker is currently processing tasks."""
    ```
-2. **Обновление документации:** При изменении логики функции или состава аргументов, docstring должен обновляться синхронно с кодом.
-3. **Комментарии в коде:** Пишите комментарии только для того, чтобы объяснить *почему* код написан именно так (сложные алгоритмы, хаки, обходные пути), а не *что* делает код. Сам код должен стремиться быть самодокументируемым.
+2. **Synchronization:** Whenever method signatures or behaviors change, update docstrings synchronously in the same commit.
+3. **In-Code Comments:** Comments must explain *why* non-obvious code was written (edge-case workarounds, performance invariants) rather than narrating *what* the code does. Code structure itself should be clean and self-explanatory.

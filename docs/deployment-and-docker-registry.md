@@ -98,7 +98,7 @@ Restart Docker daemon. `docker pull <username>/knowledgebase-mcp:latest` will ro
 ## 5. Alternative: Yandex Cloud Container Registry (Domestic Alternative)
 
 If domestic cloud hosting is required for corporate/offline compliance:
-1. Create a registry in Yandex Cloud console and toggle **Public access** (Публичный доступ) to ON.
+1. Create a registry in Yandex Cloud console and toggle **Public access** to ON.
 2. Create a service account with `container-registry.images.pusher` role and create an authorized key JSON.
 3. Authenticate in GitHub Actions:
    ```bash

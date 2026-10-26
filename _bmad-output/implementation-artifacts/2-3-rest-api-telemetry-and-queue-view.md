@@ -4,42 +4,42 @@ Status: done
 
 ## Story
 
-As a разработчик,
-I want видеть актуальный список репозиториев с их метриками и текущее состояние очереди в таблице,
-so that я мог быстро оценить объем проиндексированных данных.
+As a developer,
+I want to view the list of configured repositories with telemetry metrics and the current queue state in a structured view,
+so that I can quickly assess indexed volume and background sync health.
 
 ## Acceptance Criteria
 
-1. **Given** эндпоинт `GET /api/status`, возвращающий список репозиториев с их количеством файлов, чанков, векторов и статусом воркера,
-   **When** я перехожу на вкладку "Repositories",
-   **Then** фронтенд отображает красивую сетку карточек репозиториев с метриками.
-2. **And** при переходе на вкладку "Sync Queue" фронтенд запрашивает `GET /api/queue` и выводит Read-Only список задач (состояние, количество попыток, дата создания, ошибки для упавших задач).
+1. **Given** endpoint `GET /api/status` returning configured repositories with file counts, chunk counts, vector counts, and worker status,
+   **When** I switch to the "Repositories" tab,
+   **Then** the frontend renders a responsive card grid showing metrics per repository.
+2. **And** navigating to the "Sync Queue" tab triggers `GET /api/queue` and displays a Read-Only task table (status, attempt count, creation date, and error logs for failed tasks).
 
 ## Tasks / Subtasks
 
-- [ ] Реализация REST-эндпоинтов на бэкенде (AC: 1, 2)
-  - [ ] Создать файл `knowledge_mcp/daemon/routes/status.py`.
-  - [ ] Зарегистрировать эндпоинт `GET /api/status`. Он должен считывать репозитории из `config.yaml` и делать `SELECT COUNT(*)` по таблицам `files`, `chunks` в SQLite для подсчета метрик.
-  - [ ] Зарегистрировать эндпоинт `GET /api/queue`. Он делает `SELECT * FROM sync_queue ORDER BY created_at DESC LIMIT 50;`.
-- [ ] Отрисовка репозиториев на клиенте (AC: 1)
-  - [ ] Написать JS функцию `loadRepositories()` в `dashboard/static/js/app.js`.
-  - [ ] Запросить `/api/status` с передачей заголовков Basic Auth.
-  - [ ] Отрендерить карточки репозиториев: имя, ветка, количество файлов, векторов, статус.
-- [ ] Отрисовка очереди на клиенте (AC: 2)
-  - [ ] Написать JS функцию `loadQueue()` в `dashboard/static/js/app.js`.
-  - [ ] Отрендерить таблицу очереди: ID, Repo, Status, Attempts, Error (сворачиваемый лог ошибки), Created At.
+- [x] Backend REST endpoint implementation (AC: 1, 2)
+  - [x] Create file `knowledge_mcp/daemon/routes/status.py`.
+  - [x] Register endpoint `GET /api/status`. Reads repositories from `config.yaml` and executes `SELECT COUNT(*)` on SQLite `files` and `chunks` tables.
+  - [x] Register endpoint `GET /api/queue`. Executes `SELECT * FROM sync_queue ORDER BY created_at DESC LIMIT 50;`.
+- [x] Client repository card rendering (AC: 1)
+  - [x] Write JS function `loadRepositories()` in `dashboard/static/js/app.js`.
+  - [x] Query `/api/status` using Basic Auth headers.
+  - [x] Render repository cards: identifier, branch, file count, vector count, and status.
+- [x] Client queue table rendering (AC: 2)
+  - [x] Write JS function `loadQueue()` in `dashboard/static/js/app.js`.
+  - [x] Render queue table: ID, Repo, Status, Attempts, Error (collapsible traceback), Created At.
 
 ## Dev Notes
 
-Для подсчета общего числа чанков и векторов по репозиторию необходимо использовать `repo_id` (или хэш пути) в запросах агрегации:
+To compute chunks and vectors per repository, use `repo_id` (or path hash) in aggregation queries:
 ```sql
 SELECT COUNT(*) FROM chunks WHERE file_id IN (SELECT id FROM files WHERE repo_id = ?);
 ```
-Фронтенд должен безопасно экранировать текст ошибок из очереди с помощью `textContent` (или аналогичных методов JS) для защиты от XSS.
+The frontend must escape error text safely using `textContent` to prevent XSS vulnerabilities.
 
 ### References
 
-- [Спецификация REST-эндпоинтов: spec_autonomous_sync.md#3.-Требования-к-API-Web-UI-(REST-эндпоинты)](file:///c:/Repos/knowledgebase-mcp/docs/spec_autonomous_sync.md#L96-L107)
+- [REST Endpoint Specification: spec_autonomous_sync.md#3.-Web-UI-API-Requirements-(REST-Endpoints)](file:///c:/Repos/knowledgebase-mcp/docs/spec_autonomous_sync.md#L96-L107)
 
 ## Dev Agent Record
 
@@ -50,12 +50,12 @@ Antigravity (Gemini 3.5 Flash)
 None
 
 ### Completion Notes List
-- **Knowledge MCP Research**: Выполнен поиск методов агрегации и работы с очередью в `models.py`. Запросы `get_repo_stats` и `get_queue_jobs` реализованы как новые (new).
-- В `KnowledgeDB` (`db/models.py`) добавлены методы `get_repo_stats` и `get_queue_jobs` для подсчета метрик репозиториев (файлы, чанки, векторы) и чтения истории очереди.
-- Расширен эндпоинт `GET /api/status` в `main.py` для выдачи полной структуры репозиториев и их метрик.
-- Добавлен защищенный эндпоинт `GET /api/queue` для получения истории задач.
-- Фронтенд `app.js` переписан на получение живых данных: отрисовка карточек репозиториев, запуск дельта-синхронизации, вывод задач очереди с безопасным экранированием ошибок (XSS protection).
-- Написаны и успешно пройдены юнит-тесты в `tests/test_auth.py`.
+- **Knowledge MCP Research**: Researched aggregation methods and queue retrieval in `models.py`; implemented new queries `get_repo_stats` and `get_queue_jobs`.
+- Added `get_repo_stats` and `get_queue_jobs` to `KnowledgeDB` (`db/models.py`) to calculate repository metrics (files, chunks, vectors) and inspect queue history.
+- Extended `GET /api/status` in `main.py` to return the complete structure of repositories and operational metrics.
+- Added secured endpoint `GET /api/queue` for queue task inspection.
+- Updated frontend `app.js` to render live data: repository cards, delta sync triggering, and queue table with XSS protection.
+- Unit tests written and verified passing in `tests/test_auth.py`.
 
 ### File List
 - [MODIFY] [models.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/db/models.py)
@@ -78,8 +78,8 @@ None
 - [x] Unit tests pass successfully (35/35).
 
 ### Code Review Summary
-- **SQL Aggregations:** Связь `chunks` с `chunks_vec` через `rowid` реализована корректно и обеспечивает быстрый подсчет векторов без лишних JOIN.
-- **XSS Protection:** JS-код рендерит ошибки через `textContent`, полностью исключая инъекции скриптов.
+- **SQL Aggregations:** Linking `chunks` to `chunks_vec` via `rowid` performs efficiently without redundant joins.
+- **XSS Protection:** JS renders errors using `textContent`, fully preventing script injection.
 
 ---
 
@@ -91,8 +91,8 @@ None
 ### Acceptance Criteria Verification
 | AC | Description | Verification | Result |
 |----|-------------|--------------|--------|
-| AC 1 | Карточки репозиториев с метриками | Тест `test_api_status_success` проверяет возврат `repositories` с файлами, чанками и векторами | ✅ PASS |
-| AC 2 | Очередь задач с ошибками и попытками | Тест `test_api_queue` проверяет возврат задач очереди с полями `attempts`, `last_error` | ✅ PASS |
+| AC 1 | Repository cards with metrics | Test `test_api_status_success` confirms `repositories` with file, chunk, and vector counts | ✅ PASS |
+| AC 2 | Task queue with error logs | Test `test_api_queue` verifies queue payload with `attempts` and `last_error` fields | ✅ PASS |
 
 ---
 

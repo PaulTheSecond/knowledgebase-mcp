@@ -1,21 +1,21 @@
 # 01. PEP 8 & Naming Standards
 
 ## PEP 8 Compliance
-1. Весь код должен соответствовать стандарту PEP 8.
-2. Длина строки ограничивается 120 символами (вместо стандартных 79 для лучшей читаемости на широких экранах).
-3. Для автоматического форматирования и проверки стиля используется `ruff` (конфигурируется в `pyproject.toml` или `setup.cfg`).
+1. All Python code must strictly comply with PEP 8 standards.
+2. Line length limit is set to 120 characters (improving code readability on widescreen displays).
+3. Automated formatting and linting is enforced via `ruff` (configured in `pyproject.toml` or `setup.cfg`).
 
-## Именование (Naming Conventions)
-* **Модули и пакеты:** `snake_case`, только строчные буквы. Избегать лишних символов (например, `db_utils.py` вместо `db-Utils.py`).
-* **Классы:** `PascalCase`. Использовать существительные (например, `RepositorySynchronizer`).
-* **Функции и методы:** `snake_case`. Использовать глаголы, описывающие действие (например, `fetch_repository_updates`).
-* **Переменные:** `snake_case`. Имена должны отражать суть переменной (например, `local_commit_sha` вместо `sha`).
-* **Константы:** `UPPER_CASE` с разделением подчеркиванием (например, `MAX_RETRY_ATTEMPTS`).
-* **Приватные атрибуты и методы:** начинаются с одного подчеркивания `_` (например, `_authenticate_session`).
+## Naming Conventions
+* **Modules and Packages:** `snake_case`, lowercase letters only. Avoid dashes or uppercase letters (e.g., `db_utils.py` instead of `db-Utils.py`).
+* **Classes:** `PascalCase`. Use descriptive nouns (e.g., `RepositorySynchronizer`).
+* **Functions and Methods:** `snake_case`. Use verbs describing actions (e.g., `fetch_repository_updates`).
+* **Variables:** `snake_case`. Names must be clear and descriptive (e.g., `local_commit_sha` instead of `sha`).
+* **Constants:** `UPPER_CASE` with underscore separators (e.g., `MAX_RETRY_ATTEMPTS`).
+* **Private Attributes and Methods:** prefixed with a single underscore `_` (e.g., `_authenticate_session`).
 
-## Импорты
-1. Группировка импортов должна идти в следующем порядке:
-   * Стандартные библиотеки Python (например, `os`, `sys`, `sqlite3`).
-   * Сторонние библиотеки (например, `fastapi`, `openai`, `pydantic`).
-   * Локальные модули проекта (например, `core.git_manager`, `db.models`).
-2. Запрещено использовать wildcard-импорты (например, `from module import *`).
+## Import Organization
+1. Group imports in the following canonical order:
+   * Python standard library modules (e.g., `os`, `sys`, `sqlite3`).
+   * Third-party libraries (e.g., `fastapi`, `openai`, `pydantic`).
+   * Local project modules (e.g., `core.git_manager`, `db.models`).
+2. Wildcard imports (e.g., `from module import *`) are strictly prohibited.

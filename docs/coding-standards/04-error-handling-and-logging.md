@@ -1,24 +1,24 @@
 # 04. Error Handling & Logging Standards
 
-## Обработка исключений (Exception Handling)
-1. **Запрещено** использовать перехват всех исключений без указания типа ошибки:
+## Exception Handling
+1. **Strictly Prohibited:** Catching all exceptions with a bare `except:` block:
    ```python
-   # ПЛОХО! Скрывает синтаксические ошибки, NameError и KeyboardInterrupt
+   # PROHIBITED! Hides syntax errors, NameError, and KeyboardInterrupt
    try:
        do_something()
    except:
        pass
    ```
-2. Если вы ловите базовое исключение, ловите `Exception` (что не затрагивает прерывания):
+2. If catching a top-level error, explicitly target `Exception` (which preserves system interrupts):
    ```python
-   # ХОРОШО (в крайних случаях при логировании на верхнем уровне)
+   # COMPLIANT (for top-level boundary logging only)
    try:
        do_something()
    except Exception as e:
        logger.error(f"Unexpected error: {e}")
    ```
-3. Всегда перехватывайте наиболее специфичное исключение, которое вы можете обработать (например, `FileNotFoundError`, `sqlite3.IntegrityError`).
-4. При перевыбросе исключений всегда сохраняйте оригинальный контекст ошибки:
+3. Always catch the most specific exception appropriate for the failure mode (e.g., `FileNotFoundError`, `sqlite3.IntegrityError`).
+4. When re-raising exceptions, preserve the original traceback using explicit exception chaining:
    ```python
    try:
        conn.execute("INSERT ...")
@@ -26,23 +26,23 @@
        raise QueueInsertError("Task already exists in queue") from e
    ```
 
-## Логирование (Logging)
-1. Не используйте `print()` для вывода диагностических сообщений или ошибок. Используйте встроенную библиотеку `logging`.
-2. Конфигурируйте логгер с явным указанием имени модуля:
+## Logging
+1. Do not use `print()` for diagnostic logging or error reporting. Always use the standard Python `logging` module.
+2. Initialize loggers using module-level scopes:
    ```python
    import logging
    logger = logging.getLogger(__name__)
    ```
-3. **Критическое правило для MCP-сервера:**
-   Процесс MCP-сервера обменивается данными с клиентом (IDE) через стандартные потоки ввода-вывода (`sys.stdout` и `sys.stdin`). 
-   * Любой вывод в `sys.stdout` (например, через `print` или логгер, настроенный на stdout) **сломает JSON-RPC протокол MCP**.
-   * Все логи, ошибки и отладочные сообщения внутри MCP-сервера обязаны направляться исключительно в поток ошибок `sys.stderr`.
-   * Пример настройки логгера для MCP:
+3. **Critical Invariant for the MCP Server:**
+   The stdio MCP server communicates with the client IDE via standard input and output streams (`sys.stdout` and `sys.stdin`).
+   * Any direct write to `sys.stdout` (via `print` or an incorrectly configured root logger) **corrupts the MCP JSON-RPC protocol stream**.
+   * All log records, errors, and debug statements must route exclusively to standard error (`sys.stderr`).
+   * Example logger configuration for stdio MCP:
      ```python
      logging.basicConfig(stream=sys.stderr, level=logging.INFO)
      ```
-4. Выбирайте корректный уровень логирования:
-   * `DEBUG`: детальные технические сообщения для отладки.
-   * `INFO`: ключевые вехи работы (старт демона, добавление задачи в очередь).
-   * `WARNING`: некритичные сбои (не пройдена подпись вебхука, первая попытка ретрая).
-   * `ERROR`: критичные ошибки, требующие вмешательства (задача провалилась 3 раза, падение базы данных).
+4. Choose appropriate log levels:
+   * `DEBUG`: detailed diagnostic info for local troubleshooting.
+   * `INFO`: major lifecycle milestones (daemon startup, job enqueued, index completed).
+   * `WARNING`: non-fatal anomalies (webhook signature mismatch, transient retry attempt).
+   * `ERROR`: fatal failures requiring administrative attention (job exhausted all 3 retries, database write failure).

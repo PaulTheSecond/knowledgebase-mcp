@@ -1,124 +1,127 @@
-# ADR-007: Интерактивный инспектор документов, рендеринг Mermaid и форматирование RAG-чата
+# ADR-007: Interactive Document Inspector, Mermaid Diagramming, and RAG Chat Formatting
 
-**Статус:** Принято  
-**Дата:** 2026-10-21  
-**Область:** Web Dashboard, RAG Chat, Doc Viewer, REST API  
-**Связано с:** [ADR-005: Web Dashboard Architecture](adr-005-web-dashboard-architecture.md)
-
----
-
-## 1. Контекст и проблематика
-
-В версии v1.6 был реализован базовый веб-интерфейс RAG-чата с потоковым ответом (SSE). Однако в процессе реальной эксплуатации выявился ряд существенных ограничений взаимодействия с контекстом:
-
-1. **Неработающие ссылки на источники (404 Not Found):**
-   - В ответах ассистента выводились бейджи с путями к файлам (например, `docs/data-access/stories/epic-1/story-1.8.md (6-9)`), но при попытке их открыть возникала ошибка 404, либо ссылки не реагировали.
-   - Эндпоинт `/api/chat/file` производил поиск файлов только в каталогах `data/clones` и корне репозитория сервера, игнорируя локально примонтированные репозитории (`local_path: "/repos/ImpactOS.Core.Lib"`), а также не передавал идентификатор репозитория `repo_id`.
-
-2. **Отсутствие контекстного инспектора документов:**
-   - Для проверки найденного фрагмента разработчику приходилось переключаться в стороннюю IDE и вручную искать файл и нужные строки.
-   - Отсутствовала возможность держать открытыми несколько связанных файлов одновременно (например, класс сущности C# и соответствующую пользовательскую историю Markdown).
-
-3. **Неформатированный вывод ответов бота:**
-   - Блоки исходного кода отображались без плашек языка и без кнопки быстрого копирования в буфер обмена.
-   - Диаграммы Mermaid в ответах ассистента оставались нерендеренным текстовым блоком ````mermaid ... ````.
-
-4. **Потеря контекста диалога при перезагрузке:**
-   - Чат очищался при каждом обновлении страницы браузера (F5), что вызывало неудобство при случайной перезагрузке или переключении вкладок браузера.
+| Metadata | Value |
+| :--- | :--- |
+| **Status** | Accepted |
+| **Date** | 2026-10-21 |
+| **Affects** | Web Dashboard, RAG Chat, Doc Viewer, REST API |
+| **Related To** | [ADR-005: Web Dashboard Architecture](adr-005-web-dashboard-architecture.md) |
+| **Breaking Change** | No |
 
 ---
 
-## 2. Принятые решения
+## 1. Context and Problem Statement
 
-### 2.1. Расширение бэкенда и резолв файлов (`/api/chat/file`)
-- В ответ SSE и JSON-модели источников (`ChatSource`) добавлены поля:
-  - `repo_id`: строковый идентификатор репозитория (например, `ImpactOS.Core.Lib`);
-  - `line_start`, `line_end`: целочисленные границы цитируемого фрагмента.
-- Реализована функция `get_configured_repo_roots(config)`, которая динамически собирает все возможные корневые директории:
-  1. `local_path` каждого настроенного репозитория (включая Docker volume-пути `/repos/...`);
-  2. Папки склонированных репозиториев в `clones_dir` (`data/clones/<repo_id>`);
-  3. Корневую директорию проекта.
-- В эндпоинт `GET /api/chat/file` добавлен параметр `full_file: bool = False`:
-  - При `full_file=false` эндпоинт возвращает только запрошенный диапазон строк.
-  - При `full_file=true` эндпоинт возвращает полный текст файла вместе с общим количеством строк (`total_lines`), что позволяет фронтенду отобразить весь файл целиком и подсветить нужные строки.
+Milestone `v1.6` introduced a baseline RAG chat interface with Server-Sent Events (SSE) streaming. Real-world developer usage revealed several critical UX and context inspection bottlenecks:
 
-### 2.2. Архитектура разделителя (Resizable Splitter)
-- Внедрен двухколоночный макет рабочей области чата:
-  - **Левая колонка:** окно сообщений и ввод RAG-чата.
-  - **Правая колонка:** панель инспектора документов (`app-doc-viewer`).
-- Разделитель (`.split-resizer`):
-  - По умолчанию панель документов занимает **45%** ширины контентного окна.
-  - Поддерживает плавное перетаскивание мыши (`drag-to-resize`) с ограничением в диапазоне от 20% до 80%.
-  - Двойной клик (`dblclick`) по разделителю мгновенно сбрасывает ширину до стандартных 45%.
-  - Выбранная пропорция сохраняется в `localStorage['kb_chat_split_ratio']` и восстанавливается при перезагрузках.
+1. **Broken Source Citations (404 Not Found):**
+   - Assistant responses included source badges referencing file paths (e.g., `docs/data-access/stories/epic-1/story-1.8.md (6-9)`), but clicking them yielded 404 errors or failed to trigger navigation.
+   - The backend `/api/chat/file` endpoint resolved files exclusively inside `data/clones` and the project root, failing to discover locally mounted repository paths (`local_path: "/repos/ImpactOS.Core.Lib"`) and omitting repository identifier metadata (`repo_id`).
 
-### 2.3. Инспектор документов в стиле IDE (`DocViewerComponent`)
-- **Многовкладочный интерфейс (IDE-style Tabs):**
-  - Поддерживает одновременное открытие произвольного количества документов.
-  - Каждая вкладка отображает бейдж типа файла (`MD`, `CS`, `TS`, `PY`), имя файла, диапазон цитируемых строк и кнопку закрытия `✕`.
-  - Повторный клик на источник того же файла активирует существующую вкладку, обновляя целевой диапазон строк без перезагрузки.
-  - Кнопка «Закрыть всё» скрывает панель инспектора и возвращает чат на 100% ширины.
-- **Два режима отображения документа:**
-  - `👁️ Превью` (для Markdown): рендеринг форматированного текста, заголовков, таблиц, чекбоксов и схем Mermaid.
-  - `📝 Исходник`: сырой код с колонкой номеров строк (`.line-num`), моноширинным шрифтом JetBrains Mono и подсветкой синтаксиса через Prism.js.
-- **Подсветка строк цитирования и автоскролл:**
-  - Строки цитаты (например, 6–9) выделяются мягким фоном (`.code-line-row.line-highlight`).
-  - При открытии файла компонент автоматически скроллит к первой строке диапазона (`scrollIntoView({ behavior: 'smooth', block: 'center' })`).
-  - Переключатель `Весь файл / Фрагмент`: возможность изолированно просматривать только найденные строки цитаты.
+2. **Absence of an In-Context Document Inspector:**
+   - To verify cited code snippets, developers had to switch to an external IDE and manually locate the file and target line numbers.
+   - There was no support for keeping multiple related documents open concurrently (e.g., a C# domain entity and its corresponding Markdown story specification).
 
-### 2.4. Форматирование ответов ассистента и Mermaid
-- Сервис `MarkdownService` на базе Marked и Prism.js:
-  - Оборачивает блоки кода в контейнер `.code-block-wrapper` со стилизованной шапкой, плашкой языка (`C#`, `TypeScript`, `Python`, `SQL`, `Bash` и т.д.) и кнопкой копирования кода в буфер обмена.
-  - Блоки ````mermaid```` оборачиваются в `.mermaid-block-wrapper` и асинхронно рендерятся в векторный SVG через ESM-модуль `mermaid` (`MermaidService`).
-  - `MermaidService` динамически синхронизирует тему (`dark` / `default`) с текущей темой интерфейса (`ThemeService.isDarkMode()`). При ошибке синтаксиса диаграммы пользователю выводится читаемый баннер с описанием ошибки и исходным кодом.
-- **Безопасность Angular DomSanitizer:**
-  - Для предотвращения автоматического вырезания интерактивных кнопок (`<button class="btn-copy-code">`) санитайзером Angular используется метод `renderSafe()`, возвращающий `SafeHtml` через `sanitizer.bypassSecurityTrustHtml()`.
+3. **Unformatted Assistant Responses:**
+   - Source code blocks lacked programming language badges and one-click copy buttons.
+   - Mermaid diagram blocks within assistant replies remained raw unrendered text fences (````mermaid ... ````).
 
-### 2.5. Хранение истории сообщений в браузере (`ChatStorageService`)
-- История диалога сохраняется в `localStorage['kb_chat_history_v1']`.
-- В шапке чата отображается бейдж активной памяти диалога.
-- Добавлена кнопка «Новый диалог» (`btn-clear-chat`), позволяющая по подтверждению пользователя сбросить историю и вернуть чат в исходное приветственное состояние.
+4. **Loss of Dialogue Context on Page Reload:**
+   - Conversation state was cleared on every browser refresh (F5), degrading the developer experience during accidental refreshes or tab switches.
 
 ---
 
-## 3. Схема взаимодействия компонентов
+## 2. Decision
+
+### 2.1. Backend Path Resolution Expansion (`/api/chat/file`)
+- Extended SSE citation events and the `ChatSource` data contract with:
+  - `repo_id`: string repository identifier (e.g., `ImpactOS.Core.Lib`);
+  - `line_start`, `line_end`: integer boundaries of the cited code chunk.
+- Implemented `get_configured_repo_roots(config)` to dynamically aggregate all configured repository roots:
+  1. `local_path` for every configured repository (including container volume paths `/repos/...`);
+  2. Cloned repository directories in `clones_dir` (`data/clones/<repo_id>`);
+  3. The local server root directory.
+- Added `full_file: bool = False` query parameter to `GET /api/chat/file`:
+  - When `full_file=false`, the endpoint returns only the cited line range.
+  - When `full_file=true`, the endpoint returns the complete file body along with `total_lines`, allowing the frontend to render the whole file with highlighted citation lines.
+
+### 2.2. Resizable Splitter Architecture
+- Implemented a dual-column layout for the chat workspace:
+  - **Left column:** message feed and RAG chat input.
+  - **Right column:** document inspector panel (`app-doc-viewer`).
+- Splitter behavior (`.split-resizer`):
+  - Defaults to **45%** width for the document inspector panel.
+  - Supports smooth drag-to-resize clamped between 20% and 80%.
+  - Double-clicking (`dblclick`) resets the width to the default 45%.
+  - Selected ratio persists in `localStorage['kb_chat_split_ratio']` across browser sessions.
+
+### 2.3. IDE-Style Document Inspector (`DocViewerComponent`)
+- **IDE-style Tabbed Interface:**
+  - Supports multiple simultaneously opened documents.
+  - Each tab displays a language badge (`MD`, `CS`, `TS`, `PY`), filename, cited line range, and a close button (`✕`).
+  - Clicking a citation for an already open document switches to that tab and updates the highlighted line range without reloading.
+  - "Close All" button dismisses the inspector and restores the chat panel to 100% width.
+- **Dual Display Modes:**
+  - `👁️ Preview` (for Markdown): renders formatted headings, tables, task lists, and inline Mermaid diagrams.
+  - `📝 Raw Source`: raw code display with line numbers (`.line-num`), JetBrains Mono monospace typography, and syntax highlighting via Prism.js.
+- **Line Highlighting and Smooth Auto-Scroll:**
+  - Cited lines (e.g., lines 6–9) are highlighted with a prominent background (`.code-line-row.line-highlight`).
+  - Opening a file smoothly auto-scrolls to the first cited line (`scrollIntoView({ behavior: 'smooth', block: 'center' })`).
+  - Toggle between `Full File` and `Snippet Only` modes.
+
+### 2.4. Assistant Response Formatting and Mermaid SVG
+- Integrated `MarkdownService` using Marked and Prism.js:
+  - Wraps code blocks inside `.code-block-wrapper` with a header bar, language label (`C#`, `TypeScript`, `Python`, `SQL`, `Bash`), and a one-click clipboard copy button.
+  - Fenced ````mermaid```` blocks are wrapped in `.mermaid-block-wrapper` and asynchronously rendered into SVG using the ESM `mermaid` module (`MermaidService`).
+  - `MermaidService` dynamically synchronizes themes (`dark` / `default`) with the application theme state (`ThemeService.isDarkMode()`). Syntax errors render a graceful warning banner with the underlying source.
+- **Angular DomSanitizer Safety:**
+  - Interactive buttons (`<button class="btn-copy-code">`) are preserved by returning `SafeHtml` via `sanitizer.bypassSecurityTrustHtml()`.
+
+### 2.5. Client-Side Dialogue Storage (`ChatStorageService`)
+- Conversation history persists in `localStorage['kb_chat_history_v1']`.
+- The chat header displays a badge indicating stored dialogue memory.
+- A "New Dialog" action (`btn-clear-chat`) prompts for confirmation, clears local storage, and resets the chat to the initial welcome state.
+
+---
+
+## 3. Component Interaction Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as Пользователь
+    actor User as Developer
     participant ChatUI as RAG Chat UI
     participant Storage as ChatStorage (LocalStorage)
     participant Backend as FastAPI (/api/chat)
     participant DocViewer as Doc Viewer (Inspector)
     participant FileAPI as FastAPI (/api/chat/file)
 
-    User->>ChatUI: Отправка вопроса
-    ChatUI->>Storage: Сохранение сообщений в localStorage
+    User->>ChatUI: Submit Question
+    ChatUI->>Storage: Save messages to localStorage
     ChatUI->>Backend: POST /api/chat (SSE streaming)
-    Backend-->>ChatUI: Поток токенов + sources (repo_id, lines)
-    ChatUI->>ChatUI: Рендеринг Prism кода и диаграмм Mermaid
+    Backend-->>ChatUI: Stream tokens + sources (repo_id, lines)
+    ChatUI->>ChatUI: Render Prism code and Mermaid diagrams
 
-    User->>ChatUI: Клик на бейдж источника (.source-tag)
+    User->>ChatUI: Click source citation badge (.source-tag)
     ChatUI->>DocViewer: openSource(filepath, lines, repo_id)
     DocViewer->>FileAPI: GET /api/chat/file?path=...&full_file=true
-    FileAPI->>FileAPI: Поиск в local_path, clones_dir, root
-    FileAPI-->>DocViewer: 200 OK (полный текст файла, total_lines)
-    DocViewer->>DocViewer: Создание вкладки, подсветка строк (lines), скролл к строке
-    User->>DocViewer: Переключение Превью / Исходник / Фрагмент
+    FileAPI->>FileAPI: Resolve in local_path, clones_dir, root
+    FileAPI-->>DocViewer: 200 OK (full file body, total_lines)
+    DocViewer->>DocViewer: Open tab, highlight lines, scroll to line
+    User->>DocViewer: Switch Preview / Source / Snippet mode
 ```
 
 ---
 
-## 4. Последствия и преимущества
+## 4. Consequences and Benefits
 
-### Положительные:
-1. **Бесшовный аудит контекста:** Разработчик сразу видит документ, на который ссылается нейросеть, с подсветкой точных строк цитаты и возможностью переключения между превью и кодом.
-2. **Многозадачность (IDE-style):** Возможность держать открытыми несколько файлов одновременно на вкладках и быстро сравнивать их.
-3. **Наглядность:** Архитектурные схемы и диаграммы классов Mermaid отображаются графически прямо в теле ответа.
-4. **Сохранение контекста:** История диалога больше не сбрасывается при перезагрузке страницы.
-5. **Эргономика интерфейса:** Удобный сплиттер позволяет подстроить ширину панели под размер монитора пользователя с быстрым сбросом на 45%.
+### Positive:
+1. **Frictionless Context Auditing:** Developers instantly view cited documents with precise line highlighting without leaving the dashboard.
+2. **IDE-Style Multitasking:** Multiple tabs can remain open simultaneously to compare interface contracts, tests, and implementations.
+3. **Rich Visualizations:** Mermaid architecture and sequence diagrams render directly inline within LLM answers.
+4. **Dialogue Resilience:** Chat history survives browser reloads and tab closures.
+5. **Ergonomic Workspace:** Resizable splitter accommodates varying monitor sizes and multi-monitor setups.
 
-### Ограничения:
-1. История диалога хранится локально в `localStorage` конкретного браузера, а не на сервере (соответствует инварианту AD-3 о stateless-бэкенде).
-2. Для очень больших текстовых файлов (>10 000 строк) рекомендуется использовать режим просмотра фрагмента для снижения нагрузки на DOM.
+### Trade-offs:
+1. Conversation history lives in client-side `localStorage` rather than server database (adheres to the stateless backend invariant AD-3).
+2. For exceptionally large files (>10,000 lines), snippet mode is recommended to minimize DOM node overhead.

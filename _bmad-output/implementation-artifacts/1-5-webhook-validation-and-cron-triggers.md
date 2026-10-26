@@ -4,35 +4,35 @@ Status: done
 
 ## Story
 
-As a разработчик,
-I want чтобы задачи в очередь добавлялись автоматически по вебхукам или расписанию Cron,
-so that мне не приходилось запускать синхронизацию вручную.
+As a developer,
+I want synchronization jobs to be enqueued automatically via webhooks or Cron schedules,
+so that I do not need to manually trigger indexing.
 
 ## Acceptance Criteria
 
-1. **Given** FastAPI-эндпоинт `/webhook/git`,
-   **When** на него приходит POST запрос от GitHub, Gitea или GitLab с подписью,
-   **Then** бэкенд валидирует HMAC-SHA256 подпись с секретом из переменных окружения. При совпадении подписи задача добавляется в `sync_queue`, при несовпадении возвращается 401 Unauthorized.
-2. **And** фоновый планировщик (Cron) считывает расписание из `config.yaml` для каждого репозитория и автоматически ставит новые задачи в `sync_queue` при наступлении триггера.
+1. **Given** FastAPI endpoint `/webhook/git`,
+   **When** a signed POST request arrives from GitHub, Gitea, or GitLab,
+   **Then** the backend validates the HMAC-SHA256 signature against the secret stored in environment variables. If valid, a task is added to `sync_queue`; if invalid, HTTP 401 Unauthorized is returned.
+2. **And** a background scheduler (Cron) parses the schedule from `config.yaml` for each repository and automatically enqueues tasks into `sync_queue` upon trigger intervals.
 
 ## Tasks / Subtasks
 
-- [x] Реализация эндпоинта вебхуков (AC: 1)
-  - [x] Создать файл `knowledge_mcp/daemon/routes/webhooks.py`.
-  - [x] Реализовать эндпоинт `POST /webhook/git`.
-  - [x] Добавить парсинг тела запроса для извлечения `repo_id`.
-- [x] HMAC-SHA256 валидация подписей (AC: 1)
-  - [x] Реализовать проверку заголовка GitHub `X-Hub-Signature-256` и Gitea `X-Gitea-Signature` по алгоритму HMAC-SHA256 с использованием секрета из `secret_env`.
-  - [x] Реализовать проверку GitLab токена через заголовок `X-Gitlab-Token`.
-  - [x] Возвращать `401 Unauthorized` при несовпадении или отсутствии заголовков.
-- [x] Реализация планировщика Cron (AC: 2)
-  - [x] Использовать легковесный планировщик на `threading.Timer` (без внешних зависимостей).
-  - [x] Считывать поле `triggers.cron` для каждого репозитория из `config.yaml`.
-  - [x] Ставить задачу в `sync_queue` при срабатывании триггера.
+- [x] Implement webhook endpoint (AC: 1)
+  - [x] Create file `knowledge_mcp/daemon/routes/webhooks.py`.
+  - [x] Implement endpoint `POST /webhook/git`.
+  - [x] Add request payload parsing to extract repository details.
+- [x] HMAC-SHA256 signature validation (AC: 1)
+  - [x] Implement verification for GitHub `X-Hub-Signature-256` and Gitea `X-Gitea-Signature` headers using HMAC-SHA256 with secrets configured via `secret_env`.
+  - [x] Implement GitLab token check via header `X-Gitlab-Token`.
+  - [x] Return `401 Unauthorized` on missing or invalid headers.
+- [x] Implement Cron scheduler (AC: 2)
+  - [x] Use lightweight scheduler based on `threading.Timer` (zero external dependencies).
+  - [x] Read `triggers.cron` per repository from `config.yaml`.
+  - [x] Enqueue tasks into `sync_queue` when triggered.
 
 ## Dev Notes
 
-Пример проверки подписи HMAC-SHA256 в Python:
+Example of HMAC-SHA256 validation in Python:
 ```python
 import hmac
 import hashlib
@@ -42,14 +42,14 @@ def verify_signature(payload: bytes, secret: str, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 ```
 
-Секрет извлекается по имени переменной, заданной в конфиге:
+Secret is resolved dynamically via the environment variable name defined in the config:
 ```yaml
-secret_env: "YURTA_WEBHOOK_SECRET" # Имя переменной окружения
+secret_env: "YURTA_WEBHOOK_SECRET" # Environment variable name
 ```
 
 ### References
 
-- [Требования валидации: prd.md#4.2.-Обработка-вебхуков-и-расписания](file:///_bmad-output/planning-artifacts/prds/prd-knowledgebase-mcp-2026-06-30/prd.md#L98-L105)
+- [Validation Requirements: prd.md#4.2.-Webhook-and-Schedule-Processing](file:///_bmad-output/planning-artifacts/prds/prd-knowledgebase-mcp-2026-06-30/prd.md#L98-L105)
 
 ## Dev Agent Record
 
@@ -60,11 +60,11 @@ Antigravity (Claude Opus 4.6)
 None
 
 ### Completion Notes List
-- Создан модуль `daemon/routes/webhooks.py` с эндпоинтом `POST /webhook/git`.
-- Реализована HMAC-SHA256 валидация для GitHub и Gitea, и проверка токена для GitLab.
-- Автоматический поиск репозитория по clone URL из payload вебхука.
-- Создан `daemon/scheduler.py` — легковесный cron-планировщик на `threading.Timer` (без внешних зависимостей).
-- 12 тестов пройдено: HMAC-валидация, cron-парсинг, поиск конфига, планировщик.
+- Created `daemon/routes/webhooks.py` with endpoint `POST /webhook/git`.
+- Implemented HMAC-SHA256 signature verification for GitHub/Gitea and token checking for GitLab.
+- Added automatic repository lookup by clone URL from webhook payloads.
+- Implemented `daemon/scheduler.py` — lightweight cron scheduler using `threading.Timer` without external dependencies.
+- 12 unit tests passing: HMAC verification, cron parsing, config resolution, and scheduling.
 
 ### File List
 - Created: `knowledge_mcp/daemon/routes/__init__.py`
@@ -88,9 +88,9 @@ None
 - [x] Unit tests pass successfully (12/12).
 
 ### Code Review Summary
-- **HMAC:** Используется `hmac.compare_digest` для timing-safe сравнения.
-- **Cron:** Легковесная реализация без внешних зависимостей, daemon threads.
-- **Security:** Секреты извлекаются из env vars, не хардкодятся.
+- **HMAC:** Uses `hmac.compare_digest` for timing-attack-safe comparisons.
+- **Cron:** Zero-dependency implementation with daemon threads.
+- **Security:** Secrets extracted from environment variables rather than hardcoded.
 
 ---
 
@@ -102,8 +102,8 @@ None
 ### Acceptance Criteria Verification
 | AC | Description | Verification | Result |
 |----|-------------|--------------|--------|
-| AC 1 | Webhook HMAC-SHA256 валидация | Тесты HMAC valid/invalid/without-prefix + поиск репо по URL | ✅ PASS |
-| AC 2 | Cron-планировщик читает config.yaml | Тесты парсинга cron + start/stop планировщика | ✅ PASS |
+| AC 1 | Webhook HMAC-SHA256 validation | Tests for valid, invalid, and prefix-stripped HMAC plus repo lookup | ✅ PASS |
+| AC 2 | Cron scheduler reads config.yaml | Cron expression parsing and scheduler start/stop tests | ✅ PASS |
 
 ---
 

@@ -4,37 +4,37 @@ Status: done
 
 ## Story
 
-As a администратор системы,
-I want безопасно клонировать и обновлять приватные репозитории, не сохраняя токены авторизации на диске,
-so that мои секреты (PAT) не утекли при компрометации файловой системы контейнера.
+As a system administrator,
+I want to securely clone and update private repositories without persisting authorization tokens to disk,
+so that my credentials (PAT) are not leaked if the container filesystem is compromised.
 
 ## Acceptance Criteria
 
-1. **Given** приватный репозиторий с авторизацией по PAT (в переменной окружения),
-   **When** вызывается метод клонирования/обновления,
-   **Then** команда `git clone` / `git pull` выполняется успешно с подстановкой токена в ОЗУ через параметр `-c http.extraHeader="Authorization: Basic ..."`.
-2. **And** в файле `.git/config` на диске URL репозитория сохраняется в чистом виде (без токена).
-3. **And** при авторизации по SSH подставляется примонтированный SSH-ключ с отключением StrictHostKeyChecking.
+1. **Given** a private repository with PAT authorization (configured via environment variable),
+   **When** a clone or update method is invoked,
+   **Then** `git clone` / `git pull` executes successfully with the token injected in-memory via `-c http.extraHeader="Authorization: Basic ..."`.
+2. **And** in the `.git/config` file on disk, the repository URL is stored clean without secrets.
+3. **And** when authenticating over SSH, the mounted SSH key is used with StrictHostKeyChecking disabled.
 
 ## Tasks / Subtasks
 
-- [x] Создание модуля Git-менеджера (AC: 1, 3)
-  - [x] Создать файл `knowledge_mcp/core/git_manager.py`.
-  - [x] Реализовать функции/методы для выполнения безопасных `git clone` и `git pull`.
-- [x] Реализация HTTPS PAT авторизации в ОЗУ (AC: 1, 2)
-  - [x] Написать хелпер для кодирования токена: `base64("x-token-auth:" + GITHUB_PAT)`.
-  - [x] Выполнять клонирование через `git -c http.extraHeader="Authorization: Basic <base64>" clone <url_without_creds> <path>`.
-  - [x] Выполнять обновление через `git -c http.extraHeader="Authorization: Basic <base64>" pull origin <branch>`.
-  - [x] Проверить, что файл `.git/config` в клонированной директории не содержит секретов.
-- [x] Реализация SSH авторизации (AC: 3)
-  - [x] Реализовать подстановку ключа через `git -c core.sshCommand="ssh -i <key_path> -o StrictHostKeyChecking=no"`.
-- [x] Написание тестов (AC: 1, 3)
-  - [x] Создать mock-тесты в `tests/test_git_manager.py` для имитации команд Git с PAT и SSH-ключами.
+- [x] Create Git manager module (AC: 1, 3)
+  - [x] Create file `knowledge_mcp/core/git_manager.py`.
+  - [x] Implement functions/methods for safe `git clone` and `git pull`.
+- [x] Implement HTTPS PAT in-memory authentication (AC: 1, 2)
+  - [x] Write token encoding helper: `base64("x-token-auth:" + GITHUB_PAT)`.
+  - [x] Execute clone using `git -c http.extraHeader="Authorization: Basic <base64>" clone <url_without_creds> <path>`.
+  - [x] Execute pull using `git -c http.extraHeader="Authorization: Basic <base64>" pull origin <branch>`.
+  - [x] Verify that `.git/config` in the cloned directory contains no secrets.
+- [x] Implement SSH authentication (AC: 3)
+  - [x] Pass key via `git -c core.sshCommand="ssh -i <key_path> -o StrictHostKeyChecking=no"`.
+- [x] Write tests (AC: 1, 3)
+  - [x] Create mock unit tests in `tests/test_git_manager.py` to simulate Git commands with PAT and SSH keys.
 
 ## Dev Notes
 
-### Безопасное клонирование через extraHeader
-При использовании GitHub PAT заголовок должен содержать логин `x-token-auth` (или `token`) и сам токен в кодировке Base64:
+### Secure Cloning via extraHeader
+When using GitHub PAT, the header should contain username `x-token-auth` (or `token`) and the Base64-encoded token:
 ```python
 import base64
 import subprocess
@@ -44,18 +44,18 @@ def get_git_auth_args(token: str) -> list:
     b64_creds = base64.b64encode(creds.encode("utf-8")).decode("utf-8")
     return ["-c", f"http.extraHeader=Authorization: Basic {b64_creds}"]
 ```
-Пример команды клонирования:
+Example clone command:
 ```python
 auth_args = get_git_auth_args(pat_token)
 cmd = ["git"] + auth_args + ["clone", "https://github.com/your-org/repo.git", dest_path]
 subprocess.run(cmd, check=True)
 ```
-Это предотвращает запись токена в конфигурационный файл `.git/config` клона.
+This prevents token leakage to `.git/config` on disk.
 
 ### References
 
-- [Архитектурный инвариант безопасности Git: ARCHITECTURE-SPINE.md#AD-4](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L49-L53)
-- [Алгоритм безопасности Git: solution_design.md#3.1.-Алгоритм-безопасного-взаимодействия-с-Git-(PAT-/-SSH)](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/solution_design.md#L150-L163)
+- [Git Security Architectural Invariant: ARCHITECTURE-SPINE.md#AD-4](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L49-L53)
+- [Git Security Algorithm: solution_design.md#3.1.-Algorithm-for-Secure-Git-Interaction-(PAT-/-SSH)](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/solution_design.md#L150-L163)
 
 ## Dev Agent Record
 
@@ -66,10 +66,10 @@ Antigravity (Google DeepMind)
 None
 
 ### Completion Notes List
-- Создан класс GitManager в knowledge_mcp/core/git_manager.py для безопасной работы с репозиториями Git.
-- Реализована HTTPS PAT авторизация с использованием http.extraHeader без сохранения секретов в .git/config.
-- Реализована SSH авторизация с передачей core.sshCommand и отключением StrictHostKeyChecking.
-- Написаны тесты в tests/test_git_manager.py с использованием unittest.mock, покрывающие все сценарии и маскирование токена.
+- Created `GitManager` class in `knowledge_mcp/core/git_manager.py` for safe Git repository interactions.
+- Implemented HTTPS PAT authentication with `http.extraHeader` avoiding persistent credentials in `.git/config`.
+- Implemented SSH authentication using `core.sshCommand` with disabled `StrictHostKeyChecking`.
+- Added unit tests in `tests/test_git_manager.py` with `unittest.mock` covering all scenarios and credential masking.
 
 ### File List
 - Created: `knowledge_mcp/core/git_manager.py`
@@ -122,4 +122,3 @@ None
 | 2026-07-01 | 1.0.0 | Dev: Completed GitManager and unit tests | James |
 | 2026-07-01 | 1.0.1 | CR: Checked security, standards and code style. PASS | CodeReview |
 | 2026-07-01 | 1.0.2 | QA: Verified mock execution and mask patterns. Status -> Done | Quinn |
-

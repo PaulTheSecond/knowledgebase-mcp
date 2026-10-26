@@ -4,41 +4,41 @@ Status: done
 
 ## Story
 
-As a разработчик,
-I want чтобы задачи на синхронизацию хранились в надежной БД-очереди и выполнялись последовательно воркером,
-so that изменения в кодовой базе отражались в базе знаний без сбоев из-за перезагрузок.
+As a developer,
+I want synchronization jobs to be stored in a resilient database queue and processed sequentially by a background worker,
+so that codebase changes are reflected in the knowledge base without data loss from unexpected restarts.
 
 ## Acceptance Criteria
 
-1. **Given** базу данных SQLite с таблицей `sync_queue`,
-   **When** в очередь добавляется несколько задач на синхронизацию,
-   **Then** фоновый воркер выбирает старейшую задачу в статусе `pending` (по возрастанию `created_at`), переводит её в `processing` и запускает обновление кода.
-2. **And** перед запуском индексации воркер считывает текущий Git SHA коммита. Если он совпадает с ранее проиндексированным, задача помечается как `completed` за миллисекунды (идемпотентность).
+1. **Given** an SQLite database with a `sync_queue` table,
+   **When** multiple synchronization tasks are queued,
+   **Then** the background worker selects the oldest task in `pending` status (ordered ascending by `created_at`), sets its status to `processing`, and triggers codebase synchronization.
+2. **And** before triggering indexing, the worker retrieves the current Git commit SHA. If it matches the previously indexed SHA, the task is marked as `completed` within milliseconds (idempotency).
 
 ## Tasks / Subtasks
 
-- [x] Создание миграции БД для таблиц очереди и коммитов (AC: 1)
-  - [x] Добавить создание таблицы `sync_queue` в `db/models.py`.
-  - [x] Создать таблицу `indexed_commits (repo_id TEXT PRIMARY KEY, git_sha TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);`.
-- [x] Реализация циклического воркера (AC: 1)
-  - [x] Создать файл `knowledge_mcp/daemon/worker.py`.
-  - [x] Реализовать цикл `while True` с интервалом опроса очереди в 1 секунду.
-  - [x] Реализовать выборку задач по FIFO: `SELECT * FROM sync_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1;`.
-  - [x] Реализовать перевод задачи в статус `processing` в рамках транзакции.
-- [x] Интеграция с Git и индексатором (AC: 1, 2)
-  - [x] Для выбранной задачи получить конфиг репозитория из `config.yaml`.
-  - [x] Выполнить обновление кода через `core/git_manager.py` в `/data/clones/{repo_id}`.
-  - [x] Получить текущий коммит HEAD через команду `git rev-parse HEAD`.
-- [x] Реализация идемпотентности по Git SHA (AC: 2)
-  - [x] Проверить по таблице `indexed_commits` последний обработанный коммит для этого `repo_id`.
-  - [x] Если коммиты совпадают, сразу перевести статус задачи в `completed` и перейти к следующей задаче.
-  - [x] Если коммит изменился, запустить индексатор `indexer.py` (парсинг кода и эмбеддинги).
-  - [x] После успешного завершения записать новый `git_sha` в `indexed_commits` и перевести задачу в `completed`.
+- [x] Create DB migration for queue and commits tables (AC: 1)
+  - [x] Add creation of `sync_queue` table in `db/models.py`.
+  - [x] Create table `indexed_commits (repo_id TEXT PRIMARY KEY, git_sha TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);`.
+- [x] Implement worker polling loop (AC: 1)
+  - [x] Create file `knowledge_mcp/daemon/worker.py`.
+  - [x] Implement a `while True` loop with a 1-second queue polling interval.
+  - [x] Implement FIFO task selection: `SELECT * FROM sync_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1;`.
+  - [x] Implement task status transition to `processing` within an atomic transaction.
+- [x] Integrate with Git and indexer (AC: 1, 2)
+  - [x] Retrieve repository config from `config.yaml` for the selected task.
+  - [x] Execute code update via `core/git_manager.py` in `/data/clones/{repo_id}`.
+  - [x] Retrieve current HEAD commit via `git rev-parse HEAD`.
+- [x] Implement idempotency check using Git SHA (AC: 2)
+  - [x] Check `indexed_commits` table for the last processed commit for this `repo_id`.
+  - [x] If commits match, immediately update task status to `completed` and proceed to the next job.
+  - [x] If commit changed, run indexer `indexer.py` (code parsing and embeddings).
+  - [x] Upon successful completion, persist the new `git_sha` to `indexed_commits` and mark the task `completed`.
 
 ## Dev Notes
 
-### Выборка FIFO и транзакции в SQLite
-Для исключения race conditions при выборке задач воркером (особенно при переходе к многопоточности в будущем) обновление статуса должно выполняться сразу после выборки:
+### FIFO Selection and SQLite Transactions
+To prevent race conditions during job selection by the worker (especially when transitioning to multi-worker setups in the future), the status update must occur atomically within the transaction:
 ```python
 def fetch_next_job(conn) -> dict:
     cursor = conn.cursor()
@@ -60,8 +60,8 @@ def fetch_next_job(conn) -> dict:
 
 ### References
 
-- [Архитектурный инвариант очереди: ARCHITECTURE-SPINE.md#AD-2](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L39-L43)
-- [Алгоритм идемпотентности по SHA коммита: solution_design.md#3.2.-Алгоритм-обработки-очереди-задач-и-экспоненциального-бэк-оффа](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/solution_design.md#L165-L182)
+- [Queue Architectural Invariant: ARCHITECTURE-SPINE.md#AD-2](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L39-L43)
+- [Commit SHA Idempotency Algorithm: solution_design.md#3.2.-Queue-Processing-and-Exponential-Backoff-Algorithm](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/solution_design.md#L165-L182)
 
 ## Dev Agent Record
 
@@ -72,11 +72,11 @@ Antigravity (Google DeepMind)
 None
 
 ### Completion Notes List
-- Создана миграция БД `20260701_07_sync_queue_and_indexed_commits` для таблиц `sync_queue` и `indexed_commits` с индексом по статусу и времени.
-- Реализован класс `DaemonWorker` в `knowledge_mcp/daemon/worker.py` с циклом опроса очереди (FIFO) и проверкой состояния воркера (`halted`).
-- Реализован атомарный выбор и обновление статуса задачи в `fetch_next_job()` с использованием транзакции `BEGIN IMMEDIATE`.
-- Интегрирована проверка Git SHA и контроль идемпотентности: если коммит не изменился, индексация пропускается, а задача сразу завершается.
-- Созданы тесты `tests/test_worker.py` с моками `GitManager` и `Indexer`, полностью покрывающие работу воркера и идемпотентность.
+- Created DB migration `20260701_07_sync_queue_and_indexed_commits` for tables `sync_queue` and `indexed_commits` with status/timestamp indexing.
+- Implemented `DaemonWorker` class in `knowledge_mcp/daemon/worker.py` with FIFO polling loop and worker state check (`halted`).
+- Implemented atomic task fetch and status update in `fetch_next_job()` using `BEGIN IMMEDIATE` transactions.
+- Integrated Git SHA comparison and idempotency check: when unchanged, indexing is skipped and the job completes immediately.
+- Created unit tests in `tests/test_worker.py` with mocks for `GitManager` and `Indexer`, fully covering worker lifecycle and idempotency.
 
 ### File List
 - Created: `knowledge_mcp/daemon/worker.py`

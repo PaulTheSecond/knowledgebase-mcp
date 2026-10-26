@@ -1,22 +1,22 @@
 # Architecture Review — Autonomous Sync & Dashboard Spine
 
-## Overall verdict
-Архитектурный каркас (Spine) спроектирован качественно, инварианты AD-1 – AD-4 четко определяют границы процессов и требования безопасности. Тем не менее, критический анализ взаимодействия процессов (Adversary Attack) выявил уязвимость: прямой доступ на запись со стороны MCP-процесса может привести к конфликтам при одновременной работе с БД фонового воркера.
+## Overall Verdict
+The architectural spine is well-designed. Invariants AD-1 through AD-4 clearly define process boundaries and security requirements. Critical adversarial review identified one operational vulnerability: direct SQLite write access from the stdio MCP process caused transaction deadlocks and race conditions against the background worker.
 
 ---
 
-## 1. Линейка проверки технологий (Web/Reality Check)
-Все заявленные технологии и их версии актуальны:
-* `sqlite-vec` является современным стабильным решением для векторного поиска в SQLite, заменяющим более старый и сложный в сборке `sqlite-vss`.
-* Требование к версии Python >= 3.11 обосновано использованием стандартной библиотеки `tomllib`.
-* Вызов `git -c http.extraHeader` поддерживается во всех современных версиях Git CLI (начиная с 2.9+), что делает инвариант безопасности AD-4 переносимым.
+## 1. Technology & Reality Check
+All selected technologies and version constraints are valid and production-grade:
+* `sqlite-vec` represents the modern standard for local vector indexing in SQLite, replacing the deprecated `sqlite-vss`.
+* Python >= 3.11 requirement is justified by native `tomllib` usage.
+* Git `-c http.extraHeader` is supported across all modern Git versions (Git 2.9+), making the AD-4 in-memory credential injection highly portable.
 
 ---
 
-## 2. Проверка устойчивости (Adversary Attack)
-* **Атака:**
-  * Процесс 1 (Daemon) выполняет фоновую синхронизацию репозитория `Yurta.Core.Lib`, считывает файлы и записывает чанки в SQLite.
-  * Процесс 2 (MCP-клиент в IDE) получает от пользователя команду на удаление этого же репозитория (`knowledge_delete_repo`). В текущей архитектуре MCP-процесс выполняет удаление записей напрямую через SQLite-соединение (`db.delete_repo(...)`).
-  * **Результат:** Блокировка SQLite-транзакции (`database is locked`) либо повреждение целостности данных (удаление файлов из БД во время их записи воркером).
-* **Устранение дыры:**
-  * **Новое правило для AD-1:** Любые мутации базы данных (включая удаление репозиториев через `knowledge_delete_repo`) должны выполняться **исключительно через эндпоинты Web Daemon** (в рамках его единой очереди или через HTTP API). MCP-процесс должен быть строго Read-Only по отношению к SQLite для всех поисковых инструментов, а инструменты удаления/синхронизации должен делегировать Web Daemon-у по HTTP.
+## 2. Adversarial Review & Attack Simulation
+* **Attack Vector:**
+  * Process 1 (Daemon) executes background synchronization of repository `Yurta.Core.Lib`, reading AST nodes and writing vector chunks to SQLite.
+  * Process 2 (stdio MCP client in IDE) receives a command to delete this repository (`knowledge_delete_repo`). In unhardened designs, the MCP process issues deletes directly over its SQLite connection (`db.delete_repo(...)`).
+  * **Result:** Transaction lockup (`database is locked`) or data corruption (cascading deletes while the worker commits).
+* **Vulnerability Remediation:**
+  * **Rule for AD-1:** All mutating database operations (including purging repositories via `knowledge_delete_repo`) must execute **exclusively through Web Daemon HTTP endpoints**. The stdio MCP process operates strictly in Read-Only mode for all search tools and delegates mutations to the Web Daemon over HTTP.

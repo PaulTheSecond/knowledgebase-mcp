@@ -18,287 +18,264 @@ inputDocuments:
 
 ## Overview
 
-This document provides the complete epic and story breakdown for knowledgebase-mcp, decomposing the requirements from the PRD, UX Design if it exists, and Architecture requirements into implementable stories.
+This document provides the complete epic and story breakdown for knowledgebase-mcp, decomposing requirements from the PRD, UX Design, and Architecture invariants into implementable stories.
 
 ## Requirements Inventory
 
 ### Functional Requirements
 
-* **FR-1:** Хранение очереди в SQLite (таблица `sync_queue`, поля: id, repo_id, status, attempts, error_message, created_at, updated_at).
-* **FR-2:** FIFO обработка воркером (выборка по `created_at` ASC в статусе `pending`, смена на `processing`).
-* **FR-3:** Гарантия идемпотентности при выполнении (сравнение Git SHA с последним успешно проиндексированным SHA в базе данных).
-* **FR-4:** Остановка воркера при критической ошибке (после 3 попыток с экспоненциальной задержкой 1, 5, 15 минут воркер записывает статус `halted` и ошибку в `system_status`, полностью прекращая обработку).
-* **FR-5:** Git-клиент внутри контейнера (клонирование/обновление в `/data/clones/{repo_id}` с использованием SSH-ключей или токенов PAT из переменных окружения).
-* **FR-6:** Криптографическая валидация вебхуков (HMAC-SHA256 подпись для GitHub и Gitea, X-Gitlab-Token для GitLab, возврат 401 Unauthorized при несовпадении).
-* **FR-7:** Cron-планировщик (периодический запуск задач синхронизации по Cron-выражениям из `config.yaml`).
-* **FR-8:** No-Build SPA Фронтенд (чистый HTML5, Vanilla JS, Vanilla CSS, раздача из FastAPI).
-* **FR-9:** Авторизация Basic Auth (защита дашборда; при пустом/отсутствующем пароле доступ принудительно блокируется с кодом 403).
-* **FR-10:** Отображение очереди задач (Read-Only) в Web UI (просмотр статусов, количества попыток, ошибок).
-* **FR-11:** Реактивный мониторинг через WebSockets (статусы репозиториев, прогресс-бары, очередь задач в реальном времени).
-* **FR-12:** Чат-интерфейс в браузере (текстовое поле ввода, история сообщений, автопрокрутка, рендеринг Markdown и подсветка кода).
-* **FR-13:** Гибридный поиск контекста (вызов `search_chunks_hybrid`, отбор топ-5 чанков, сборка системного промпта).
-* **FR-14:** Совместимость с OmniRoute (клиент OpenAI, локальный эндпоинт `http://localhost:20128/v1`, модель `kr/claude-sonnet-4.5`, провайдер `kiro`, токен `LLM_API_KEY`).
-* **FR-15:** Посимвольный стриминг ответов RAG-чата через Server-Sent Events (SSE).
-* **FR-16:** Отображение источников (клик-ссылки на файлы-источники с номерами строк под ответом чата).
+* **FR-1:** SQLite Job Queue (table `sync_queue`: id, repo_id, status, attempts, error_message, created_at, updated_at).
+* **FR-2:** FIFO Worker Processing (pop by `created_at` ASC in `pending` status, update to `processing`).
+* **FR-3:** Execution Idempotency Guarantee (compare Git SHA against latest indexed SHA in the database).
+* **FR-4:** Worker Error Halting (after 3 attempts with exponential backoff of 1, 5, 15 minutes, worker records `halted` status and error in `system_status`, halting processing).
+* **FR-5:** Containerized Git Client (clone/update in `/data/clones/{repo_id}` utilizing mounted SSH keys or environment PATs).
+* **FR-6:** Cryptographic Webhook Validation (HMAC-SHA256 signature for GitHub/Gitea, X-Gitlab-Token for GitLab; 401 Unauthorized on mismatch).
+* **FR-7:** Cron Scheduler (periodic execution of sync tasks according to Cron expressions in `config.yaml`).
+* **FR-8:** Lightweight SPA Frontend (clean HTML5, Vanilla JS, Vanilla CSS, served from FastAPI).
+* **FR-9:** Basic Auth Protection (dashboard credentials; if unset, requests are rejected with 403 Forbidden).
+* **FR-10:** Read-Only Queue Viewer in Web UI (display statuses, attempt counts, errors).
+* **FR-11:** Reactive WebSocket Telemetry (real-time repository metrics, progress bars, task queue states).
+* **FR-12:** Browser Chat UI (text input, history, auto-scroll, Markdown rendering, and code syntax highlighting).
+* **FR-13:** Hybrid Context Retrieval (execute `search_chunks_hybrid`, select top 5 chunks, assemble system prompt).
+* **FR-14:** OpenAI-Compatible Client (local or remote endpoint, configurable models and keys).
+* **FR-15:** Character/Token SSE Streaming for RAG Chat.
+* **FR-16:** Source Citations (clickable file tags with line ranges beneath assistant responses).
 
-### NonFunctional Requirements
+### Non-Functional Requirements
 
-* **NFR-1 (Изоляция данных):** Клонируемые репозитории и их кэши хранятся локально в Docker-Volume (`/data/clones/`), без передачи во внешние облачные сервисы.
-* **NFR-2 (Отказоустойчивость):** Сбои синхронизации репозиториев не должны нарушать работу MCP-сервера поиска на старых данных.
-* **NFR-3 (Лимиты RAM):** Фоновое индексирование и векторизация должны использовать sub-batch лимиты и вызывать Garbage Collector для предотвращения Out Of Memory (OOM).
+* **NFR-1 (Data Locality):** Cloned repositories and cache storage reside strictly within local container volumes (`/data/clones/`). No code or metadata is sent to external cloud services.
+* **NFR-2 (Resilience):** Sync failures do not disrupt concurrent read-only search operations over existing data.
+* **NFR-3 (RAM Limits):** Background indexing and vectorization enforce sub-batch limits and garbage collection to prevent Out Of Memory (OOM).
 
 ### Additional Requirements
 
-* **AD-1 (WAL режим и Read-Only MCP):** SQLite WAL-mode (`PRAGMA journal_mode=WAL` и `PRAGMA synchronous=NORMAL`). MCP-процесс работает строго в режиме Read-Only. Любые мутирующие операции (например, удаление репозитория через `knowledge_delete_repo`) должны делегироваться Daemon-процессу через REST API по HTTP.
-* **AD-2 (Глобальный статус):** Глобальное состояние воркера хранится в таблице `system_status` (ключи `worker_state`, `last_error`).
-* **AD-3 (Временные токены для сокетов/SSE):** HTTP Basic Auth используется для REST эндпоинтов. WS и SSE соединения авторизуются с помощью короткоживущих подписанных токенов, передаваемых в URL `?token=...`.
-* **AD-4 (Безопасность токенов Git в ОЗУ):** Git-токены PAT никогда не сохраняются в файле `.git/config` на диске. Они передаются в ОЗУ через `http.extraHeader` или `GIT_ASKPASS`.
-* **REORG (Реорганизация структуры каталогов):** Пакет `knowledge_mcp` разделяется на подмодули: `core/` (парсеры, индекс), `db/` (подключения, модели), `mcp/` (stdio-сервер), `daemon/` (FastAPI, воркер, роуты) и `dashboard/` (статический фронтенд).
+* **AD-1 (WAL Mode & Read-Only MCP):** SQLite WAL mode (`PRAGMA journal_mode=WAL` and `PRAGMA synchronous=NORMAL`). The MCP process operates strictly in Read-Only mode. All mutations delegate to the Daemon process via internal HTTP REST calls.
+* **AD-2 (Global Status):** Worker state persists in table `system_status` (keys `worker_state`, `last_error`).
+* **AD-3 (Temporary Tokens for WebSockets/SSE):** HTTP Basic Auth protects REST endpoints. WebSocket and SSE connections authenticate via short-lived signed tokens in query parameters `?token=...`.
+* **AD-4 (In-Memory Git Token Security):** Git PAT tokens are never written to disk in `.git/config`. They are passed in memory via `http.extraHeader` or `GIT_ASKPASS`.
+* **REORG (Directory Structure Modularization):** Split package into modular subpackages: `core/`, `db/`, `mcp/`, `daemon/`, and `dashboard/`.
 
 ### UX Design Requirements
 
-* **UX-DR-1:** SPA-дашборд на Vanilla JS/CSS с поддержкой темной темы, адаптивным макетом и реактивными элементами.
-* **UX-DR-2:** Визуальное отображение очереди фоновых задач (Read-Only таблица: репозиторий, статус, попытки, текст ошибок для упавших задач).
-* **UX-DR-3:** Интерактивные прогресс-бары индексации репозиториев, обновляющиеся по WebSocket в реальном времени.
-* **UX-DR-4:** Диалоговое окно RAG-чата со списком истории, автопрокруткой вниз при получении новых токенов и красивой подсветкой кода.
-* **UX-DR-5:** Стриминг текста (SSE-вывод) с плавным посимвольным появлением и индикатором загрузки ("модель думает...").
-* **UX-DR-6:** Ссылки-источники под ответом чата в виде кликабельных тегов с названиями файлов и диапазонами строк.
+* **UX-DR-1:** Responsive dashboard with dark theme support and clean layout.
+* **UX-DR-2:** Read-only task queue table (repository, status, attempts, error messages).
+* **UX-DR-3:** Real-time indexing progress bars over WebSockets.
+* **UX-DR-4:** RAG chat dialog with message history, auto-scrolling, and code highlighting.
+* **UX-DR-5:** Smooth SSE token streaming with a loading indicator ("model is thinking...").
+* **UX-DR-6:** Clickable source citation tags with filenames and line ranges below answers.
 
-### FR Coverage Map
-
-* **FR-1:** Epic 1 (Хранение очереди задач в SQLite)
-* **FR-2:** Epic 1 (FIFO обработка воркером очереди)
-* **FR-3:** Epic 1 (Идемпотентность выполнения по Git SHA)
-* **FR-4:** Epic 1 (Остановка воркера при 3 сбоях с бэк-оффом)
-* **FR-5:** Epic 1 (Git CLI клонирование приватного кода)
-* **FR-6:** Epic 1 (Валидация подписей вебхуков GitHub/Gitea/GitLab)
-* **FR-7:** Epic 1 (Периодический запуск по Cron)
-* **FR-8:** Epic 2 (Статическая раздача No-Build SPA из FastAPI)
-* **FR-9:** Epic 2 (Защита Basic Auth и блокировка 403)
-* **FR-10:** Epic 2 (Отображение очереди в Web UI)
-* **FR-11:** Epic 2 (WebSocket телеметрия реального времени)
-* **FR-12:** Epic 3 (Интерфейс RAG-чата в браузере)
-* **FR-13:** Epic 3 (Сборка системного промпта из топ-5 чанков)
-* **FR-14:** Epic 3 (OpenAI клиент для OmniRoute kr/claude-sonnet-4.5)
-* **FR-15:** Epic 3 (SSE-стриминг ответа в UI)
-* **FR-16:** Epic 3 (Кликабельные теги-источники под ответом)
+---
 
 ## Epic List
 
 ### Epic 1: Autonomous Background Sync Engine
-Фоновый автономный движок синхронизации с базой данных SQLite. Обеспечивает прием и криптографическую валидацию вебхуков, работу планировщика Cron, обслуживание надежной БД-очереди задач по FIFO с бэк-оффом ошибок, безопасное клонирование и обновление приватных репозиториев (SSH/PAT в ОЗУ), а также идемпотентность выполнения на основе Git SHA.
+Background autonomous synchronization engine powered by SQLite. Handles webhook ingestion and cryptographic validation, Cron scheduling, FIFO task queue processing with exponential error backoff, secure private Git cloning (in-memory SSH/PAT), and Git SHA idempotency.
 * **FRs covered:** FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, NFR-1, NFR-2, NFR-3, AD-1, AD-2, AD-4, REORG
 
 ### Epic 2: Web Dashboard & Real-Time Monitoring
-Веб-панель управления на статических файлах (HTML/CSS/JS) с раздачей из FastAPI, защищенная авторизацией Basic Auth и сессионными временными токенами для соединений. Обеспечивает просмотр очереди задач в реальном времени и реактивный мониторинг статусов/прогресс-баров индексации по WebSockets.
+Web dashboard with static asset delivery from FastAPI, protected by Basic Auth and session tokens. Provides real-time queue inspection and live WebSocket telemetry for repository statuses and indexing progress bars.
 * **FRs covered:** FR-8, FR-9, FR-10, FR-11, AD-3, UX-DR-1, UX-DR-2, UX-DR-3
 
 ### Epic 3: Interactive RAG Chat & LLM Integration
-Встроенный диалоговый чат-интерфейс в панели управления для прямого семантического поиска по базе знаний. Осуществляет гибридный поиск топ-5 чанков, формирование системного промпта, отправку OpenAI-совместимых запросов к локальному LLM-прокси OmniRoute, посимвольный SSE-стриминг и отображение кликабельных ссылок на файлы-источники.
+Embedded conversational interface for querying the knowledge base directly from the dashboard. Performs hybrid search for top 5 chunks, constructs context prompts, communicates with OpenAI-compatible inference servers, streams tokens over SSE, and renders clickable source references.
 * **FRs covered:** FR-12, FR-13, FR-14, FR-15, FR-16, UX-DR-4, UX-DR-5, UX-DR-6
 
 ---
 
 ## Epic 1: Autonomous Background Sync Engine
 
-Фоновый автономный движок синхронизации с базой данных SQLite. Обеспечивает прием и криптографическую валидацию вебхуков, работу планировщика Cron, обслуживание надежной БД-очереди задач по FIFO с бэк-оффом ошибок, безопасное клонирование и обновление приватных репозиториев (SSH/PAT в ОЗУ), а также идемпотентность выполнения на основе Git SHA.
+### Story 1.1: Package Reorganization, DB Initialization, and WAL Mode
 
-### Story 1.1: Реорганизация пакета, инициализация БД и WAL-режим
-
-As a разработчик,
-I want разделить исходный плоский код на подмодули core, db, mcp и настроить режим WAL для SQLite,
-So that проект был готов к добавлению веб-демона и отсутствовали конфликты параллельного чтения/записи.
+As a developer,
+I want to split the flat codebase into modular subpackages (core, db, mcp) and enforce SQLite WAL mode,
+So that the codebase is ready for the web daemon without concurrent read/write lock contention.
 
 **Acceptance Criteria:**
 
-**Given** существующий плоский репозиторий,
-**When** я переношу файлы в подкаталоги `core/`, `db/`, `mcp/` и запускаю тесты,
-**Then** все импорты успешно разрешаются и MCP-сервер работает штатно.
-**And** при каждом подключении к БД SQLite через `db.py` принудительно выполняются команды `PRAGMA journal_mode = WAL;` и `PRAGMA synchronous = NORMAL;`.
-**And** в БД создается пустая таблица `system_status` для хранения состояния воркера.
+**Given** the existing repository structure,
+**When** files are organized into `core/`, `db/`, `mcp/` and tests run,
+**Then** all imports resolve cleanly and the MCP server functions normally.
+**And** every SQLite connection executes `PRAGMA journal_mode = WAL;` and `PRAGMA synchronous = NORMAL;`.
+**And** the `system_status` table is initialized for tracking worker health.
 
-### Story 1.2: Реализация Git-менеджера с безопасными сессиями
+### Story 1.2: Git Manager Implementation with Secure Sessions
 
-As a администратор системы,
-I want безопасно клонировать и обновлять приватные репозитории, не сохраняя токены авторизации на диске,
-So that мои секреты (PAT) не утекли при компрометации файловой системы контейнера.
-
-**Acceptance Criteria:**
-
-**Given** приватный репозиторий с авторизацией по PAT (в переменной окружения),
-**When** вызывается метод клонирования/обновления,
-**Then** команда `git clone` / `git pull` выполняется успешно с подстановкой токена в ОЗУ через параметр `-c http.extraHeader="Authorization: Basic ..."`.
-**And** в файле `.git/config` на диске URL репозитория сохраняется в чистом виде (без токена).
-**And** при авторизации по SSH подставляется примонтированный SSH-ключ с отключением StrictHostKeyChecking.
-
-### Story 1.3: Фоновый воркер и FIFO-очередь в SQLite
-
-As a разработчик,
-I want чтобы задачи на синхронизацию хранились в надежной БД-очереди и выполнялись последовательно воркером,
-So that изменения в кодовой базе отражались в базе знаний без сбоев из-за перезагрузок.
+As a system administrator,
+I want to clone and update private repositories securely without storing credentials on disk,
+So that secrets (PATs) cannot leak if container volumes are inspected.
 
 **Acceptance Criteria:**
 
-**Given** базу данных SQLite с таблицей `sync_queue`,
-**When** в очередь добавляется несколько задач на синхронизацию,
-**Then** фоновый воркер выбирает старейшую задачу в статусе `pending` (по возрастанию `created_at`), переводит её в `processing` и запускает обновление кода.
-**And** перед запуском индексации воркер считывает текущий Git SHA коммита. Если он совпадает с ранее проиндексированным, задача помечается как `completed` за миллисекунды (идемпотентность).
+**Given** a private repository with PAT authentication (in environment variables),
+**When** the clone or fetch method executes,
+**Then** `git clone` / `git pull` succeeds using in-memory parameters `-c http.extraHeader="Authorization: Basic ..."`.
+**And** the `.git/config` file on disk contains only the clean repository URL without credentials.
+**And** SSH authentication utilizes mounted private keys with `StrictHostKeyChecking=no`.
 
-### Story 1.4: Бэк-офф ошибок и остановка воркера
+### Story 1.3: Background Worker and SQLite FIFO Queue
 
-As a администратор,
-I want чтобы воркер автоматически перезапускал упавшие задачи с задержкой и останавливал очередь при критических сбоях,
-So that система не перегружалась бесконечными попытками при падении сети, а я мог увидеть ошибку.
-
-**Acceptance Criteria:**
-
-**Given** задачу в очереди, упавшую с ошибкой (например, сбой сети при `git pull`),
-**When** воркер обрабатывает её повторно,
-**Then** он делает до 3 попыток перезапуска с экспоненциальной задержкой (1 минута, 5 минут, 15 минут).
-**And** при превышении 3 попыток задача переводится в статус `failed` с сохранением лога ошибки в `error_message`.
-**And** воркер записывает статус `worker_state = halted` и текст ошибки в таблицу `system_status` и полностью останавливает обработку последующих задач.
-
-### Story 1.5: HMAC-валидатор вебхуков и планировщик Cron
-
-As a разработчик,
-I want чтобы задачи в очередь добавлялись автоматически по вебхукам или расписанию Cron,
-So that мне не приходилось запускать синхронизацию вручную.
+As a developer,
+I want synchronization tasks stored in a durable database queue and processed sequentially,
+So that codebase modifications reflect reliably in the knowledge base across restarts.
 
 **Acceptance Criteria:**
 
-**Given** FastAPI-эндпоинт `/webhook/git`,
-**When** на него приходит POST запрос от GitHub, Gitea или GitLab с подписью,
-**Then** бэкенд валидирует HMAC-SHA256 подпись с секретом из переменных окружения. При совпадении подписи задача добавляется в `sync_queue`, при несовпадении возвращается 401 Unauthorized.
-**And** фоновый планировщик (Cron) считывает расписание из `config.yaml` для каждого репозитория и автоматически ставит новые задачи в `sync_queue` при наступлении триггера.
+**Given** an SQLite database with table `sync_queue`,
+**When** multiple sync tasks are queued,
+**Then** the background worker consumes the oldest `pending` task (`created_at` ASC), transitions it to `processing`, and initiates updates.
+**And** before indexing, the worker validates the current Git commit SHA; matching SHAs complete in milliseconds (idempotency).
 
-### Story 1.6: Адаптация MCP-сервера в Read-Only режим
+### Story 1.4: Error Backoff and Worker Halting
 
-As a ИИ-ассистент в IDE,
-I want осуществлять поиск по коду через MCP-инструменты в режиме Read-Only, а операции изменения делегировать демону,
-So that мои действия не вызывали конфликтов блокировки SQLite с фоновым воркером.
+As an administrator,
+I want the worker to retry failed tasks with exponential backoff and halt on persistent failures,
+So that the system avoids infinite retry loops during network outages and alerts me to errors.
 
 **Acceptance Criteria:**
 
-**Given** запущенный MCP-сервер,
-**When** я вызываю инструмент удаления репозитория `knowledge_delete_repo` или синхронизации `knowledge_sync_repo`,
-**Then** MCP-сервер отправляет HTTP-запрос к Daemon-процессу на удаление/синхронизацию, а не обращается напрямую к таблицам записи SQLite.
-**And** все поисковые инструменты (`knowledge_search`, `knowledge_get_symbols`) по-прежнему напрямую читают SQLite БД в режиме WAL.
+**Given** a task that failed with an error (e.g. transient network timeout during `git pull`),
+**When** the worker retries,
+**Then** it performs up to 3 retries with exponential backoff (1m, 5m, 15m).
+**And** upon exceeding 3 attempts, the task transitions to `failed` and logs the error in `error_message`.
+**And** the worker writes `worker_state = halted` into `system_status` and pauses subsequent task processing.
+
+### Story 1.5: HMAC Webhook Validator and Cron Scheduler
+
+As a developer,
+I want tasks enqueued automatically via webhooks or Cron schedules,
+So that I never have to run manual synchronization commands.
+
+**Acceptance Criteria:**
+
+**Given** the FastAPI endpoint `/webhook/git`,
+**When** an incoming POST request arrives with a signature from GitHub, Gitea, or GitLab,
+**Then** the backend validates the HMAC-SHA256 signature using the configured secret; matching signatures enqueue the job into `sync_queue`, while mismatches return 401 Unauthorized.
+**And** the background scheduler evaluates Cron expressions from `config.yaml` for each repository and enqueues jobs when triggered.
+
+### Story 1.6: MCP Server Read-Only Adaptation
+
+As an IDE AI assistant,
+I want to query code through MCP tools in Read-Only mode and delegate mutations to the daemon,
+So that my queries never trigger SQLite write locks against the background worker.
+
+**Acceptance Criteria:**
+
+**Given** a running MCP server,
+**When** mutation tools like `knowledge_delete_repo` or `knowledge_sync_repo` are invoked,
+**Then** the MCP server delegates the action via HTTP REST calls to the Daemon rather than writing to SQLite directly.
+**And** all search tools (`knowledge_search`, `knowledge_find_symbol`) continue reading directly from SQLite in WAL mode.
 
 ---
 
 ## Epic 2: Web Dashboard & Real-Time Monitoring
 
-Веб-панель управления на статических файлах (HTML/CSS/JS) с раздачей из FastAPI, защищенная авторизацией Basic Auth и сессионными временными токенами для соединений. Обеспечивает просмотр очереди задач в реальном времени и реактивный мониторинг статусов/прогресс-баров индексации по WebSockets.
+### Story 2.1: Basic Auth and Short-Lived Session Tokens
 
-### Story 2.1: Базовая аутентификация Basic Auth и выпуск временных токенов
-
-As a администратор,
-I want защитить доступ к панели паролем Basic Auth и генерировать безопасные временные токены для вебсокетов,
-So that посторонние лица не могли просматривать структуру моих репозиториев и логи.
+As an administrator,
+I want to protect dashboard access with Basic Auth and issue signed temporary tokens for WebSockets,
+So that unauthorized parties cannot inspect repository structures or sync logs.
 
 **Acceptance Criteria:**
 
-**Given** FastAPI-приложение,
-**When** я обращаюсь к REST-эндпоинтам (например, `/api/status`) без заголовка `Authorization` или с неверным паролем,
-**Then** бэкенд возвращает `401 Unauthorized`.
-**And** если переменная окружения `DASHBOARD_PASSWORD` не задана или пуста, бэкенд принудительно возвращает `403 Forbidden` для любого запроса к панели.
-**And** при успешном Basic Auth эндпоинт `/api/auth/token` возвращает короткоживущий (60 сек) криптографически подписанный токен для установки соединений WebSocket/SSE.
+**Given** the FastAPI application,
+**When** accessing REST endpoints without valid authorization headers,
+**Then** the backend returns `401 Unauthorized`.
+**And** if `DASHBOARD_PASSWORD` is unset or empty, the backend returns `403 Forbidden` for all dashboard requests.
+**And** upon successful Basic Auth, `/api/auth/token` returns a short-lived (60s) signed token for establishing WebSocket and SSE connections.
 
-### Story 2.2: Каркас статического SPA дашборда с темной темой
+### Story 2.2: Modern SPA Dashboard Shell
 
-As a разработчик,
-I want иметь красивый, современный веб-интерфейс в темных тонах,
-So that мне было приятно и удобно работать с системой в браузере.
-
-**Acceptance Criteria:**
-
-**Given** статический SPA фронтенд (чистый HTML5, Vanilla CSS, Vanilla JS) в папке `dashboard/static/`,
-**When** я открываю корень дашборда в браузере,
-**Then** отображается страница с премиум-дизайном (темная тема, curated HSL-палитра, микро-анимации переходов).
-**And** навигационное меню позволяет переключаться между вкладками "Repositories", "Sync Queue" и "RAG Chat" без перезагрузки страницы (SPA).
-
-### Story 2.3: REST API телеметрии и отображение очереди
-
-As a разработчик,
-I want видеть актуальный список репозиториев с их метриками и текущее состояние очереди в таблице,
-So that я мог быстро оценить объем проиндексированных данных.
+As a developer,
+I want an intuitive, responsive web interface with dark theme styling,
+So that monitoring repository statuses is clean and efficient.
 
 **Acceptance Criteria:**
 
-**Given** эндпоинт `GET /api/status`, возвращающий список репозиториев с их количеством файлов, чанков, векторов и статусом воркера,
-**When** я перехожу на вкладку "Repositories",
-**Then** фронтенд отображает красивую сетку карточек репозиториев с метриками.
-**And** при переходе на вкладку "Sync Queue" фронтенд запрашивает `GET /api/queue` и выводит Read-Only список задач (состояние, количество попыток, дата создания, ошибки для упавших задач).
+**Given** the static SPA frontend in `dashboard/static/`,
+**When** opening the dashboard in a browser,
+**Then** the page renders with a modern dark theme and responsive layout.
+**And** the navigation bar allows switching between "Repositories", "Sync Queue", and "RAG Chat" tabs without full-page reloads.
 
-### Story 2.4: Реактивное обновление по WebSockets
+### Story 2.3: REST Telemetry API & Queue View
 
-As a разработчик,
-I want видеть прогресс-бары синхронизации репозиториев и изменение статусов задач на дашборде в реальном времени,
-So that мне не приходилось постоянно вручную обновлять страницу браузера.
+As a developer,
+I want to see connected repositories with metrics and current queue tasks in a table,
+So that I can quickly verify the volume and health of indexed code.
 
 **Acceptance Criteria:**
 
-**Given** WebSocket-эндпоинт `/ws/status` на бэкенде,
-**When** фронтенд открывает соединение, передавая временный токен `/ws/status?token=<TOKEN>`,
-**Then** бэкенд успешно валидирует токен и устанавливает сессию (при неверном токене сокет закрывается с кодом `4001`).
-**And** при изменении состояния воркера или прогресса индексации бэкенд шлет JSON-события в сокет, а фронтенд реактивно перерисовывает статус карточки репозитория и показывает прогресс-бар (0-100%) без перезагрузки страницы.
+**Given** `GET /api/status` returning repository lists with counts of files, chunks, vectors, and worker states,
+**When** navigating to "Repositories",
+**Then** the UI renders a responsive card grid with repository statistics.
+**And** navigating to "Sync Queue" calls `GET /api/queue` and displays a read-only table of tasks (status, attempts, created date, error messages).
+
+### Story 2.4: Real-Time WebSocket Telemetry
+
+As a developer,
+I want to see live indexing progress bars and task status updates without manual page refreshes,
+So that I can monitor sync progress in real time.
+
+**Acceptance Criteria:**
+
+**Given** the WebSocket endpoint `/ws/status`,
+**When** the frontend connects with a valid temporary token (`?token=<TOKEN>`),
+**Then** the backend validates the token and establishes the session (invalid tokens close with code 4001).
+**And** whenever worker state or indexing progress updates, the backend pushes JSON events over the socket, dynamically updating repository cards and progress bars (0-100%).
 
 ---
 
 ## Epic 3: Interactive RAG Chat & LLM Integration
 
-Встроенный диалоговый чат-интерфейс в панели управления для прямого семантического поиска по базе знаний. Осуществляет гибридный поиск топ-5 чанков, формирование системного промпта, отправку OpenAI-совместимых запросов к локальному LLM-прокси OmniRoute, посимвольный SSE-стриминг и отображение кликабельных ссылок на файлы-источники.
+### Story 3.1: LLM Gateway Integration & Hybrid Retrieval
 
-### Story 3.1: Интеграция с локальным прокси OmniRoute и гибридный поиск
-
-As a разработчик,
-I want чтобы бэкенд умел искать релевантные куски кода и отправлять их в LLM-модель через OmniRoute,
-So that модель генерировала ответы на основе актуального контекста моей кодовой базы.
+As a developer,
+I want the backend to retrieve relevant code chunks and dispatch them to LLMs via standard inference gateways,
+So that the model generates answers grounded in the current codebase context.
 
 **Acceptance Criteria:**
 
-**Given** настроенное подключение к OmniRoute на `http://localhost:20128/v1` с API-ключом `LLM_API_KEY`,
-**When** на эндпоинт `POST /api/chat` приходит запрос пользователя, содержащий текущий вопрос и историю диалога (массив `messages`),
-**Then** бэкенд считывает фича-флаг `server.dashboard.chat.enabled` из `config.yaml`. Если он равен `false`, бэкенд возвращает `403 Forbidden`.
-**And** при включенном флаге бэкенд выполняет гибридный поиск `search_chunks_hybrid` по SQLite, отбирает топ-5 наиболее релевантных чанков кода и встраивает их в системный промпт (с указанием путей к файлам).
-**And** бэкенд отправляет промпт вместе с переданной историей диалога в OmniRoute для модели `kr/claude-sonnet-4.5` с провайдером `kiro` и возвращает ответ LLM.
+**Given** an inference endpoint configured via `LLM_BASE_URL` with key `LLM_API_KEY`,
+**When** `POST /api/chat` receives a query and message history array (`messages`),
+**Then** the backend checks `server.dashboard.chat.enabled`; if `false`, returns `403 Forbidden`.
+**And** if enabled, executes `search_chunks_hybrid`, extracts the top 5 chunks, and injects them into the system prompt with file paths.
+**And** dispatches the prompt and conversation history to the model, returning the assistant response.
 
-### Story 3.2: SSE-стриминг ответа на бэкенде
+### Story 3.2: SSE Streaming Backend
 
-As a разработчик,
-I want получать ответ от модели по мере генерации токенов (стриминг),
-So that мне не приходилось ждать 10–15 секунд для вывода всего текста целиком.
-
-**Acceptance Criteria:**
-
-**Given** эндпоинт `POST /api/chat/stream`, авторизованный по временному токену в query-параметрах,
-**When** бэкенд получает ответ от OmniRoute в потоковом режиме (`stream=true`),
-**Then** он ретранслирует этот поток клиенту в формате `text/event-stream` (Server-Sent Events) посимвольно/потокенно.
-**And** в конце потока отправляется специальный JSON-пакет, содержащий метаданные с перечнем файлов-источников (путь и номера строк), использованных в контексте.
-
-### Story 3.3: Диалоговый чат-интерфейс в Web UI
-
-As a разработчик,
-I want общаться с базой знаний в удобном чат-интерфейсе в браузере с отображением истории сообщений и автопрокруткой,
-So that процесс тестирования RAG-поиска был интерактивным.
+As a developer,
+I want to stream tokens as they are generated by the model,
+So that I do not experience 10-15 second delays waiting for complete responses.
 
 **Acceptance Criteria:**
 
-**Given** вкладку "RAG Chat" в панели управления,
-**When** загружается страница дашборда,
-**Then** фронтенд считывает состояние фича-флага чата. Если чат отключен (`enabled: false`), вкладка "RAG Chat" скрывается из меню навигации.
-**And** при включенном чате при вводе вопроса и нажатии "Send" сообщение добавляется в локальную историю в оперативной памяти браузера, а на бэкенд отправляется полный массив истории.
-**And** во время ожидания выводится анимированный индикатор загрузки ("model is thinking..."), а по мере прихода токенов по каналу SSE текст ответа плавно рендерится в окне чата с автопрокруткой вниз.
+**Given** `POST /api/chat/stream` authorized via temporary query token,
+**When** the backend receives streaming tokens from the inference endpoint (`stream=true`),
+**Then** it forwards them via Server-Sent Events (`text/event-stream`) in real time.
+**And** upon stream completion, emits a final payload containing source citation metadata (paths and line ranges).
 
-### Story 3.4: Рендеринг Markdown, подсветка синтаксиса и ссылки-источники
+### Story 3.3: Web UI Conversational Chat Interface
 
-As a разработчик,
-I want видеть ответы модели с красивой разметкой Markdown, подсветкой кода и кликабельными ссылками на файлы-источники,
-So that я мог легко читать код в ответах и переходить к файлам на диске.
+As a developer,
+I want to interact with the knowledge base via an in-browser chat interface with message history and auto-scrolling,
+So that testing RAG search is intuitive and fast.
 
 **Acceptance Criteria:**
 
-**Given** завершенный поток SSE ответа,
-**When** фронтенд отображает ответ,
-**Then** он парсит текст с помощью встроенной no-build Markdown библиотеки (например, `marked.js`) и подсвечивает синтаксис блоков кода (например, через `Prism.js`).
-**And** под блоком ответа выводится список кликабельных тегов с названиями файлов-источников (например, `db.py#L12-45`). При клике на тег открывается окно просмотра содержимого этого файла на указанных строках (или в VS Code по схеме `vscode://`).
+**Given** the "RAG Chat" tab in the dashboard,
+**When** the dashboard loads,
+**Then** the frontend evaluates the chat feature flag; if disabled, the tab is hidden from navigation.
+**And** when enabled, submitting a message appends it to client-persisted conversation history and sends the payload to the backend.
+**And** a thinking indicator renders during retrieval, and tokens stream smoothly with automatic downward scrolling.
+
+### Story 3.4: Markdown Rendering, Syntax Highlighting & Citations
+
+As a developer,
+I want assistant answers rendered with rich Markdown, code syntax highlighting, and clickable file citations,
+So that I can read formatted code and inspect referenced files directly.
+
+**Acceptance Criteria:**
+
+**Given** a completed SSE answer stream,
+**When** the frontend renders the response,
+**Then** it parses Markdown and highlights code blocks with language labels and copy buttons.
+**And** beneath each response, renders clickable source tags with file paths and line ranges (e.g. `db.py#L12-45`), opening the file inspector at those exact lines.

@@ -4,36 +4,36 @@ Status: done
 
 ## Story
 
-As a разработчик,
-I want видеть прогресс-бары синхронизации репозиториев и изменение статусов задач на дашборде в реальном времени,
-so that мне не приходилось постоянно вручную обновлять страницу браузера.
+As a developer,
+I want to observe repository synchronization progress bars and task status transitions on the dashboard in real time,
+so that I do not need to manually refresh the browser page.
 
 ## Acceptance Criteria
 
-1. **Given** WebSocket-эндпоинт `/ws/status` на бэкенде,
-   **When** фронтенд открывает соединение, передавая временный токен `/ws/status?token=<TOKEN>`,
-   **Then** бэкенд успешно валидирует токен и устанавливает сессию (при неверном токене сокет закрывается с кодом `4001`).
-2. **And** при изменении состояния воркера или прогресса индексации бэкенд шлет JSON-события в сокет, а фронтенд реактивно перерисовывает статус карточки репозитория и показывает прогресс-бар (0-100%) без перезагрузки страницы.
+1. **Given** WebSocket endpoint `/ws/status` on the backend,
+   **When** the frontend initiates a connection passing a temporary token `/ws/status?token=<TOKEN>`,
+   **Then** the backend validates the token and accepts the session (closing with code `4001` if invalid).
+2. **And** upon changes in worker state or indexing progress, the backend broadcasts JSON events to connected sockets, allowing the frontend to reactively update repository cards and animate progress bars (0–100%) without page reload.
 
 ## Tasks / Subtasks
 
-- [ ] Реализация WebSocket эндпоинта (AC: 1)
-  - [ ] Создать WebSocket маршрут `/ws/status` в `knowledge_mcp/daemon/routes/status.py`.
-  - [ ] Считать токен из параметров запроса: `token = websocket.query_params.get("token")`.
-  - [ ] Проверить подпись токена через `auth.py`. Если невалиден, закрыть сокет с кодом `4001` (Unauthorized WS).
-- [ ] Механизм рассылки событий (Broadcasting) (AC: 2)
-  - [ ] Создать менеджер подключений `ConnectionManager` для рассылки сообщений всем активным сокетам.
-  - [ ] Интегрировать отправку событий прогресса индексации из `indexer.py` / `queue_worker.py` в менеджер сокетов.
-- [ ] WebSocket-клиент на фронтенде (AC: 2)
-  - [ ] Реализовать в `dashboard/static/js/app.js` функцию `connectWebSocket()`.
-  - [ ] Перед подключением получить токен через `POST /api/auth/token`.
-  - [ ] Открыть соединение `new WebSocket("ws://" + location.host + "/ws/status?token=" + token)`.
-  - [ ] При получении сообщения обновлять DOM-элементы: переключать классы статусов карточек, анимировать ширину прогресс-баров (`transition: width 0.2s ease-in-out`).
+- [x] Implement WebSocket endpoint (AC: 1)
+  - [x] Create WebSocket route `/ws/status` in `knowledge_mcp/daemon/routes/status.py`.
+  - [x] Read token from query parameters: `token = websocket.query_params.get("token")`.
+  - [x] Verify token signature via `auth.py`. If invalid, close connection with code `4001` (Unauthorized WS).
+- [x] Implement event broadcasting (AC: 2)
+  - [x] Create `ConnectionManager` to broadcast events across active client connections.
+  - [x] Integrate indexing progress event emission from `indexer.py` / `queue_worker.py` into the socket manager.
+- [x] Client-side WebSocket integration (AC: 2)
+  - [x] Implement `connectWebSocket()` in `dashboard/static/js/app.js`.
+  - [x] Obtain token prior to handshake via `POST /api/auth/token`.
+  - [x] Open connection `new WebSocket("ws://" + location.host + "/ws/status?token=" + token)`.
+  - [x] Update DOM on inbound messages: toggle status badges, animate progress bar width (`transition: width 0.2s ease-in-out`).
 
 ## Dev Notes
 
-Воркер должен сообщать процент выполнения индексации. Для этого в `indexer.py` можно добавить callback-функцию прогресса (например, на основе соотношения `processed_files / total_files`), которая шлет сообщения в WebSocket менеджер.
-Сообщения в вебсокет должны иметь стандартизированную структуру:
+The worker reports indexing completion percentages. In `indexer.py`, a progress callback (calculated via `processed_files / total_files`) sends events to the WebSocket manager.
+Message schema:
 ```json
 {
   "type": "sync_progress",
@@ -47,8 +47,8 @@ so that мне не приходилось постоянно вручную о�
 
 ### References
 
-- [Архитектурный инвариант по WebSockets: ARCHITECTURE-SPINE.md#AD-3](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L44-L50)
-- [Дизайн-инвариант real-time: ADR-005-web-dashboard-architecture.md](file:///c:/Repos/knowledgebase-mcp/docs/adr-005-web-dashboard-architecture.md)
+- [WebSocket Architectural Invariant: ARCHITECTURE-SPINE.md#AD-3](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L44-L50)
+- [Real-time UI Invariant: ADR-005-web-dashboard-architecture.md](file:///c:/Repos/knowledgebase-mcp/docs/adr-005-web-dashboard-architecture.md)
 
 ## Dev Agent Record
 
@@ -59,12 +59,12 @@ Antigravity (Gemini 3.5 Flash)
 None
 
 ### Completion Notes List
-- **Knowledge MCP Research**: Исследованы лучшие практики интеграции WebSockets в FastAPI и uvicorn. Реализован ConnectionManager и thread-safe рассылка событий из фоновых потоков.
-- Создан модуль `daemon/status_ws.py` с менеджером подключений `ConnectionManager` и функцией `broadcast_sync` для безопасной отправки событий из синхронных фоновых потоков воркера.
-- Добавлен WebSocket маршрут `/ws/status` в `main.py` с валидацией одноразовых токенов (возврат кода `4001` при ошибке).
-- Внедрена рассылка прогресса в `Indexer.sync_repo()` (этапы сканирования, векторизации и финала).
-- Фронтенд `app.js` дополнен установлением WebSocket-сессии с получением токена по `POST /api/auth/token` и реактивной анимацией прогресс-бара по HSL-стилям в `styles.css`.
-- Написаны и запущены тесты подключения и широковещательной доставки в `tests/test_auth.py` (37/37 тестов успешно пройдено).
+- **Knowledge MCP Research**: Investigated WebSocket best practices in FastAPI/uvicorn; implemented thread-safe `ConnectionManager` for worker threads.
+- Created `daemon/status_ws.py` with `ConnectionManager` and helper `broadcast_sync` for safe event dispatch from synchronous worker threads.
+- Added `/ws/status` route in `main.py` with one-time token verification (code `4001` on rejection).
+- Integrated progress dispatch into `Indexer.sync_repo()` (scanning, vectorization, and completion stages).
+- Enhanced `app.js` with WebSocket session establishment via `POST /api/auth/token` and animated progress bars.
+- Verified test suite: 37/37 unit and WebSocket integration tests passing cleanly.
 
 ### File List
 - [NEW] [status_ws.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/daemon/status_ws.py)
@@ -89,8 +89,8 @@ None
 - [x] Unit tests pass successfully (37/37).
 
 ### Code Review Summary
-- **Thread-Safety:** `asyncio.run_coroutine_threadsafe` обеспечивает безопасное межпоточное взаимодействие между потоком выполнения воркера и event loop FastAPI.
-- **WebSocket Handshake:** Использование специального кода закрытия `4001` для неавторизованных клиентов соответствует RFC 6455.
+- **Thread-Safety:** `asyncio.run_coroutine_threadsafe` ensures reliable thread bridging between background workers and FastAPI's event loop.
+- **WebSocket Handshake:** Closure code `4001` for unauthorized handshakes follows RFC 6455 conventions.
 
 ---
 
@@ -102,8 +102,8 @@ None
 ### Acceptance Criteria Verification
 | AC | Description | Verification | Result |
 |----|-------------|--------------|--------|
-| AC 1 | Валидация токена WS | Тест `test_websocket_connection_unauthorized` проверяет закрытие соединения для невалидных токенов | ✅ PASS |
-| AC 2 | Интеграция событий прогресса | Тест `test_websocket_connection_success_and_broadcast` подтверждает корректную доставку события `sync_progress` | ✅ PASS |
+| AC 1 | WebSocket token verification | Test `test_websocket_connection_unauthorized` verifies close code 4001 on bad tokens | ✅ PASS |
+| AC 2 | Progress event delivery | Test `test_websocket_connection_success_and_broadcast` verifies `sync_progress` event receipt | ✅ PASS |
 
 ---
 

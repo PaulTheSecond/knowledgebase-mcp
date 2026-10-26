@@ -9,43 +9,33 @@ Current version: **v1.7.0 (v1.8 in progress)**
 ## Roadmap Visualization
 
 ```mermaid
-timeline
-    title Project Evolution
-    v0.9 : Early Versions
-         : Basic full-text search (FTS)
-         : No dependency graph
-    v1.2 : Stable Core
-         : Hybrid search & Graph indexing (Roslyn/Tree-sitter)
-    v1.3 - v1.4 : Triggers & Webhooks
-         : Config & env secret management (PAT/SSH)
-         : Cryptographic webhook validation (HMAC-SHA256)
-         : Cron scheduling
-    v1.5 - v1.6 : Autonomous Lifecycle & Web Dashboard
-         : SQLite FIFO queue & resilient worker with backoff
-         : No-Build SPA Dashboard (Basic Auth, WebSockets)
-         : Interactive RAG Chat with local LLMs (OmniRoute)
-    v1.6.1 : Maintenance & Fast Delta-Sync
-         : Payload commit file paths extraction
-         : Docker Compose hardening & relative volume paths
-         : Comprehensive documentation update
-    v1.6.2 : Interactive RAG Chat & IDE Doc Inspector
-         : Multi-tab doc viewer & citation line highlighting
-         : Resizable splitter (45% default) & LocalStorage memory
-         : Mermaid SVG rendering & Prism code headers
-    v1.7 : Hardening & Container Distribution
-         : Docker Hub automated CI/CD publication & RU mirrors
-         : Deployment & distribution guides
-    v1.8 : Multi-Worktree, CAS Deduplication & Hybrid Sync
-         : Multi-worktree workspaces (Orbita pattern) & 100% backward compat
-         : CAS-deduplication storage (~1.5 GB vs 7-10 GB)
-         : Hybrid sync (JIT git status 2-3 ms + Win32 watcher + Agent hooks)
-         : Code review graph (blast radius, risk scoring, TESTED_BY)
-         : Project rules hub (.kb/ & CLAUDE.md token savings)
-         : Web UI Dashboard (/dashboard telemetry, token & CAS widgets)
-         : Multi-agent zero-footprint presets (Claude, Antigravity, Cursor, Codex)
-    v2.0 (Horizon) : Visual Knowledge Graph Explorer
-         : In-browser interactive dependency & call graph (vis.js/Cytoscape)
-         : Blast-radius impact visualization in Web UI
+flowchart TD
+    subgraph S_PAST["Completed Releases"]
+        v1_7["v1.7: Hardening & Container Distribution\nDocker Hub CI/CD publication & registry mirrors"]
+    end
+
+    subgraph S_CURRENT["Current Work"]
+        v1_8["v1.8: Multi-Worktree, CAS & Hybrid Sync Engine\n• Multi-worktree workspaces & CAS deduplication (~1.5 GB)\n• JIT git status (2-3 ms) + Win32 watcher + Agent hooks\n• Code review graph & Rules hub (.kb/)"]
+    end
+
+    subgraph S_NEXT["Next Minor Releases"]
+        v1_9["v1.9: Multi-Provider LLM Profiles & Protocol Support\n• User-scoped and shared LLM provider profiles\n• OpenAI-compatible, Ollama, and local gateway protocols\n• Secure credential management in Dashboard Settings\n• Endpoint diagnostics and model auto-discovery"]
+        v1_10["v1.10: Multi-User Authentication, RBAC & Team Workspaces\n• User accounts and password management (Argon2)\n• Role-Based Access Control (Admin, Developer, Viewer)\n• Per-user private profiles, chat history, and audit logs\n• Team workspace permissions"]
+    end
+
+    subgraph S_FUTURE["Future Horizon"]
+        v2_0["v2.0: Visual Knowledge Graph Explorer\n• Interactive in-browser dependency & call graph\n• Blast-radius visualization"]
+    end
+
+    v1_7 --> v1_8
+    v1_8 --> v1_9
+    v1_9 --> v1_10
+    v1_10 --> v2_0
+
+    style v1_8 fill:#1f6feb,stroke:#58a6ff,stroke-width:2px,color:#ffffff
+    style v1_9 fill:#238636,stroke:#3fb950,stroke-width:2px,color:#ffffff
+    style v1_10 fill:#8957e5,stroke:#a371f7,stroke-width:2px,color:#ffffff
+    style v2_0 fill:#30363d,stroke:#8b949e,stroke-width:1px,color:#c9d1d9
 ```
 
 ---
@@ -133,6 +123,46 @@ timeline
 - **Zero-Footprint Multi-Agent Presets:**
   - Turnkey configuration presets and hook configurations for **Claude Code**, **Antigravity (AGY)**, **Cursor**, and **Codex/Copilot**.
   - Absolute zero-footprint guarantee: Zero temporary files, metadata, or databases written into client code repositories.
+
+---
+
+## v1.9: Multi-Provider LLM Profiles & Protocol Support — 📋 *Planned*
+*Target Release: v1.9.0 | Focus: Architecture, Configuration & Infrastructure Management*
+
+- **User-Scoped & Shared Provider Profiles:**
+  - Configurable LLM profile presets in database/config with ownership metadata (`owner`, `is_shared`).
+  - Support for shared organization profiles (managed by administrator) and personal user-defined profiles.
+  - Active profile selection persisted per authenticated user session.
+  - Universal protocol compatibility: OpenAI-compatible Chat Completions (`/v1/chat/completions`), Ollama API, and local inference gateways (vLLM, LM Studio, LocalAI, OmniRoute, LiteLLM).
+  - Broad provider support: commercial model APIs (Anthropic, OpenAI, Google, DeepSeek, Mistral) and open-source models via self-hosted backends (Llama, Qwen, DeepSeek).
+  - Passwordless operation for local inference servers (omitting mandatory API keys for local endpoints).
+
+- **Secure Credential & Endpoint Management in Settings:**
+  - Dedicated provider management interface within Dashboard Settings: create, edit, test, and save provider presets.
+  - API key and bearer token management with masked inputs (`••••••••`), validation, and persistent storage.
+  - Clear visual indicator for credential origin: environment variables (`ENV`) vs. stored configuration.
+
+- **Connection Diagnostics & Model Discovery:**
+  - Endpoint healthcheck with real-time latency and time-to-first-token (TTFT) benchmarking.
+  - Auto-discovery querying standard `/v1/models` endpoints to populate available model names directly in Settings.
+
+---
+
+## v1.10: Multi-User Authentication, RBAC & Team Workspaces — 📋 *Planned*
+*Target Release: v1.10.0 | Focus: Enterprise Readiness, Security & Team Collaboration*
+
+- **User Account Management & Modern Authentication:**
+  - Dedicated `users` database table with secure password hashing (Argon2 / bcrypt).
+  - Transition from single-password Basic Auth to session-based token authentication (JWT / secure HTTP-only cookies).
+  - User self-service profile management (change password, interface theme, personal language preferences).
+
+- **Role-Based Access Control (RBAC):**
+  - Granular role hierarchy: `Admin` (full system settings, repository connections, global triggers), `Developer` (querying, triggering sync, managing personal LLM profiles), `Viewer` (read-only search and documentation inspection).
+  - Repository-level access control: restrict visibility of sensitive codebases to designated teams or user groups.
+
+- **Isolated User State & Collaboration:**
+  - Per-user RAG chat sessions and history stored securely in SQLite with export capability.
+  - Audit log tracking user actions: manual sync triggers, configuration changes, and repository access.
 
 ---
 

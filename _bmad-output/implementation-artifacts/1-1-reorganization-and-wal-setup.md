@@ -4,50 +4,50 @@ Status: done
 
 ## Story
 
-As a разработчик,
-I want разделить исходный плоский код на подмодули core, db, mcp и настроить режим WAL для SQLite,
-so that проект был готов к добавлению веб-демона и отсутствовали конфликты параллельного чтения/записи.
+As a developer,
+I want to split the original flat codebase into `core`, `db`, and `mcp` submodules and configure WAL mode for SQLite,
+so that the project is prepared for adding a web daemon and free of concurrent read/write conflicts.
 
 ## Acceptance Criteria
 
-1. **Given** существующий плоский репозиторий,
-   **When** я переношу файлы в подкаталоги `core/`, `db/`, `mcp/` и запускаю тесты,
-   **Then** все импорты успешно разрешаются и MCP-сервер работает штатно.
-2. **And** при каждом подключении к БД SQLite через `db.py` принудительно выполняются команды `PRAGMA journal_mode = WAL;` и `PRAGMA synchronous = NORMAL;`.
-3. **And** в БД создается пустая таблица `system_status` для хранения состояния воркера.
+1. **Given** an existing flat repository,
+   **When** I move files into `core/`, `db/`, and `mcp/` subdirectories and run tests,
+   **Then** all imports resolve successfully and the MCP server functions normally.
+2. **And** upon every SQLite connection via `db.py`, `PRAGMA journal_mode = WAL;` and `PRAGMA synchronous = NORMAL;` are enforced.
+3. **And** an empty `system_status` table is created in the database to store worker runtime state.
 
 ## Tasks / Subtasks
 
-- [x] Реорганизация структуры каталогов (AC: 1)
-  - [x] Создать директории `core/`, `db/`, `mcp/` внутри `knowledge_mcp/`.
-  - [x] Перенести `code_parser.py`, `markdown_parser.py`, `embeddings.py`, `indexer.py` в `core/`.
-  - [x] Перенести `server.py` в `mcp/server.py`.
-  - [x] Обновить файлы `__init__.py` для всех пакетов.
-- [x] Настройка SQLite WAL-режима (AC: 2)
-  - [x] Перенести `db.py` в `db/models.py`.
-  - [x] Выделить инициализацию подключения в `db/connection.py`.
-  - [x] Добавить выполнение PRAGMA команд `journal_mode=WAL` и `synchronous=NORMAL` при создании каждого коннекта.
-- [x] Создание таблицы system_status (AC: 3)
-  - [x] Добавить в `db/models.py` SQL-запрос `CREATE TABLE IF NOT EXISTS system_status (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);`.
-  - [x] Реализовать метод автоматического прогона миграций при старте.
-- [x] Обновление импортов и main.py (AC: 1)
-  - [x] Обновить пути импортов во всех перенесенных Python файлах.
-  - [x] Обновить `knowledge_mcp/main.py`, адаптировав его под новые пути импорта.
-  - [x] Проверить работоспособность CLI командой запуска MCP-сервера.
+- [x] Directory structure reorganization (AC: 1)
+  - [x] Create `core/`, `db/`, `mcp/` directories inside `knowledge_mcp/`.
+  - [x] Move `code_parser.py`, `markdown_parser.py`, `embeddings.py`, `indexer.py` into `core/`.
+  - [x] Move `server.py` to `mcp/server.py`.
+  - [x] Update `__init__.py` files across all packages.
+- [x] SQLite WAL mode configuration (AC: 2)
+  - [x] Move `db.py` to `db/models.py`.
+  - [x] Extract connection initialization into `db/connection.py`.
+  - [x] Add execution of PRAGMA commands `journal_mode=WAL` and `synchronous=NORMAL` on connection creation.
+- [x] Create `system_status` table (AC: 3)
+  - [x] Add SQL query `CREATE TABLE IF NOT EXISTS system_status (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);` to `db/models.py`.
+  - [x] Implement automated migration run at startup.
+- [x] Update imports and main.py (AC: 1)
+  - [x] Update import paths in all relocated Python files.
+  - [x] Update `knowledge_mcp/main.py` to match new import paths.
+  - [x] Verify CLI functionality with the MCP server start command.
 
 ## Dev Notes
 
-### Реорганизация структуры
-Для корректной работы импортов все новые поддиректории должны содержать пустой файл `__init__.py`. В корневом `main.py` импорты изменятся с:
+### Structure Reorganization
+For imports to resolve cleanly, all new subdirectories must contain an `__init__.py` file. In the root `main.py`, imports change from:
 ```python
 from .db import Database
-# на:
+# to:
 from .db.models import Database
 ```
 
-### Настройка SQLite WAL
-WAL (Write-Ahead Logging) критически важен, так как процесс демона и процесс MCP-клиента будут работать с одним и тем же файлом БД. 
-Пример реализации `get_db_connection` in `db/connection.py`:
+### SQLite WAL Configuration
+WAL (Write-Ahead Logging) is critical because the daemon process and MCP client process will interact with the same database file concurrently.
+Example implementation of `get_db_connection` in `db/connection.py`:
 ```python
 import sqlite3
 import sqlite_vec
@@ -64,8 +64,8 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
 
 ### References
 
-- [Архитектурный инвариант по WAL и Read-Only: ARCHITECTURE-SPINE.md#AD-1](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L29-L37)
-- [Схема СУБД: solution_design.md#2.2.-Таблица-system_status](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/solution_design.md#L133-L145)
+- [Architectural Invariant on WAL and Read-Only: ARCHITECTURE-SPINE.md#AD-1](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L29-L37)
+- [Database Schema: solution_design.md#2.2.-Table-system_status](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/solution_design.md#L133-L145)
 
 ## Dev Agent Record
 
@@ -76,10 +76,10 @@ Antigravity (Google DeepMind)
 None
 
 ### Completion Notes List
-- Выполнена реорганизация структуры пакета: файлы перенесенны по подкаталогам core, db, mcp.
-- Реализован WAL-режим и Read-Only подключение в db/connection.py.
-- Добавлена таблица system_status и автоматический запуск миграций.
-- Все импорты в репозитории обновлены и протестированы.
+- Completed package structure reorganization: files moved into subdirectories `core`, `db`, and `mcp`.
+- Implemented WAL mode and read-only connection logic in `db/connection.py`.
+- Added `system_status` table and automatic migration runner.
+- All imports updated and verified across the test suite.
 
 ### File List
 - Created: `knowledge_mcp/core/__init__.py`
@@ -142,4 +142,3 @@ None
 | 2026-06-30 | 1.0.0 | Dev: Reorganized folders, setup WAL & system_status, fixed imports | James |
 | 2026-06-30 | 1.0.1 | CR: Verified imports, Python standards compliance, build/test PASS | CodeReview |
 | 2026-06-30 | 1.0.2 | QA: Verified AC 1, 2, 3 with client and cascade tests. Status -> Done | Quinn |
-

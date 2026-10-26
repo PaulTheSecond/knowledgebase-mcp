@@ -1,47 +1,48 @@
 # Python Coding Standards for knowledgebase-mcp
 
-Этот документ содержит обязательные стандарты кодирования и правила проектирования для языка Python в рамках данного проекта. Агенты разработки (James) и ревьюеры кода (CodeReview) должны строго соблюдать эти правила.
+This directory outlines mandatory Python coding standards and architectural principles for the `knowledgebase-mcp` project. Both development agents and code reviewers must strictly adhere to these guidelines.
 
 ---
 
-## 🗂️ Содержание стандартов
+## Standards Directory
 
-### [01. Общие принципы и PEP 8](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/01-pep8-and-naming.md)
-* Соблюдение PEP 8. Использование `ruff` / `black` для форматирования.
-* Правила именования:
-  * Классы: `PascalCase` (например, `DatabaseManager`).
-  * Функции, методы, переменные: `snake_case` (например, `get_db_connection`).
-  * Константы: `UPPER_CASE` (например, `DEFAULT_POLL_INTERVAL`).
+### [01. General Principles and PEP 8](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/01-pep8-and-naming.md)
+* Strict adherence to PEP 8 using `ruff` and `black`.
+* Naming conventions:
+  * Classes: `PascalCase` (e.g., `DatabaseManager`).
+  * Functions, methods, variables: `snake_case` (e.g., `get_db_connection`).
+  * Constants: `UPPER_CASE` (e.g., `DEFAULT_POLL_INTERVAL`).
 
-### [02. Строгая типизация (Type Hinting)](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/02-type-hinting.md)
-* Все сигнатуры функций и методов **обязаны** иметь аннотации типов параметров и возвращаемых значений.
-* Использование встроенных типов Python 3.10+ (например, `list[str]`, `dict[str, Any]`, `int | None` вместо `typing.List`, `typing.Dict`, `typing.Optional`).
-* Исключение использования `Any` без крайней необходимости. Применение `type: ignore` должно сопровождаться комментарием-пояснением.
+### [02. Strict Type Hinting](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/02-type-hinting.md)
+* All public function and method signatures **must** declare parameter and return type annotations.
+* Use Python 3.10+ native types (e.g., `list[str]`, `dict[str, Any]`, `int | None` instead of `typing.List`, `typing.Dict`, `typing.Optional`).
+* Avoid `Any` whenever possible. Any use of `# type: ignore` must be accompanied by an explanatory comment.
 
-### [03. Безопасность при работе с SQLite](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/03-sqlite-safety.md)
-* Все запросы записи должны выполняться в транзакциях с блокировкой `BEGIN IMMEDIATE TRANSACTION`.
-* Запрещено собирать SQL-запросы конкатенацией строк. Разрешена только биндинг-подстановка параметров (`?`).
-* Обязательное использование режима WAL (`journal_mode=WAL` и `synchronous=NORMAL`) для предотвращения блокировок между процессами MCP и Web Daemon.
-* Процесс MCP-сервера должен открывать соединение с базой данных в режиме Read-Only.
+### [03. SQLite Safety & Concurrency](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/03-sqlite-safety.md)
+* All mutating transactions must execute under `BEGIN IMMEDIATE TRANSACTION`.
+* String concatenation for SQL queries is strictly prohibited; parameter binding (`?`) is required.
+* Compulsory WAL mode (`journal_mode=WAL` and `synchronous=NORMAL`) to ensure non-blocking concurrent reads between MCP and Daemon processes.
+* The stdio MCP process must open database connections in Read-Only mode.
 
-### [04. Обработка ошибок и логирование](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/04-error-handling-and-logging.md)
-* Запрещено использовать пустой `except:`. Ловить только специфичные исключения (например, `except sqlite3.Error:` или `except ValueError:`).
-* При перевыбросе ошибок сохранять стек вызовов: `raise CustomException("error") from err`.
-* Все логи должны выводиться через стандартный модуль `logging` (в MCP-процессе все логи строго направляются в `sys.stderr`, так как `sys.stdout` зарезервирован под протокол MCP).
+### [04. Error Handling and Logging](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/04-error-handling-and-logging.md)
+* Bare `except:` statements are prohibited; catch explicit exceptions (e.g., `except sqlite3.Error:`).
+* Preserve exception tracebacks when re-raising: `raise CustomException("error") from err`.
+* All logging must route through standard `logging` modules (in the MCP process, logs write exclusively to `sys.stderr` since `sys.stdout` is reserved for MCP JSON-RPC).
 
-### [05. Документирование и Docstrings](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/05-docstrings.md)
-* Использование Google-style docstrings для всех публичных модулей, классов и функций.
-* Описание аргументов, типов, возвращаемых значений и выбрасываемых исключений.
+### [05. Documentation and Docstrings](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/05-docstrings.md)
+* Google-style docstrings for all public modules, classes, and methods.
+* Explicit descriptions of arguments, types, return values, and raised exceptions.
 
-### [06. Стандарты тестирования (pytest)](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/06-testing.md)
-* Использование `pytest` в качестве фреймворка тестирования.
-* Написание тестов по паттерну Arrange-Act-Assert (AAA).
-* Изоляция внешних вызовов (Git CLI, OmniRoute HTTP API) через mocks/fixtures.
+### [06. Testing Standards (pytest)](file:///c:/Repos/knowledgebase-mcp/docs/coding-standards/06-testing.md)
+* `pytest` as the canonical test framework.
+* Arrange-Act-Assert (AAA) pattern for unit and integration tests.
+* Isolate external network and system dependencies (Git CLI, OmniRoute HTTP API) using mocks and fixtures.
 
 ---
 
-## 🛠️ Запуск автоматических проверок (Linter & Formatter)
-Перед коммитом разработчик обязан запустить:
+## Automated Verification (Linter & Formatter)
+
+Before committing code, verify quality by running:
 ```bash
 ruff check .
 ruff format .

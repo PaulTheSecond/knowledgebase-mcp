@@ -4,64 +4,64 @@ Status: done
 
 ## Story
 
-As a разработчик,
-I want получать ответ от модели по мере генерации токенов (стриминг),
-so that мне не приходилось ждать 10–15 секунд для вывода всего текста целиком.
+As a developer,
+I want to receive model responses token-by-token as they are generated (streaming),
+so that I do not have to wait 10–15 seconds for the entire text block to complete.
 
 ## Acceptance Criteria
 
-1. **Given** эндпоинт `POST /api/chat/stream`, авторизованный по временному токену в query-параметрах,
-   **When** бэкенд получает ответ от OmniRoute в потоковом режиме (`stream=true`),
-   **Then** он ретранслирует этот поток клиенту в формате `text/event-stream` (Server-Sent Events) посимвольно/потокенно.
-2. **And** в конце потока отправляется специальный JSON-пакет, содержащий метаданные с перечнем файлов-источников (путь и номера строк), использованных в контексте.
+1. **Given** endpoint `POST /api/chat/stream`, authorized via a temporary token in query parameters,
+   **When** the backend receives a streaming completion from OmniRoute (`stream=true`),
+   **Then** it relays the stream to the client in `text/event-stream` (Server-Sent Events) format token by token.
+2. **And** upon completion, a final JSON event is dispatched containing metadata with the list of source files (paths and line ranges) referenced in the prompt context.
 
 ## Tasks / Subtasks
 
-- [ ] Реализация эндпоинта Server-Sent Events (AC: 1)
-  - [ ] Создать эндпоинт `POST /api/chat/stream` в `routes/chat.py`.
-  - [ ] Авторизовать запрос по токену в query string: `/api/chat/stream?token=<TOKEN>`.
-  - [ ] Использовать класс `EventSourceResponse` из библиотеки `sse_starlette` (или напрямую возвращать `StreamingResponse` из FastAPI).
-- [ ] Ретрансляция потока от OmniRoute (AC: 1)
-  - [ ] Вызвать OpenAI клиент с флагом `stream=True`.
-  - [ ] Написать асинхронный генератор `token_generator()`, который считывает куски (`chunks`) из OmniRoute и отдает их в формате:
+- [x] Implement Server-Sent Events endpoint (AC: 1)
+  - [x] Create endpoint `POST /api/chat/stream` in `routes/chat.py`.
+  - [x] Authorize request via query token: `/api/chat/stream?token=<TOKEN>`.
+  - [x] Return `StreamingResponse` from FastAPI with `media_type="text/event-stream"`.
+- [x] Relay stream from OmniRoute (AC: 1)
+  - [x] Issue completion request to OmniRoute with `stream=True`.
+  - [x] Implement async generator `token_generator()` yielding SSE events:
     `data: {"token": "..."}\n\n`
-- [ ] Передача метаданных источников в потоке (AC: 2)
-  - [ ] Перед закрытием потока сгенерировать финальное событие `sources`, содержащее сериализованный JSON-список файлов-источников:
+- [x] Transmit source metadata in stream (AC: 2)
+  - [x] Prior to stream termination, yield final `sources` event containing serialized JSON of source files:
     `data: {"sources": [{"filepath": "db.py", "lines": "10-20"}]}\n\n`
-  - [ ] Закрыть соединение.
+  - [x] Close connection cleanly.
 
 ## Dev Notes
 
-Пример асинхронного генератора для ретрансляции SSE в FastAPI:
+Example of async event generator for SSE streaming in FastAPI:
 ```python
 from fastapi.responses import StreamingResponse
 
 async def event_generator(question: str, messages: list):
-    # 1. Поиск контекста и сборка системного промпта
+    # 1. Retrieve context and build prompt
     context = search_chunks_hybrid(question)
     system_prompt = build_system_prompt(context)
     
-    # 2. Запрос в OmniRoute
+    # 2. Issue request to OmniRoute
     response = await client.chat.completions.create(
         model="kr/claude-sonnet-4.5",
         messages=[{"role": "system", "content": system_prompt}] + messages,
         stream=True
     )
     
-    # 3. Стриминг токенов
+    # 3. Stream tokens
     async for chunk in response:
         content = chunk.choices[0].delta.content
         if content:
             yield f"data: {json.dumps({'token': content})}\n\n"
             
-    # 4. Стриминг метаданных источников в конце
+    # 4. Stream sources at stream completion
     sources_data = [{"filepath": c.filepath, "lines": c.lines} for c in context]
     yield f"data: {json.dumps({'sources': sources_data})}\n\n"
 ```
 
 ### References
 
-- [Архитектурный инвариант по транспорту SSE: ARCHITECTURE-SPINE.md#AD-3](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L44-L50)
+- [SSE Transport Architectural Invariant: ARCHITECTURE-SPINE.md#AD-3](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L44-L50)
 
 ## Dev Agent Record
 
@@ -72,12 +72,12 @@ Antigravity (Gemini 3.5 Flash)
 None
 
 ### Completion Notes List
-- Реализован потоковый эндпоинт `POST /api/chat/stream`, отдающий данные в формате Server-Sent Events (SSE).
-- Настроена авторизация через query-параметр `?token=<TOKEN>` с валидацией временных токенов.
-- Написан асинхронный генератор `event_generator()` с использованием потокового клиента `httpx.AsyncClient().stream()`.
-- Реализована ретрансляция SSE-токенов от локального сервиса OmniRoute клиенту по мере их генерации.
-- Реализована отправка метаданных источников в формате JSON в самом конце генерации: `data: {"sources": [{"filepath": "...", "lines": "..."}]}`.
-- Добавлены тесты авторизации и успешного стриминга в `tests/test_chat.py` (5/5 тестов успешно проходят).
+- Implemented streaming endpoint `POST /api/chat/stream` serving Server-Sent Events (SSE).
+- Configured authorization via query parameter `?token=<TOKEN>` with temporary token validation.
+- Created async generator `event_generator()` using `httpx.AsyncClient().stream()`.
+- Implemented live SSE token forwarding from OmniRoute to the connected client.
+- Appended source file metadata in JSON format at the conclusion of the stream: `data: {"sources": [{"filepath": "...", "lines": "..."}]}`.
+- Added tests in `tests/test_chat.py` covering token auth and streaming (5/5 tests passing).
 
 ### File List
 - [MODIFY] [chat.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/daemon/routes/chat.py)
@@ -98,8 +98,8 @@ None
 - [x] Unit tests pass successfully (42/42 tests pass).
 
 ### Code Review Summary
-- **Resource Management:** Использование асинхронного контекстного менеджера `async with client.stream(...)` гарантирует своевременное закрытие соединений и предотвращает утечки сокетов.
-- **Error Handling inside Stream:** Исключения внутри генератора перехватываются и транслируются клиенту в виде структурированной JSON ошибки, не обрывая соединение некорректным образом.
+- **Resource Management:** Using async context manager `async with client.stream(...)` guarantees prompt connection cleanup without dangling socket handles.
+- **Error Handling inside Stream:** Generator exceptions are caught and formatted into structured JSON error payloads, preventing abrupt client drops.
 
 ---
 
@@ -111,8 +111,8 @@ None
 ### Acceptance Criteria Verification
 | AC | Description | Verification | Result |
 |----|-------------|--------------|--------|
-| AC 1 | SSE Стриминг API | Тест `test_stream_success` проверяет успешную установку SSE `text/event-stream` и передачу токенов | ✅ PASS |
-| AC 2 | Передача источников | Тест `test_stream_success` подтверждает отдачу блока `sources` с файлами и строками в конце стрима | ✅ PASS |
+| AC 1 | SSE Streaming API | Test `test_stream_success` verifies `text/event-stream` handshake and token delivery | ✅ PASS |
+| AC 2 | Source metadata transfer | Test `test_stream_success` verifies trailing `sources` payload with file paths and line ranges | ✅ PASS |
 
 ---
 

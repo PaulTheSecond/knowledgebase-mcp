@@ -4,47 +4,45 @@ Status: done
 
 ## Story
 
-As a разработчик,
-I want видеть ответы модели с красивой разметкой Markdown, подсветкой кода и кликабельными ссылками на файлы-источники,
-so that я мог легко читать код в ответах и переходить к файлам на диске.
+As a developer,
+I want to read model responses formatted in rich Markdown with code syntax highlighting and clickable source references,
+so that I can easily understand code snippets and inspect relevant files on disk.
 
 ## Acceptance Criteria
 
-1. **Given** завершенный поток SSE ответа,
-   **When** фронтенд отображает ответ,
-   **Then** он парсит текст с помощью встроенной no-build Markdown библиотеки (например, `marked.js`) и подсвечивает синтаксис блоков кода (например, через `Prism.js`).
-2. **And** под блоком ответа выводится список кликабельных тегов с названиями файлов-источников (например, `db.py#L12-45`). При клике на тег открывается окно просмотра содержимого этого файла на указанных строках (или в VS Code по схеме `vscode://`).
+1. **Given** a finished SSE response stream,
+   **When** the frontend displays the completion,
+   **Then** it parses Markdown via an embedded no-build library (such as `marked.js`) and highlights syntax in code blocks (e.g., via `Prism.js`).
+2. **And** beneath the completion block, clickable badges reference source files (e.g., `db.py#L12-45`). Clicking a badge opens an in-browser code viewer showing the referenced lines (or triggers `vscode://` scheme navigation).
 
 ## Tasks / Subtasks
 
-- [ ] Подключение No-Build библиотек на клиенте (AC: 1)
-  - [ ] Добавить в `index.html` загрузку `marked.min.js` и `prism.js`/`prism.css` через локальные статические копии (сохранить их в `dashboard/static/vendor/`) или через доверенный CDN.
-- [ ] Парсинг Markdown и подсветка кода (AC: 1)
-  - [ ] В `dashboard/static/js/chat.js` после завершения чтения потока SSE вызвать `marked.parse(rawText)` для преобразования Markdown в HTML.
-  - [ ] Вызвать `Prism.highlightAllUnder(messageContainer)` для автоматической подсветки синтаксиса блоков `<pre><code>`.
-- [ ] Вывод ссылок на файлы-источники (AC: 2)
-  - [ ] При разборе финального пакета SSE `sources` извлечь перечень файлов и диапазонов строк.
-  - [ ] Отрендерить список тегов-ссылок под текстом ответа.
-- [ ] Логика перехода по ссылкам-источникам (AC: 2)
-  - [ ] Написать обработчик клика на тег-источник.
-  - [ ] Сделать GET запрос на получение содержимого файла (REST эндпоинт `/api/file/read?path=...&start=...&end=...`) и вывести его в модальном окне дашборда с подсветкой кода.
-  - [ ] Или генерировать URI схемы для IDE: `vscode://file/<absolute_path>:<line>`.
+- [x] Connect client-side No-Build libraries (AC: 1)
+  - [x] Include `marked.min.js` and `prism.js`/`prism.css` in `index.html` via CDN.
+- [x] Markdown parsing and code syntax highlighting (AC: 1)
+  - [x] In `dashboard/static/js/chat.js`, parse Markdown to HTML using `marked.parse(rawText)` upon stream completion.
+  - [x] Invoke `Prism.highlightAllUnder(messageContainer)` to style `<pre><code>` blocks.
+- [x] Render source references (AC: 2)
+  - [x] Extract file paths and line ranges upon receiving the final SSE `sources` event.
+  - [x] Render interactive source badge links beneath the assistant response.
+- [x] File inspection navigation logic (AC: 2)
+  - [x] Implement click event handler on source badges.
+  - [x] Execute GET request to retrieve file slice (`/api/chat/file?path=...&start=...&end=...`) and display inside an interactive modal with syntax highlighting.
 
 ## Dev Notes
 
-Пример разметки источников под сообщением:
+Example of source badge markup:
 ```html
 <div class="sources-container">
-  <span class="source-title">Использованные источники:</span>
-  <a href="#" class="source-tag" onclick="openFileSource('knowledge_mcp/db.py', 10, 30)">db.py (строки 10-30)</a>
+  <span class="source-title">Referenced Sources:</span>
+  <a href="#" class="source-tag" onclick="openFileSource('knowledge_mcp/db.py', 10, 30)">db.py (lines 10-30)</a>
 </div>
 ```
-Для реализации просмотра файлов на бэкенде в `routes/status.py` можно добавить эндпоинт:
-`GET /api/file/read?filepath=...&start_line=...&end_line=...`, который проверяет права доступа (только файлы внутри локального кэша `/data/clones` или папки проекта, во избежание path traversal уязвимости!) и возвращает фрагмент кода.
+The file slice endpoint (`GET /api/chat/file`) strictly validates paths against allowed directory roots (`/data/clones` and workspace root) to prevent path traversal attacks.
 
 ### References
 
-- [Требования RAG чата: prd.md#4.4.-Интегрированный-RAG-чат](file:///_bmad-output/planning-artifacts/prds/prd-knowledgebase-mcp-2026-06-30/prd.md#L118-L131)
+- [RAG Chat Requirements: prd.md#4.4.-Integrated-RAG-Chat](file:///_bmad-output/planning-artifacts/prds/prd-knowledgebase-mcp-2026-06-30/prd.md#L118-L131)
 
 ## Dev Agent Record
 
@@ -55,12 +53,12 @@ Antigravity (Gemini 3.5 Flash)
 None
 
 ### Completion Notes List
-- Внедрены CDN-библиотеки `marked.js` и `prism.js` (с темой `prism-tomorrow`) для парсинга разметки Markdown и подсветки синтаксиса кода.
-- После завершения стриминга ответа весь текст преобразуется в HTML с помощью `marked.parse(fullResponseText)` и подсвечивается через `Prism.highlightAllUnder()`.
-- Реализован безопасный REST эндпоинт `GET /api/chat/file` на бэкенде в `routes/chat.py` для чтения фрагментов файлов проекта и клонов репозиториев с жесткой валидацией путей против Path Traversal.
-- Создано премиальное модальное окно просмотра кода источников `#source-modal` во фронтенде (со стильной плавной анимацией появления, автоскроллом и подсветкой Prism.js).
-- Связаны клики по тегам источников с запросом к `/api/chat/file` и отображением кода в модальном окне с автоопределением языка подсветки.
-- Написаны тесты безопасности и корректности чтения файлов в `tests/test_chat.py`.
+- Integrated `marked.js` and `prism.js` (with `prism-tomorrow` theme) for Markdown parsing and syntax highlighting.
+- Following stream completion, response text converts to HTML via `marked.parse(fullResponseText)` and highlights via `Prism.highlightAllUnder()`.
+- Implemented secure REST endpoint `GET /api/chat/file` in `routes/chat.py` with path traversal protections.
+- Created `#source-modal` modal dialog in the frontend with smooth fade-in animations and syntax highlighting.
+- Connected badge clicks to file snippet queries and modal rendering.
+- Added path security and snippet tests in `tests/test_chat.py`.
 
 ### File List
 - [MODIFY] [chat.py](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/daemon/routes/chat.py)
@@ -84,8 +82,8 @@ None
 - [x] Unit tests pass successfully (9/9).
 
 ### Code Review Summary
-- **Security Check:** Механизм сравнения кортежей `.parts` из `pathlib.Path` полностью исключает обход директорий (Path Traversal) через символические ссылки или относительные пути типа `../../`.
-- **Text Safety:** Запись контента файла в модалку происходит через `.textContent`, что полностью блокирует XSS при просмотре HTML/JS исходных кодов.
+- **Security Check:** `pathlib.Path` resolution logic completely mitigates path traversal vulnerabilities via symlinks or `../` sequences.
+- **Text Safety:** Modal file content injection utilizes `.textContent`, preventing script execution from parsed file contents.
 
 ---
 
@@ -97,8 +95,8 @@ None
 ### Acceptance Criteria Verification
 | AC | Description | Verification | Result |
 |----|-------------|--------------|--------|
-| AC 1 | Markdown и Prism подсветка | Тесты рендеринга marked и Prism подтверждают корректное форматирование блоков кода | ✅ PASS |
-| AC 2 | Интерактивные источники | При клике по источнику открывается модальное окно, загружающее фрагмент кода с подсветкой Prism | ✅ PASS |
+| AC 1 | Markdown and Prism highlighting | Marked parsing and Prism formatting tests confirm valid DOM transformation | ✅ PASS |
+| AC 2 | Interactive source links | Badge click activates modal loader and Prism renders extracted file lines | ✅ PASS |
 
 ---
 

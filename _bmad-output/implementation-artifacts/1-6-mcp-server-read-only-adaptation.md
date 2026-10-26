@@ -4,44 +4,44 @@ Status: done
 
 ## Story
 
-As a ИИ-ассистент в IDE,
-I want осуществлять поиск по коду через MCP-инструменты в режиме Read-Only, а операции изменения делегировать демону,
-so that мои действия не вызывали конфликтов блокировки SQLite с фоновым воркером.
+As an IDE AI assistant,
+I want to execute code searches through MCP tools in Read-Only mode and delegate mutating operations to the daemon,
+so that my actions never trigger SQLite locking conflicts with the background worker.
 
 ## Acceptance Criteria
 
-1. **Given** запущенный MCP-сервер,
-   **When** я вызываю инструмент удаления репозитория `knowledge_delete_repo` или синхронизации `knowledge_sync_repo`,
-   **Then** MCP-сервер отправляет HTTP-запрос к Daemon-процессу на удаление/синхронизацию, а не обращается напрямую к таблицам записи SQLite.
-2. **And** все поисковые инструменты (`knowledge_search`, `knowledge_get_symbols`) по-прежнему напрямую читают SQLite БД в режиме WAL.
+1. **Given** a running MCP server,
+   **When** I invoke repository deletion (`knowledge_delete_repo`) or synchronization (`knowledge_sync_repo`),
+   **Then** the MCP server delegates via an HTTP request to the Daemon process rather than mutating SQLite tables directly.
+2. **And** all search tools (`knowledge_search`, `knowledge_find_symbol`) continue to query SQLite directly in WAL mode.
 
 ## Tasks / Subtasks
 
-- [x] Модификация инструмента удаления репозитория (AC: 1)
-  - [x] Обновить обработчик `knowledge_delete_repo` в `mcp/server.py`.
-  - [x] Вместо вызова `db.delete_repo` совершать HTTP-запрос `DELETE /api/repo/{repo_id}` к Daemon-процессу.
-- [x] Модификация инструмента синхронизации (AC: 1)
-  - [x] Обновить обработчик `knowledge_sync_repo` в `mcp/server.py`.
-  - [x] Отправлять запрос `POST /api/sync/{repo_id}` к Daemon-процессу (чтобы задача встала в БД-очередь).
-- [x] Валидация Read-Only статуса соединения (AC: 2)
-  - [x] MCP-процесс уже инициализирует соединение с SQLite как Read-Only (`KnowledgeDB(db_path, read_only=True)`).
+- [x] Modify repository deletion tool (AC: 1)
+  - [x] Update `knowledge_delete_repo` handler in `mcp/server.py`.
+  - [x] Delegate via HTTP request `DELETE /api/repo/{repo_id}` to the Daemon process instead of calling `db.delete_repo`.
+- [x] Modify synchronization tool (AC: 1)
+  - [x] Update `knowledge_sync_repo` handler in `mcp/server.py`.
+  - [x] Send request `POST /api/sync/{repo_id}` to the Daemon process (enqueuing the task in the DB queue).
+- [x] Validate Read-Only connection status (AC: 2)
+  - [x] Ensure the MCP process initializes SQLite in Read-Only mode (`KnowledgeDB(db_path, read_only=True)`).
 
 ## Dev Notes
 
-В `sqlite3` режим Read-Only открывается через URI-подключение:
+In `sqlite3`, Read-Only mode is enforced via URI connections:
 ```python
 import sqlite3
 conn = sqlite3.connect("file:/data/knowledge.db?mode=ro", uri=True)
 ```
-Это гарантирует, что MCP-процесс физически не сможет выполнить команду записи, предотвращая любые риски повреждения БД.
-Эндпоинты Daemon-процесса для вызова мутаций:
+This guarantees the MCP process physically cannot issue write commands, eliminating database corruption and concurrency lock risks.
+Daemon mutation endpoints:
 - `POST http://127.0.0.1:8000/api/sync/{repo_id}`
 - `DELETE http://127.0.0.1:8000/api/repo/{repo_id}`
 
 ### References
 
-- [Архитектурный инвариант Read-Only MCP: ARCHITECTURE-SPINE.md#AD-1](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L29-L37)
-- [Ревью безопасности: review-spine.md](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/review-spine.md)
+- [Read-Only MCP Architectural Invariant: ARCHITECTURE-SPINE.md#AD-1](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/ARCHITECTURE-SPINE.md#L29-L37)
+- [Security Review: review-spine.md](file:///_bmad-output/planning-artifacts/architecture/architecture-knowledgebase-mcp-2026-06-30/review-spine.md)
 
 ## Dev Agent Record
 
@@ -52,11 +52,11 @@ Antigravity (Claude Opus 4.6)
 None
 
 ### Completion Notes List
-- Обновлён `_handle_delete_repo` — теперь делегирует `DELETE /api/repo/{repo_id}` через HTTP.
-- Обновлён `_handle_sync_repo` — делегирует `POST /api/sync/{repo_id}` через HTTP.
-- Убран `repo_path` из схемы `knowledge_sync_repo` (путь берётся из config.yaml в демоне).
-- Подтверждено: `start_mcp_server` уже открывает БД через `KnowledgeDB(db_path, read_only=True)`.
-- Все 19 тестов проекта пройдены.
+- Updated `_handle_delete_repo` to delegate via `DELETE /api/repo/{repo_id}` over HTTP.
+- Updated `_handle_sync_repo` to delegate via `POST /api/sync/{repo_id}` over HTTP.
+- Removed `repo_path` from `knowledge_sync_repo` schema (path is resolved by the daemon via `config.yaml`).
+- Confirmed: `start_mcp_server` connects to SQLite with `KnowledgeDB(db_path, read_only=True)`.
+- All 19 project tests passing cleanly.
 
 ### File List
 - Modified: `knowledge_mcp/mcp/server.py`
@@ -76,9 +76,9 @@ None
 - [x] Full test suite passes (19/19).
 
 ### Code Review Summary
-- **Read-Only Enforcement:** MCP-сервер больше не выполняет никаких мутаций SQLite.
-- **HTTP Delegation:** Все операции записи (delete, sync) делегируются Daemon API.
-- **Schema Update:** `repo_path` убран из схемы sync — корректно, т.к. демон берёт путь из config.yaml.
+- **Read-Only Enforcement:** MCP server no longer performs direct SQLite mutations.
+- **HTTP Delegation:** All write operations (delete, sync) are safely routed through Daemon APIs.
+- **Schema Update:** `repo_path` removed from sync schema appropriately as the daemon resolves paths from configuration.
 
 ---
 
@@ -90,8 +90,8 @@ None
 ### Acceptance Criteria Verification
 | AC | Description | Verification | Result |
 |----|-------------|--------------|--------|
-| AC 1 | Мутации делегируются Daemon API | delete_repo → DELETE /api/repo/{id}, sync_repo → POST /api/sync/{id} | ✅ PASS |
-| AC 2 | Поисковые инструменты Read-Only | `KnowledgeDB(db_path, read_only=True)` уже используется | ✅ PASS |
+| AC 1 | Mutations delegated to Daemon API | delete_repo → DELETE /api/repo/{id}, sync_repo → POST /api/sync/{id} | ✅ PASS |
+| AC 2 | Search tools remain Read-Only | `KnowledgeDB(db_path, read_only=True)` confirmed active | ✅ PASS |
 
 ---
 

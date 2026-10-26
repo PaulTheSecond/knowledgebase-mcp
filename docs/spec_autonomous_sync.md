@@ -1,64 +1,64 @@
-# Спецификация: Автономная синхронизация, панель управления и RAG-чат (v1.3 - v1.6.2)
+# Specification: Autonomous Sync, Dashboard, and RAG Chat (v1.3 - v1.6.2)
 
-Данная спецификация описывает функциональные и технические требования к переходу `knowledge-mcp` на автономный режим работы, включая механизмы автоматической синхронизации репозиториев, управление доступами к приватным репозиториям и веб-интерфейс мониторинга.
-
----
-
-## 1. Сценарии использования (Use Cases)
-
-### UC-1: Автоматическое обновление по триггеру (Webhooks)
-* **Актер:** Внешний Git-сервер (GitHub, GitLab, Gitea).
-* **Предусловие:** Сервер `knowledge-mcp` запущен, порт для входящих вебхуков открыт наружу (или проброшен через туннель), секретный токен HMAC настроен.
-* **Сценарий:**
-  1. Разработчик пушит коммит в целевую ветку репозитория.
-  2. Git-сервер отправляет HTTP POST запрос (Webhook) на эндпоинт `/webhook/git`.
-  3. `knowledge-mcp` валидирует цифровую подпись запроса (HMAC-SHA256) с использованием настроенного секрета.
-  4. Сервер парсит тело запроса, извлекает список изменившихся файлов (`added`, `modified`, `removed`).
-  5. Запускается фоновая задача для точечного обновления (delta-sync) базы знаний только по измененным путям.
-
-### UC-2: Синхронизация по расписанию (Cron)
-* **Актер:** Фоновый планировщик задач.
-* **Предусловие:** В конфигурационном файле задано расписание в формате Cron для конкретного репозитория.
-* **Сценарий:**
-  1. Наступает время срабатывания триггера.
-  2. Фоновый планировщик ставит задачу синхронизации репозитория в очередь.
-  3. Происходит выполнение `git fetch` / `git pull`.
-  4. База знаний обновляется в инкрементальном режиме.
-
-### UC-3: Безопасное подключение к приватным репозиториям
-* **Актер:** Разработчик / Администратор системы.
-* **Предусловие:** В системе настроен доступ к приватному репозиторию через SSH-ключ или Personal Access Token (PAT).
-* **Сценарий:**
-  1. При старте контейнера или добавлении репозитория система проверяет тип авторизации.
-  2. Для SSH: используется примонтированный SSH-ключ, проверяются права доступа.
-  3. Для PAT: токен передается в качестве заголовка авторизации или подставляется в HTTPS URL клонирования.
-  4. Успешно выполняется операция клонирования/обновления локального кэша исходников.
-
-### UC-4: Визуальный мониторинг через Web UI
-* **Актер:** Пользователь / Разработчик в AI-ассистенте.
-* **Предусловие:** Включена опция веб-интерфейса в конфигурации.
-* **Сценарий:**
-  1. Пользователь открывает в браузере `http://localhost:8000` (или другой настроенный порт).
-  2. Проходит простую авторизацию (если включена).
-  3. Видит дашборд со списком всех подключенных репозиториев, их статусом (Активен, Ошибка, Синхронизация), датой последнего обновления и метриками (количество файлов, чанков, символов, векторов).
-  4. Имеет возможность вручную запустить полную переиндексацию или просмотреть логи последних синхронизаций.
-
-### UC-5: Интерактивный диалог (RAG-чат) и инспектор документов
-* **Актер:** Пользователь / Разработчик.
-* **Предусловие:** Включена опция чата `server.dashboard.chat.enabled = true`, настроено подключение к LLM (например, OmniRoute/vLLM/Ollama).
-* **Сценарий:**
-  1. Пользователь задает вопрос по кодовой базе в интерфейсе чата.
-  2. Сервер выполняет гибридный поиск по базе знаний, формирует расширенный контекст и стримит ответ через Server-Sent Events (SSE).
-  3. Код в ответе подсвечивается с заголовками языка и кнопками копирования, схемы Mermaid рендерятся в векторный SVG.
-  4. Пользователь кликает на бейдж процитированного источника (например, `story-1.8.md (6-9)`).
-  5. Справа от чата открывается инспектор документов с вкладками (IDE-style), подсвечивая строки 6–9 и автоматически центрируя скролл на них.
-  6. Пользователь может переключаться между вкладками, менять ширину сплиттера (по умолчанию 45%) и переключать вид «Превью / Исходник» и «Весь файл / Фрагмент».
+This specification defines the functional and technical requirements for transitioning `knowledge-mcp` to autonomous operation, including automatic repository synchronization mechanisms, private repository credential management, and the web monitoring dashboard.
 
 ---
 
-## 2. Формат конфигурации (`config.yaml`)
+## 1. Use Cases
 
-Файл конфигурации должен располагаться по умолчанию по пути `/data/config.yaml` (или задаваться через переменную окружения `CONFIG_PATH`).
+### UC-1: Trigger-Based Automated Updates (Webhooks)
+* **Actor:** Remote Git Server (GitHub, GitLab, Gitea).
+* **Precondition:** The `knowledge-mcp` daemon is running, the webhook ingress port is reachable, and the HMAC secret token is configured.
+* **Flow:**
+  1. A developer pushes commits to the target repository branch.
+  2. The Git server dispatches an HTTP POST request (Webhook) to `/webhook/git`.
+  3. `knowledge-mcp` validates the cryptographic HMAC-SHA256 signature against the configured secret.
+  4. The server parses the payload and extracts modified file paths (`added`, `modified`, `removed`).
+  5. A background worker triggers an incremental delta-sync on the modified files only.
+
+### UC-2: Scheduled Synchronization (Cron)
+* **Actor:** Background Task Scheduler.
+* **Precondition:** A Cron schedule expression is configured for the target repository in `config.yaml`.
+* **Flow:**
+  1. The Cron trigger fires.
+  2. The scheduler enqueues a sync job into the FIFO SQLite queue.
+  3. The worker executes `git fetch` / `git pull`.
+  4. The knowledge base incrementally updates altered AST symbols and chunks.
+
+### UC-3: Secure Private Repository Access
+* **Actor:** Developer / System Administrator.
+* **Precondition:** Access to the private repository is configured via an SSH private key or Personal Access Token (PAT).
+* **Flow:**
+  1. At container startup or when adding a repository, the system validates the authentication scheme.
+  2. For SSH: the mounted private key is utilized with verified permissions.
+  3. For PAT: the token is injected into memory as an authorization header or HTTPS clone URL.
+  4. The local clone cache (`/data/clones/{repo_id}`) clones or pulls updates cleanly.
+
+### UC-4: Visual Monitoring via Web UI
+* **Actor:** Developer / DevOps Engineer.
+* **Precondition:** Dashboard option is enabled in configuration (`server.dashboard.enabled = true`).
+* **Flow:**
+  1. User navigates to `http://localhost:8000` (or configured host:port).
+  2. Authenticates via HTTP Basic Auth.
+  3. Views the dashboard displaying connected repositories, operational statuses (`Active`, `Error`, `Syncing`), last update timestamps, and metrics (file count, chunk count, symbol count, vectors).
+  4. Can trigger manual re-indexing or inspect sync queue logs.
+
+### UC-5: Interactive Dialogue (RAG Chat) & Document Inspector
+* **Actor:** Developer.
+* **Precondition:** Chat option is enabled (`server.dashboard.chat.enabled = true`) and LLM inference endpoint is reachable.
+* **Flow:**
+  1. User enters a query regarding the codebase in the chat window.
+  2. The backend performs hybrid retrieval across the knowledge base, constructs prompt context, and streams the response via Server-Sent Events (SSE).
+  3. Code in the response renders with syntax highlighting, language headers, and copy buttons; Mermaid blocks render as vector SVG diagrams.
+  4. User clicks a cited source tag (e.g., `story-1.8.md (6-9)`).
+  5. The right-hand document inspector opens with IDE-style tabs, highlighting lines 6–9 and smoothly auto-scrolling to the citation.
+  6. The user can switch between tabs, adjust the resizable splitter (45% default), and toggle Preview/Source and Full File/Snippet views.
+
+---
+
+## 2. Configuration Schema (`config.yaml`)
+
+The configuration file is located at `/data/config.yaml` by default (or configured via the `CONFIG_PATH` environment variable).
 
 ```yaml
 server:
@@ -67,14 +67,14 @@ server:
   dashboard:
     enabled: true
     port: 8080
-    password_env: "DASHBOARD_PASSWORD" # Ссылка на переменную окружения с паролем
+    password_env: "DASHBOARD_PASSWORD" # Environment variable containing auth password
 
-# Глобальные настройки векторизации для фоновых процессов
+# Global embedding settings for background vectorization
 embeddings:
   enabled: true
   model_name: "intfloat/multilingual-e5-small"
 
-# Список отслеживаемых репозиториев
+# Tracked repositories
 repositories:
   - id: "Yurta.Core.Lib"
     url: "git@github.com:your-org/Yurta.Core.Lib.git"
@@ -82,13 +82,13 @@ repositories:
       type: "ssh"
       private_key_path: "/root/.ssh/id_rsa"
     branch: "main"
-    # Автономные триггеры
+    # Autonomous triggers
     triggers:
       webhooks:
         enabled: true
         provider: "github" # github | gitlab | custom
         secret_env: "YURTA_WEBHOOK_SECRET"
-      cron: "0 */4 * * *" # Каждые 4 часа
+      cron: "0 */4 * * *" # Every 4 hours
       
   - id: "knowledgebase-mcp"
     url: "https://github.com/PaulTheSecond/knowledgebase-mcp.git"
@@ -99,27 +99,27 @@ repositories:
     triggers:
       webhooks:
         enabled: false
-      cron: "30 2 * * *" # Каждый день в 2:30 ночи
+      cron: "30 2 * * *" # Daily at 02:30 AM
 ```
 
 ---
 
-## 3. Требования к API Web UI (REST-эндпоинты)
+## 3. Web UI REST API Endpoints
 
-Для взаимодействия панели управления с бэкендом будут использоваться следующие эндпоинты:
+The dashboard communicates with the backend through the following endpoints:
 
-| Метод | Путь | Описание |
+| Method | Path | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Получение общего статуса системы и списка репозиториев с метриками. |
-| `POST` | `/api/sync/{repo_id}` | Ручной запуск инкрементальной синхронизации для репозитория. |
-| `DELETE` | `/api/repo/{repo_id}` | Удаление проиндексированных данных репозитория из базы. |
-| `POST` | `/api/chat` | Потоковый RAG-чат (SSE) с поиском релевантного контекста. |
-| `GET` | `/api/chat/file` | Получение содержимого файла (`path`, `start_line`, `end_line`, `full_file`, `repo_id`) для инспектора документов. |
+| `GET` | `/api/status` | System health check and repository list with metrics. |
+| `POST` | `/api/sync/{repo_id}` | Manually enqueue an incremental sync job for a repository. |
+| `DELETE` | `/api/repo/{repo_id}` | Purge a repository's indexed symbols and chunks from the database. |
+| `POST` | `/api/chat` | Streaming RAG chat endpoint (SSE) with hybrid context retrieval. |
+| `GET` | `/api/chat/file` | Retrieve file content (`path`, `start_line`, `end_line`, `full_file`, `repo_id`) for the Document Inspector. |
 
 ---
 
-## 4. Нефункциональные требования
+## 4. Non-Functional Requirements
 
-1. **Изоляция данных (Data Locality):** Клонируемые репозитории и их кэши хранятся строго локально в Docker-Volume (например, `/data/clones/`). Никакие исходные коды или метаданные не должны передаваться во внешние облачные сервисы.
-2. **Отказоустойчивость:** Если операция `git pull` завершается ошибкой (например, проблемы с сетью или авторизацией), статус репозитория переводится в `Error`, ошибка записывается в лог, но сервер MCP продолжает обслуживать поисковые запросы на базе последнего успешного среза данных.
-3. **Энергоэффективность и лимиты RAM:** Фоновое индексирование не должно приводить к OOM (Out Of Memory). Процесс расчета эмбеддингов должен жестко контролировать размер пачек (sub-batch size) и принудительно очищать кэш PyTorch/Garbage Collector после завершения обработки каждого репозитория.
+1. **Data Locality:** Cloned repositories and cache storage reside strictly within local container volumes (`/data/clones/`). Source code and AST metadata are never transmitted to external cloud services.
+2. **Resilience:** If a `git pull` or clone fails (e.g., transient network or credential issues), the repository status transitions to `Error`, the failure is logged, and the MCP server continues servicing queries against the last successful snapshot.
+3. **RAM and Resource Efficiency:** Background indexing must avoid Out of Memory (OOM) conditions. Vectorization processes strictly limit sub-batch sizes and invoke PyTorch cache clearing / Python garbage collection after processing each repository batch.

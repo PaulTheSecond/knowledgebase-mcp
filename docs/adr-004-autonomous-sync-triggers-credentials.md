@@ -1,56 +1,56 @@
-# ADR-004: Автономная фоновая синхронизация, триггеры и управление доступами
+# ADR-004: Autonomous Background Sync, Triggers, and Credential Management
 
-| Метаданные | Значение |
+| Metadata | Value |
 | :--- | :--- |
-| **Статус** | Proposed |
-| **Дата** | 2026-06-30 |
-| **Автор** | Antigravity / User |
-| **Влияет на** | Indexer, Webhook Server, Git Sync Manager, Credentials Storage |
-| **Breaking Change** | Нет |
+| **Status** | Accepted |
+| **Date** | 2026-06-30 |
+| **Author** | Antigravity / User |
+| **Affects** | Indexer, Webhook Server, Git Sync Manager, Credentials Storage |
+| **Breaking Change** | No |
 
 ---
 
-## Контекст
+## Context
 
-С переходом системы на автономную работу (начиная с версии `v1.3`), база знаний должна автоматически поддерживать свою актуальность без ручного вмешательства пользователя. Это требует интеграции с внешними Git-серверами через вебхуки и планировщик Cron, а также реализации механизмов безопасной работы с удаленными репозиториями, включая авторизацию по SSH и Personal Access Tokens (PAT).
+With the system transitioning to autonomous operation (beginning with version `v1.3`), the knowledge base must automatically keep its index up to date without manual intervention. This requires integrating with remote Git servers via webhooks and scheduled Cron execution, alongside secure mechanisms for interacting with remote repositories, including SSH authentication and Personal Access Tokens (PAT).
 
-Поскольку проект изначально спроектирован с упором на локальную работу в Docker, необходимо сохранить принципы безопасности, минимизации внешних зависимостей и изоляции данных.
-
----
-
-## Проблема
-
-1. **Доступ к приватному коду:** Для сканирования приватных репозиториев контейнеру требуются учетные данные (SSH-ключи или PAT). Хранить их внутри образа Docker небезопасно.
-2. **Схема монтирования исходников:** Описанная в ADR-001 схема монтирования локальных папок хоста в режиме `read-only` несовместима с автоматическим обновлением по вебхукам, так как контейнер не имеет права изменять файлы на хост-машине.
-3. **Безопасность входящих вебхуков:** Открытый HTTP-порт для вебхуков подвержен DoS-атакам и отправке поддельных событий. Требуется строгая криптографическая проверка подписей (HMAC-SHA256).
-4. **Конкурентный доступ к БД:** Фоновое индексирование не должно блокировать поисковые запросы MCP-клиента к SQLite.
+Because the project was designed from the ground up for containerized local execution in Docker, core principles must be preserved: high security, minimal external dependencies, and local data isolation.
 
 ---
 
-## Решение
+## Problem Statement
 
-### 1. Двухрежимная стратегия работы с исходным кодом
-Система будет поддерживать два режима работы, настраиваемых для каждого репозитория индивидуально:
-* **Режим "Mount" (Локальный):** Репозиторий примонтирован с хоста. Автономные триггеры (вебхуки, cron) для него отключены. Обновление индекса происходит по триггеру файловой системы (fsnotify/watchdog) или вручную через инструмент MCP.
-* **Режим "Cloned" (Автономный удаленный):** Контейнер самостоятельно клонирует репозиторий из удаленного Git во внутреннюю writable-папку `/data/clones/{repo_id}`. Все операции `git pull`/`fetch` происходят внутри контейнера.
-
-### 2. Безопасное управление учетными данными
-* **SSH-авторизация:** Приватные ключи монтируются пользователем в контейнер при его запуске (например, в `/root/.ssh/id_rsa` или `/secrets/id_rsa`). В конфигурации `config.yaml` указывается путь к ключу. При выполнении Git-команд переопределяется переменная окружения `GIT_SSH_COMMAND="ssh -i /path/to/key -o StrictHostKeyChecking=no"`.
-* **PAT-авторизация:** Токены передаются через переменные окружения контейнера (например, `GITHUB_PAT`). В `config.yaml` указывается имя переменной окружения, значение которой подставляется в URL клонирования на лету: `https://<token>@github.com/org/repo.git`. Это исключает жесткое кодирование токенов в конфигурационных файлах.
-
-### 3. Криптографическая валидация вебхуков
-Для защиты эндпоинта `/webhook/git`:
-* **GitHub:** Валидация заголовка `X-Hub-Signature-256`. Вычисляется HMAC-SHA256 от тела запроса с использованием секретного ключа из переменной окружения.
-* **GitLab:** Проверка токена в заголовке `X-Gitlab-Token` на точное соответствие эталону.
-* Невалидные запросы отклоняются с кодом `401 Unauthorized` без передачи их в очередь обработки.
-
-### 4. Фоновый планировщик и очередь задач (Scheduler & Queue)
-* Бэкенд на FastAPI запускает фоновый процесс на базе библиотеки `APScheduler` или встроенного AsyncIO-цикла для обработки задач по расписанию (Cron).
-* Очередь задач реализуется в оперативной памяти (на базе `asyncio.Queue`). Это гарантирует последовательное выполнение ресурсоемких задач индексирования (один поток записи в БД за раз), исключая перегрузку CPU и взаимные блокировки SQLite (Deadlocks).
+1. **Accessing Private Code:** Scanning private repositories requires credentials (SSH keys or PATs) inside the container. Storing credentials inside the Docker image is unacceptable.
+2. **Source Code Mount Limitations:** The local host-directory mount scheme described in ADR-001 operates in `read-only` mode, which is incompatible with automated webhook updates since the container lacks write permissions to host-bound directories.
+3. **Incoming Webhook Security:** An exposed HTTP port for webhooks is susceptible to DoS attacks and forged events. Strict cryptographic signature verification (HMAC-SHA256) is mandatory.
+4. **Concurrent Database Access:** Background indexing must not lock SQLite database queries executed by concurrent MCP clients.
 
 ---
 
-## Архитектура процессов синхронизации
+## Decision
+
+### 1. Dual-Mode Source Code Strategy
+The system supports two operating modes, configurable per repository:
+* **"Mount" Mode (Local):** The repository is mounted directly from the host filesystem. Autonomous triggers (webhooks, cron) are disabled for this repository. Updates occur via filesystem events (`fsnotify`/`watchdog`) or on-demand via MCP tools.
+* **"Cloned" Mode (Autonomous Remote):** The container clones the repository from remote Git into an internal writable directory: `/data/clones/{repo_id}`. All subsequent `git pull` and `fetch` operations occur inside the container volume.
+
+### 2. Secure Credential Management
+* **SSH Authentication:** Private keys are mounted into the container at startup by the user (e.g., `/root/.ssh/id_rsa` or `/secrets/id_rsa`). The path to the private key is referenced in `config.yaml`. Git commands dynamically inject `GIT_SSH_COMMAND="ssh -i /path/to/key -o StrictHostKeyChecking=no"`.
+* **PAT Authentication:** Tokens are passed via container environment variables (e.g., `GITHUB_PAT`). In `config.yaml`, the environment variable name is referenced (`token_env`), and credentials are injected into the clone URL or request header in-memory: `https://<token>@github.com/org/repo.git`. Tokens are never written to disk in plain text.
+
+### 3. Cryptographic Webhook Validation
+To protect the `/webhook/git` endpoint:
+* **GitHub / Gitea:** Validate the `X-Hub-Signature-256` (or `X-Gitea-Signature`) header by computing HMAC-SHA256 against the raw request body using the configured webhook secret.
+* **GitLab:** Validate the `X-Gitlab-Token` header for an exact secret match.
+* Invalid requests are immediately rejected with `401 Unauthorized` before entering the processing queue.
+
+### 4. Background Scheduler and Job Queue
+* A FastAPI daemon runs background workers using an async queue (`asyncio.Queue`) and periodic tasks via `APScheduler` or native AsyncIO loops for Cron schedules.
+* Tasks are processed sequentially (one write transaction at a time), preventing CPU saturation and SQLite database write locks / deadlocks.
+
+---
+
+## Synchronization Architecture
 
 ```mermaid
 sequenceDiagram
@@ -85,11 +85,11 @@ sequenceDiagram
 
 ---
 
-## Риски и их предотвращение
+## Risks and Mitigations
 
-| Риск | Вероятность | Способ минимизации |
+| Risk | Probability | Mitigation Strategy |
 | :--- | :--- | :--- |
-| **Утечка токенов через конфиг** | Средняя | Использование ссылок на переменные окружения (`token_env`) вместо записи самих токенов в `config.yaml`. |
-| **Блокировка БД при чтении во время записи** | Высокая | Включение режима SQLite **WAL (Write-Ahead Logging)** в `db.py` для параллельного чтения без блокировок пишущим потоком. |
-| **DoS-атака тяжелыми вебхуками** | Средняя | Валидация подписи на самом раннем этапе. Ограничение размера входящего JSON-пакета вебхука (max 5 MB). |
-| **Накопление устаревших клонов** | Низкая | Механизм автоматической очистки папки `/data/clones/{repo_id}` при удалении репозитория через API или MCP-инструмент. |
+| **Token leakage via configuration files** | Medium | Use environment variable references (`token_env`) rather than committing raw tokens to `config.yaml`. |
+| **Database lock during concurrent read/write** | High | Enable SQLite **WAL (Write-Ahead Logging)** mode via `PRAGMA journal_mode=WAL` and `synchronous=NORMAL` to allow concurrent non-blocking reads. |
+| **DoS via oversized webhook payloads** | Medium | Early signature verification; enforce a strict payload size limit (max 5 MB). |
+| **Stale clone accumulation on disk** | Low | Implement automated disk cleanup for `/data/clones/{repo_id}` whenever a repository is deleted via API or MCP tool. |

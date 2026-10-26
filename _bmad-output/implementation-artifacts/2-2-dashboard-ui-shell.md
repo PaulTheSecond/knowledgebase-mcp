@@ -4,39 +4,39 @@ Status: done
 
 ## Story
 
-As a разработчик,
-I want иметь красивый, современный веб-интерфейс в темных тонах,
-so that мне было приятно и удобно работать с системой в браузере.
+As a developer,
+I want an elegant, modern web dashboard with dark theme ergonomics,
+so that operating and monitoring the system in the browser is pleasant and efficient.
 
 ## Acceptance Criteria
 
-1. **Given** статический SPA фронтенд (чистый HTML5, Vanilla CSS, Vanilla JS) в папке `dashboard/static/`,
-   **When** я открываю корень дашборда в браузере,
-   **Then** отображается страница с премиум-дизайном (темная тема, curated HSL-палитра, микро-анимации переходов).
-2. **And** навигационное меню позволяет переключаться между вкладками "Repositories", "Sync Queue" и "RAG Chat" без перезагрузки страницы (SPA).
+1. **Given** a static SPA frontend (clean HTML5, Vanilla CSS, Vanilla JS) located in `dashboard/static/`,
+   **When** I open the dashboard root in a browser,
+   **Then** a page with a premium dark theme, curated HSL color palette, and micro-transitions renders smoothly.
+2. **And** the navigation menu enables switching between "Repositories", "Sync Queue", and "RAG Chat" tabs without page reloads (SPA).
 
 ## Tasks / Subtasks
 
-- [ ] Создание разметки HTML5 (AC: 1, 2)
-  - [ ] Создать файл `knowledge_mcp/dashboard/static/index.html`.
-  - [ ] Спроектировать сайдбар навигации и контейнер основного контента с уникальными DOM ID.
-- [ ] Оформление стилей CSS3 (AC: 1)
-  - [ ] Создать файл `knowledge_mcp/dashboard/static/css/styles.css`.
-  - [ ] Подключить шрифт Google Fonts (например, `Inter` или `Outfit`).
-  - [ ] Настроить CSS-переменные для темной темы (HSL оттенки угольного, графитового и неоново-синего акцента).
-  - [ ] Добавить плавные переходы (`transition: all 0.3s ease`) для интерактивных элементов.
-- [ ] SPA Маршрутизация на Vanilla JS (AC: 2)
-  - [ ] Создать файл `knowledge_mcp/dashboard/static/js/app.js`.
-  - [ ] Реализовать клиентский роутер по переключению видимости секций `<section id="repositories-view">`, `<section id="queue-view">`, `<section id="chat-view">`.
-  - [ ] Добавить автозаполнение Basic Auth диалогового окна браузера при открытии страницы.
-- [ ] Интеграция статики в FastAPI (AC: 1)
-  - [ ] Смонтировать статику в `knowledge_mcp/daemon/app.py` через `FastAPI.mount("/static", StaticFiles(directory="knowledge_mcp/dashboard/static"), name="static")`.
-  - [ ] Отдавать `index.html` при запросе к корню `/`.
+- [x] Create HTML5 markup (AC: 1, 2)
+  - [x] Create file `knowledge_mcp/dashboard/static/index.html`.
+  - [x] Structure sidebar navigation and main content containers with distinct DOM IDs.
+- [x] Style CSS3 design (AC: 1)
+  - [x] Create file `knowledge_mcp/dashboard/static/css/styles.css`.
+  - [x] Load `Outfit` typography via Google Fonts.
+  - [x] Configure CSS variables for dark theme (charcoal, slate, and vibrant accent blues).
+  - [x] Add smooth transitions (`transition: all 0.3s ease`) on interactive UI components.
+- [x] Implement Vanilla JS SPA routing (AC: 2)
+  - [x] Create file `knowledge_mcp/dashboard/static/js/app.js`.
+  - [x] Implement client-side router toggling section visibility: `<section id="repositories-view">`, `<section id="queue-view">`, `<section id="chat-view">`.
+  - [x] Handle Basic Auth browser credentials prompt upon initial load.
+- [x] Integrate static assets into FastAPI (AC: 1)
+  - [x] Mount static assets in `knowledge_mcp/daemon/app.py` via `FastAPI.mount("/static", StaticFiles(directory="knowledge_mcp/dashboard/static"), name="static")`.
+  - [x] Serve `index.html` at root endpoint `/`.
 
 ## Dev Notes
 
-Интерфейс должен выглядеть крайне премиально (эффект "glassmorphism", скругления углов `border-radius: 12px`, мягкие неоновые тени).
-Пример CSS переменных темы:
+The UI embraces glassmorphism, rounded corners (`border-radius: 12px`), and subtle neon accent glows.
+CSS theme variables:
 ```css
 :root {
   --bg-primary: #0d0e12;
@@ -50,7 +50,7 @@ so that мне было приятно и удобно работать с си�
 
 ### References
 
-- [Архитектурные требования: ADR-005-web-dashboard-architecture.md](file:///c:/Repos/knowledgebase-mcp/docs/adr-005-web-dashboard-architecture.md)
+- [Architecture Requirements: ADR-005-web-dashboard-architecture.md](file:///c:/Repos/knowledgebase-mcp/docs/adr-005-web-dashboard-architecture.md)
 
 ## Dev Agent Record
 
@@ -61,12 +61,12 @@ Antigravity (Gemini 3.5 Flash)
 None
 
 ### Completion Notes List
-- **Knowledge MCP Research**: Выполнен поиск существующих HTML/CSS стилей или шаблонов, не обнаружено. Спроектирован с нуля премиальный интерфейс.
-- Созданы статические файлы `index.html`, `styles.css` и `app.js` в каталоге `knowledge_mcp/dashboard/static/`.
-- Реализован современный адаптивный SPA дизайн в темной HSL-палитре со шрифтом `Outfit` из Google Fonts и микроанимациями.
-- Настроена SPA-маршрутизация на стороне клиента на чистом Vanilla JS (вкладки "Repositories", "Sync Queue", "RAG Chat").
-- В `knowledge_mcp/main.py` смонтирована раздача статики через `StaticFiles` и добавлен эндпоинт корня `/`, отдающий `index.html`.
-- Добавлены интеграционные тесты раздачи статики в `tests/test_auth.py`.
+- **Knowledge MCP Research**: Researched existing HTML/CSS styles; designed fresh zero-dependency SPA dashboard.
+- Created static bundle `index.html`, `styles.css`, and `app.js` in `knowledge_mcp/dashboard/static/`.
+- Built modern responsive SPA dark layout with `Outfit` typography and micro-interactions.
+- Implemented hash-based SPA client router handling Repositories, Sync Queue, and RAG Chat tabs.
+- Mounted static directory in `knowledge_mcp/main.py` via `StaticFiles` and mapped root `/` to `index.html`.
+- Added automated integration tests for static delivery in `tests/test_auth.py`.
 
 ### File List
 - [NEW] [index.html](file:///c:/Repos/knowledgebase-mcp/knowledge_mcp/dashboard/static/index.html)
@@ -90,9 +90,9 @@ None
 - [x] Unit tests pass successfully (34/34).
 
 ### Code Review Summary
-- **SPA Router:** Используется хэш-маршрутизация (`window.location.hash`), предотвращающая перезагрузку страницы.
-- **FastAPI Integration:** Правильное использование `StaticFiles` с неблокирующим монтированием.
-- **Design:** Отсутствие фреймворков и TailwindCSS делает бандл чистым и легковесным.
+- **SPA Router:** Hash-based routing (`window.location.hash`) prevents page reloads.
+- **FastAPI Integration:** Proper non-blocking mounting with `StaticFiles`.
+- **Design:** Zero third-party JS runtime dependencies keeps the bundle lightweight and maintainable.
 
 ---
 
@@ -104,8 +104,8 @@ None
 ### Acceptance Criteria Verification
 | AC | Description | Verification | Result |
 |----|-------------|--------------|--------|
-| AC 1 | Статический SPA фронтенд в темных тонах | Тест `test_static_dashboard_rendering` проверяет успешную отдачу index.html и styles.css | ✅ PASS |
-| AC 2 | Переключение вкладок без перезагрузки страницы | Интегрирован хэндлер `hashchange` в app.js для переключения видимости секций | ✅ PASS |
+| AC 1 | Dark-theme static SPA delivery | Test `test_static_dashboard_rendering` verifies HTTP 200 on index.html and styles.css | ✅ PASS |
+| AC 2 | Seamless tab switching | `hashchange` handler switches visibility of views without reload | ✅ PASS |
 
 ---
 
