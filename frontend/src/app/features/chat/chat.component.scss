@@ -62,12 +62,23 @@
   display: flex;
   flex-direction: column;
   min-width: 280px;
+  min-height: 0;
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
   border: 1px solid var(--border-color);
   background-color: var(--bg-secondary);
   transition: width 0.05s ease-out;
+
+  app-doc-viewer {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
 }
 
 // ── Верхняя панель управления чатом ──

@@ -1,7 +1,20 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
 .doc-viewer-container {
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
   background-color: var(--bg-secondary);
   overflow: hidden;
   position: relative;
@@ -14,8 +27,10 @@
   justify-content: space-between;
   background-color: var(--bg-primary);
   border-bottom: 1px solid var(--border-color);
+  height: 38px;
   min-height: 38px;
   max-height: 38px;
+  flex-shrink: 0;
   overflow: hidden;
   user-select: none;
 }
@@ -181,6 +196,9 @@
   border-bottom: 1px solid var(--border-color);
   font-size: 12px;
   gap: 12px;
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
   flex-shrink: 0;
 }
 
@@ -272,24 +290,31 @@
 // ── Основная область просмотра (Тело) ──
 .doc-body {
   flex: 1;
-  overflow: auto;
+  height: calc(100% - 38px - 36px);
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
   position: relative;
+  background-color: var(--bg-secondary);
 }
 
 .markdown-preview-container {
   padding: 24px 28px;
-  overflow-y: auto;
-  height: 100%;
+  min-height: 100%;
+  background-color: var(--bg-secondary);
+  overflow: visible;
 }
 
 .code-viewer-container {
   min-height: 100%;
+  width: max-content;
+  min-width: 100%;
   background-color: #0d1117;
   font-family: Consolas, Monaco, "Courier New", monospace;
   font-size: 12.5px;
   line-height: 1.55;
   color: #e6edf3;
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .code-lines-wrapper {

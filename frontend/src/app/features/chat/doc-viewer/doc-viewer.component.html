@@ -65,7 +65,8 @@
             type="button" 
             class="btn-pill-toggle" 
             [class.active]="tab.viewMode === 'rendered'"
-            (click)="toggleViewMode(tab)">
+            (click)="toggleViewMode(tab)"
+            title="Переключить между отрендеренным документом и исходным кодом">
             {{ tab.viewMode === 'rendered' ? '👁️ Превью' : '📝 Исходник' }}
           </button>
         }
@@ -101,7 +102,7 @@
     </div>
 
     <!-- Основная область содержимого документа -->
-    <div class="doc-body">
+    <div class="doc-body" #docBody>
       @if (tab.loading) {
         <div class="doc-loading-state">
           <div class="spinner-md"></div>
@@ -116,7 +117,7 @@
         </div>
       } @else if (isMarkdown(tab.filepath) && tab.viewMode === 'rendered') {
         <!-- Режим отрендеренного Markdown с диаграммами Mermaid -->
-        <div class="markdown-preview-container markdown-body" #markdownPreview [innerHTML]="getRenderedMarkdown(tab.fullContent)">
+        <div class="markdown-preview-container markdown-body" #markdownPreview [innerHTML]="getRenderedMarkdown(tab)">
         </div>
       } @else {
         <!-- Режим исходного кода с номерами строк и подсветкой фрагмента -->

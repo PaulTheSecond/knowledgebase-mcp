@@ -4,7 +4,6 @@ import {
   Output, 
   EventEmitter, 
   inject, 
-  computed, 
   signal, 
   ElementRef, 
   ViewChild, 
@@ -43,6 +42,7 @@ export class DocViewerComponent implements AfterViewChecked {
   @Output() allTabsClosed = new EventEmitter<void>();
   @Output() retryRequested = new EventEmitter<DocTab>();
 
+  @ViewChild('docBody') private docBody?: ElementRef<HTMLDivElement>;
   @ViewChild('codeContainer') private codeContainer?: ElementRef<HTMLDivElement>;
   @ViewChild('markdownPreview') private markdownPreview?: ElementRef<HTMLDivElement>;
 
@@ -51,19 +51,26 @@ export class DocViewerComponent implements AfterViewChecked {
 
   private lastScrolledTabId: string | null = null;
   private needsScroll = false;
+  private lastRenderedMarkdownKey: string | null = null;
+  private linesCache = new Map<string, CodeLineDisplay[]>();
+  private markdownCache = new Map<string, SafeHtml>();
 
   get activeTab(): DocTab | undefined {
     return this.tabs.find(t => t.id === this.activeTabId);
   }
 
   ngAfterViewChecked(): void {
-    if (this.needsScroll && this.codeContainer) {
+    if (this.needsScroll && this.docBody) {
       this.needsScroll = false;
       this.scrollToTargetLine();
     }
     if (this.markdownPreview && this.activeTab?.viewMode === 'rendered') {
-      this.markdown.renderMermaid(this.markdownPreview.nativeElement);
-      this.markdown.highlightCode(this.markdownPreview.nativeElement);
+      const currentKey = `${this.activeTab.id}_${this.activeTab.scopeMode}_${this.activeTab.fullContent?.length}`;
+      if (this.lastRenderedMarkdownKey !== currentKey) {
+        this.lastRenderedMarkdownKey = currentKey;
+        this.markdown.renderMermaid(this.markdownPreview.nativeElement);
+        this.markdown.highlightCode(this.markdownPreview.nativeElement);
+      }
     }
   }
 
@@ -94,6 +101,7 @@ export class DocViewerComponent implements AfterViewChecked {
 
   toggleViewMode(tab: DocTab): void {
     tab.viewMode = tab.viewMode === 'rendered' ? 'raw' : 'rendered';
+    this.lastRenderedMarkdownKey = null;
     if (tab.viewMode === 'raw') {
       this.needsScroll = true;
     }
@@ -101,16 +109,45 @@ export class DocViewerComponent implements AfterViewChecked {
 
   toggleScopeMode(tab: DocTab): void {
     tab.scopeMode = tab.scopeMode === 'full' ? 'chunk' : 'full';
+    this.lastRenderedMarkdownKey = null;
     this.needsScroll = true;
   }
 
-  getRenderedMarkdown(content?: string): SafeHtml {
-    return this.markdown.renderSafe(content || '');
+  getRenderedMarkdown(tab: DocTab): SafeHtml {
+    const raw = tab.fullContent || '';
+    if (!raw) return '';
+
+    const cacheKey = `${tab.id}_${tab.scopeMode}_${tab.startLine}_${tab.endLine}_${raw.length}`;
+    const cached = this.markdownCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    let textToRender = raw;
+    if (tab.scopeMode === 'chunk' && tab.startLine && tab.endLine) {
+      const lines = raw.split('\n');
+      const start = Math.max(1, tab.startLine) - 1;
+      const end = Math.min(lines.length, tab.endLine);
+      textToRender = lines.slice(start, end).join('\n');
+    }
+
+    const rendered = this.markdown.renderSafe(textToRender);
+    if (this.markdownCache.size > 20) {
+      this.markdownCache.clear();
+    }
+    this.markdownCache.set(cacheKey, rendered);
+    return rendered;
   }
 
   getDisplayLines(tab: DocTab): CodeLineDisplay[] {
     const raw = tab.fullContent || '';
     if (!raw) return [];
+
+    const cacheKey = `${tab.id}_${tab.scopeMode}_${tab.startLine}_${tab.endLine}_${raw.length}`;
+    const cached = this.linesCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
 
     const lang = this.detectLanguage(tab.filepath);
     const highlightedCode = this.highlightSyntax(raw, lang);
@@ -120,8 +157,9 @@ export class DocViewerComponent implements AfterViewChecked {
     const start = Math.max(1, tab.startLine || 1);
     const end = Math.min(total, tab.endLine || total);
 
+    let result: CodeLineDisplay[];
     if (tab.scopeMode === 'chunk') {
-      return allLines.slice(start - 1, end).map((html, idx) => {
+      result = allLines.slice(start - 1, end).map((html, idx) => {
         const lineNum = start + idx;
         return {
           num: lineNum,
@@ -129,17 +167,23 @@ export class DocViewerComponent implements AfterViewChecked {
           isHighlighted: true
         };
       });
+    } else {
+      result = allLines.map((html, idx) => {
+        const lineNum = idx + 1;
+        const isHighlighted = !!(tab.startLine && tab.endLine && lineNum >= start && lineNum <= end);
+        return {
+          num: lineNum,
+          html: html || '&nbsp;',
+          isHighlighted
+        };
+      });
     }
 
-    return allLines.map((html, idx) => {
-      const lineNum = idx + 1;
-      const isHighlighted = !!(tab.startLine && tab.endLine && lineNum >= start && lineNum <= end);
-      return {
-        num: lineNum,
-        html: html || '&nbsp;',
-        isHighlighted
-      };
-    });
+    if (this.linesCache.size > 20) {
+      this.linesCache.clear();
+    }
+    this.linesCache.set(cacheKey, result);
+    return result;
   }
 
   private detectLanguage(filepath: string): string {
@@ -186,11 +230,18 @@ export class DocViewerComponent implements AfterViewChecked {
   }
 
   private scrollToTargetLine(): void {
-    if (!this.codeContainer) return;
-    const container = this.codeContainer.nativeElement;
-    const targetEl = container.querySelector('.code-line-row.line-highlight') as HTMLElement;
+    const bodyEl = this.docBody?.nativeElement;
+    if (!bodyEl) return;
+    const targetEl = bodyEl.querySelector('.code-line-row.line-highlight') as HTMLElement;
     if (targetEl) {
-      targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const containerRect = bodyEl.getBoundingClientRect();
+      const targetRect = targetEl.getBoundingClientRect();
+      const targetTop = targetRect.top - containerRect.top + bodyEl.scrollTop;
+      const targetScrollTop = targetTop - (bodyEl.clientHeight / 2) + (targetRect.height / 2);
+      bodyEl.scrollTo({
+        top: Math.max(0, targetScrollTop),
+        behavior: 'smooth'
+      });
     }
   }
 
