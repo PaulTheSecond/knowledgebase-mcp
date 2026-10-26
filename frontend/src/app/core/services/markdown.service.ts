@@ -367,6 +367,12 @@ export class MarkdownService {
       .replace(/width="100%"/gi, '');
 
     let zoom = 1.0;
+    let panX = 0;
+    let panY = 0;
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+
     const overlay = document.createElement('div');
     overlay.className = 'mermaid-fullscreen-overlay';
 
@@ -376,27 +382,34 @@ export class MarkdownService {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v3a3 3 0 0 0 3 3h6"/>
           </svg>
-          Диаграмма Mermaid (Полноэкранный просмотр)
+          <span>Диаграмма Mermaid (Полноэкранный просмотр)</span>
         </div>
         <div class="mermaid-modal-controls">
-          <button type="button" class="mermaid-modal-btn btn-zoom-out" title="Уменьшить масштаб">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <span class="mermaid-modal-hint">Зажмите ЛКМ для перемещения • Колесико для масштаба</span>
+          <button type="button" class="mermaid-modal-btn btn-icon-only btn-zoom-out" title="Уменьшить масштаб">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
               <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
-            <span>-</span>
           </button>
-          <button type="button" class="mermaid-modal-btn btn-zoom-reset" title="Сбросить масштаб">
+          <div class="zoom-level-badge" title="Текущий масштаб">
             <span class="zoom-level-text">100%</span>
-          </button>
-          <button type="button" class="mermaid-modal-btn btn-zoom-in" title="Увеличить масштаб">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </div>
+          <button type="button" class="mermaid-modal-btn btn-icon-only btn-zoom-in" title="Увеличить масштаб">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
-            <span>+</span>
+          </button>
+          <button type="button" class="mermaid-modal-btn btn-zoom-reset" title="Вернуть исходный масштаб (100%) и центрировать">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+            </svg>
+            <span>Исходный вид</span>
           </button>
           ${rawCode ? `
             <button type="button" class="mermaid-modal-btn btn-modal-copy" title="Скопировать Mermaid код">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
               </svg>
@@ -404,7 +417,11 @@ export class MarkdownService {
             </button>
           ` : ''}
           <button type="button" class="mermaid-modal-btn btn-close-modal" title="Закрыть (Esc)">
-            ✕ Закрыть
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+            <span>Закрыть</span>
           </button>
         </div>
       </div>
@@ -421,25 +438,41 @@ export class MarkdownService {
     const zoomText = overlay.querySelector<HTMLElement>('.zoom-level-text');
     const bodyEl = overlay.querySelector<HTMLElement>('.mermaid-modal-body');
 
-    const updateZoom = (newZoom: number) => {
-      zoom = Math.min(3.5, Math.max(0.3, newZoom));
-      if (svgWrapper) svgWrapper.style.transform = `scale(${zoom})`;
-      if (zoomText) zoomText.textContent = `${Math.round(zoom * 100)}%`;
+    const applyTransform = (withTransition: boolean = false) => {
+      if (svgWrapper) {
+        svgWrapper.style.transition = withTransition ? 'transform 0.2s cubic-bezier(0.16, 1, 0.3, 1)' : 'none';
+        svgWrapper.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+      }
+      if (zoomText) {
+        zoomText.textContent = `${Math.round(zoom * 100)}%`;
+      }
+    };
+
+    const updateZoom = (newZoom: number, withTransition: boolean = true) => {
+      zoom = Math.min(5.0, Math.max(0.2, Math.round(newZoom * 100) / 100));
+      applyTransform(withTransition);
+    };
+
+    const resetView = () => {
+      zoom = 1.0;
+      panX = 0;
+      panY = 0;
+      applyTransform(true);
     };
 
     overlay.querySelector('.btn-zoom-in')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      updateZoom(zoom + 0.2);
+      updateZoom(zoom * 1.25, true);
     });
 
     overlay.querySelector('.btn-zoom-out')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      updateZoom(zoom - 0.2);
+      updateZoom(zoom * 0.8, true);
     });
 
     overlay.querySelector('.btn-zoom-reset')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      updateZoom(1.0);
+      resetView();
     });
 
     overlay.querySelector('.btn-modal-copy')?.addEventListener('click', async (e) => {
@@ -455,6 +488,46 @@ export class MarkdownService {
       }
     });
 
+    // ── Перемещение захватом мыши (Pan / Drag) ──
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      isDragging = true;
+      startX = e.clientX - panX;
+      startY = e.clientY - panY;
+      bodyEl?.classList.add('grabbing');
+      bodyEl?.setPointerCapture?.(e.pointerId);
+      e.preventDefault();
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDragging) return;
+      panX = e.clientX - startX;
+      panY = e.clientY - startY;
+      applyTransform(false);
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (!isDragging) return;
+      isDragging = false;
+      bodyEl?.classList.remove('grabbing');
+      try {
+        bodyEl?.releasePointerCapture?.(e.pointerId);
+      } catch {}
+    };
+
+    bodyEl?.addEventListener('pointerdown', onPointerDown);
+    bodyEl?.addEventListener('pointermove', onPointerMove);
+    bodyEl?.addEventListener('pointerup', onPointerUp);
+    bodyEl?.addEventListener('pointercancel', onPointerUp);
+
+    // ── Масштабирование колесиком мыши ──
+    bodyEl?.addEventListener('wheel', (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 0.85;
+      updateZoom(zoom * factor, true);
+    }, { passive: false });
+
+    // ── Закрытие модального окна ──
     const closeModal = () => {
       document.removeEventListener('keydown', onKeyDown);
       overlay.remove();
@@ -468,13 +541,5 @@ export class MarkdownService {
 
     document.addEventListener('keydown', onKeyDown);
     overlay.querySelector('.btn-close-modal')?.addEventListener('click', closeModal);
-
-    // Zoom on wheel with Ctrl
-    bodyEl?.addEventListener('wheel', (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        updateZoom(zoom + (e.deltaY < 0 ? 0.15 : -0.15));
-      }
-    }, { passive: false });
   }
 }
