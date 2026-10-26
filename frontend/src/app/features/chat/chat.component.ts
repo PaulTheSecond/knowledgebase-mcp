@@ -44,6 +44,7 @@ export class ChatComponent implements AfterViewInit {
   readonly userInput = signal('');
   readonly isGenerating = signal(false);
   readonly hasSavedHistory = signal<boolean>(false);
+  readonly copiedMessageIndex = signal<number | null>(null);
 
   // Состояние вкладок панели документов (IDE-style)
   readonly docTabs = signal<DocTab[]>([]);
@@ -382,6 +383,53 @@ export class ChatComponent implements AfterViewInit {
 
   onMessagesClick(event: MouseEvent): void {
     this.markdown.handleCopyClick(event);
+  }
+
+  copyMessageMarkdown(msg: ChatMessage, index: number, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    let text = msg.content;
+    if (msg.role === 'assistant' && msg.sources && msg.sources.length > 0) {
+      text += '\n\n---\n**' + this.i18n.t('chat.context_sources') + '**\n';
+      for (const src of msg.sources) {
+        text += `- \`${src.filepath}\` (${src.lines})\n`;
+      }
+    }
+    this.copyToClipboard(text).then(success => {
+      if (success) {
+        this.copiedMessageIndex.set(index);
+        setTimeout(() => {
+          if (this.copiedMessageIndex() === index) {
+            this.copiedMessageIndex.set(null);
+          }
+        }, 2000);
+      }
+    });
+  }
+
+  private async copyToClipboard(text: string): Promise<boolean> {
+    if (navigator?.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // Fallback ниже
+      }
+    }
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const success = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return success;
+    } catch {
+      return false;
+    }
   }
 
   clearChat(): void {

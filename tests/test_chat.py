@@ -380,6 +380,64 @@ class TestChatAPI(unittest.TestCase):
             self.assertEqual(response_auto.status_code, 200)
             self.assertEqual(response_auto.json()["repo_id"], "my-external-repo")
 
+    @patch("knowledge_mcp.daemon.routes.chat.load_config")
+    def test_read_file_from_project_workspace(self, mock_load_config):
+        """Проверяет чтение файла из многорепозиторного проекта (projects) через worktrees и docs_paths."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ws_root = Path(tmp_dir)
+            backend_file = ws_root / "worktrees" / "master" / "backend" / "Services" / "UserService.cs"
+            backend_file.parent.mkdir(parents=True, exist_ok=True)
+            backend_file.write_text("namespace App;\npublic class UserService {}\n", encoding="utf-8")
+
+            doc_file = ws_root / ".kb" / "guide.md"
+            doc_file.parent.mkdir(parents=True, exist_ok=True)
+            doc_file.write_text("# Project Guide\nInfo\n", encoding="utf-8")
+
+            mock_load_config.return_value = {
+                "server": {"dashboard": {"chat": {"enabled": True}}},
+                "repositories": [],
+                "projects": [
+                    {
+                        "id": "my-project",
+                        "workspace_root": str(ws_root),
+                        "base_path": "worktrees/master",
+                        "repositories": [
+                            {"id": "backend", "path": "backend", "language": "csharp"}
+                        ],
+                        "docs_paths": [".kb"]
+                    }
+                ]
+            }
+            os.environ["DASHBOARD_PASSWORD"] = "secret"
+
+            # 1. Чтение файла бэкенда по repo_id и относительному пути
+            res = self.client.get(
+                "/api/chat/file?filepath=Services/UserService.cs&repo_id=backend&full_file=true",
+                auth=("admin", "secret")
+            )
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["repo_id"], "backend")
+            self.assertIn("class UserService", res.json()["content"])
+
+            # 2. Чтение файла бэкенда с префиксом repo_id в filepath
+            res_prefix = self.client.get(
+                "/api/chat/file?filepath=backend/Services/UserService.cs&repo_id=backend&full_file=true",
+                auth=("admin", "secret")
+            )
+            self.assertEqual(res_prefix.status_code, 200)
+            self.assertEqual(res_prefix.json()["repo_id"], "backend")
+
+            # 3. Чтение документации проекта
+            res_doc = self.client.get(
+                "/api/chat/file?filepath=guide.md&repo_id=docs&full_file=true",
+                auth=("admin", "secret")
+            )
+            self.assertEqual(res_doc.status_code, 200)
+            self.assertIn("# Project Guide", res_doc.json()["content"])
+
     @patch("httpx.AsyncClient.post")
     @patch("knowledge_mcp.daemon.routes.chat.load_config")
     def test_sources_contain_repo_id_and_line_metadata(self, mock_load_config, mock_post):

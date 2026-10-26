@@ -362,12 +362,15 @@ SENSITIVE_EXTENSIONS = {".db", ".sqlite", ".sqlite3", ".key", ".pem", ".pfx", ".
 
 
 def get_configured_repo_roots(config: dict) -> List[Tuple[Optional[str], Path]]:
-    """Возвращает список корней репозиториев (repo_id, absolute_path)."""
+    """Возвращает список корней репозиториев (repo_id, absolute_path) для одиночных репо и проектных воркспейсов."""
     repos = config.get("repositories", [])
+    projects = config.get("projects", [])
     clones_dir = Path(os.environ.get("CLONES_DIR", "data/clones")).resolve()
     repos_dir_env = os.environ.get("REPOS_DIR")
 
     roots: List[Tuple[Optional[str], Path]] = []
+
+    # 1. Одиночные настроенные репозитории
     for r in repos:
         repo_id = r.get("id")
         local_path_str = r.get("local_path")
@@ -384,9 +387,11 @@ def get_configured_repo_roots(config: dict) -> List[Tuple[Optional[str], Path]]:
                     resolved_path = candidate.resolve()
             if not resolved_path:
                 clean_name = local_path_str.replace("\\", "/").rstrip("/").split("/")[-1]
-                candidate = Path("C:/repos") / clean_name
-                if candidate.exists():
-                    resolved_path = candidate.resolve()
+                for prefix in (Path("C:/repos"), Path("/repos")):
+                    candidate = prefix / clean_name
+                    if candidate.exists():
+                        resolved_path = candidate.resolve()
+                        break
 
         if not resolved_path and repo_id:
             clone_path = clones_dir / repo_id
@@ -395,6 +400,72 @@ def get_configured_repo_roots(config: dict) -> List[Tuple[Optional[str], Path]]:
 
         if resolved_path:
             roots.append((repo_id, resolved_path))
+
+    # 2. Проектные воркспейсы (projects) с поддержкой worktree и docs_paths
+    for proj in projects:
+        proj_id = proj.get("id")
+        ws_root_val = proj.get("workspace_root")
+        if not ws_root_val:
+            continue
+
+        ws_root = None
+        p = Path(ws_root_val)
+        if p.exists():
+            ws_root = p.resolve()
+        else:
+            clean_ws = ws_root_val.replace("\\", "/")
+            if "repos/" in clean_ws.lower():
+                rel_tail = clean_ws.lower().split("repos/", 1)[-1].lstrip("/")
+                candidates = []
+                if repos_dir_env:
+                    candidates.append(Path(repos_dir_env) / rel_tail)
+                candidates.extend([Path("C:/repos") / rel_tail, Path("c:/repos") / rel_tail, Path("/repos") / rel_tail])
+                for cand in candidates:
+                    if cand.exists():
+                        ws_root = cand.resolve()
+                        break
+
+        if not ws_root or not ws_root.exists():
+            continue
+
+        roots.append((proj_id, ws_root))
+
+        base_rel = proj.get("base_path", "worktrees/master")
+        base_dir = (ws_root / base_rel).resolve()
+        tasks_parent = (ws_root / "worktrees").resolve()
+
+        for repo in proj.get("repositories", []):
+            r_id = repo.get("id") or repo.get("path")
+            r_rel = repo.get("path", "")
+
+            # 1) Базовое дерево (например, worktrees/master/backend)
+            if base_dir.exists():
+                cand = (base_dir / r_rel).resolve()
+                if cand.exists() and (r_id, cand) not in roots:
+                    roots.append((r_id, cand))
+
+            # 2) Напрямую в корне воркспейса
+            cand_ws = (ws_root / r_rel).resolve()
+            if cand_ws.exists() and (r_id, cand_ws) not in roots:
+                roots.append((r_id, cand_ws))
+
+            # 3) Другие ворктри задач (worktrees/*)
+            if tasks_parent.exists() and tasks_parent.is_dir():
+                for t_dir in tasks_parent.iterdir():
+                    if t_dir.is_dir() and t_dir != base_dir:
+                        cand_task = (t_dir / r_rel).resolve()
+                        if cand_task.exists() and (r_id, cand_task) not in roots:
+                            roots.append((r_id, cand_task))
+
+        # Документация проекта (.kb, CLAUDE.md и т.д.)
+        for doc_rel in proj.get("docs_paths", []):
+            doc_cand = (ws_root / doc_rel).resolve()
+            if doc_cand.exists():
+                target_doc_root = doc_cand if doc_cand.is_dir() else doc_cand.parent
+                if ("docs", target_doc_root) not in roots:
+                    roots.append(("docs", target_doc_root))
+                if (proj_id, target_doc_root) not in roots:
+                    roots.append((proj_id, target_doc_root))
 
     return roots
 
@@ -452,6 +523,15 @@ async def read_file_endpoint(
                 if candidate.is_file():
                     target_path = candidate
                     break
+                # Пробуем снять префикс repo_id/ или r_root.name/
+                for pfx in (f"{repo_id}/", f"{r_root.name}/"):
+                    if clean_filepath.startswith(pfx):
+                        candidate = (r_root / clean_filepath[len(pfx):]).resolve()
+                        if candidate.is_file():
+                            target_path = candidate
+                            break
+                if target_path:
+                    break
         if not target_path and repo_id == "knowledgebase-mcp":
             candidate = (project_dir / clean_filepath).resolve()
             if candidate.is_file():
@@ -465,6 +545,12 @@ async def read_file_endpoint(
                 target_path = candidate
                 found_repo_id = r_id
                 break
+            if r_id and clean_filepath.startswith(f"{r_id}/"):
+                candidate = (r_root / clean_filepath[len(r_id) + 1:]).resolve()
+                if candidate.is_file():
+                    target_path = candidate
+                    found_repo_id = r_id
+                    break
 
     # В. Проверяем clones_dir
     if not target_path:
