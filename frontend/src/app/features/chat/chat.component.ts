@@ -6,6 +6,7 @@ import {
   ViewChild, 
   ElementRef, 
   AfterViewInit, 
+  AfterViewChecked, 
   effect 
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -29,7 +30,7 @@ export type { ChatMessage, ChatSource };
   templateUrl: './chat.component.html',
   styleUrls: ['./chat.component.scss']
 })
-export class ChatComponent implements AfterViewInit {
+export class ChatComponent implements AfterViewInit, AfterViewChecked {
   private readonly api = inject(ApiService);
   readonly i18n = inject(I18nService);
   private readonly theme = inject(ThemeService);
@@ -38,6 +39,9 @@ export class ChatComponent implements AfterViewInit {
 
   @ViewChild('messagesContainer') private messagesContainer!: ElementRef<HTMLDivElement>;
   @ViewChild('chatWorkspace') private chatWorkspace!: ElementRef<HTMLDivElement>;
+
+  // Кэш срендеренного SafeHtml для предотвращения сброса DOM при Angular Change Detection
+  private markdownCache = new Map<string, SafeHtml>();
 
   // Состояние чата
   readonly messages = signal<ChatMessage[]>(this.loadInitialMessages());
@@ -63,7 +67,11 @@ export class ChatComponent implements AfterViewInit {
       this.theme.currentTheme();
       setTimeout(() => {
         if (this.messagesContainer) {
-          this.markdown.renderMermaid(this.messagesContainer.nativeElement);
+          const container = this.messagesContainer.nativeElement;
+          container.querySelectorAll('.mermaid-block-wrapper').forEach(b => {
+            b.removeAttribute('data-rendered');
+          });
+          this.markdown.renderMermaid(container);
         }
       }, 100);
     });
@@ -77,6 +85,17 @@ export class ChatComponent implements AfterViewInit {
         this.scrollToBottom();
       }
     }, 100);
+  }
+
+  ngAfterViewChecked(): void {
+    if (this.messagesContainer) {
+      const container = this.messagesContainer.nativeElement;
+      const unrendered = container.querySelector('.mermaid-block-wrapper:not([data-rendered])');
+      if (unrendered) {
+        this.markdown.renderMermaid(container);
+        this.markdown.highlightCode(container);
+      }
+    }
   }
 
   private loadInitialMessages(): ChatMessage[] {
@@ -369,7 +388,15 @@ export class ChatComponent implements AfterViewInit {
   }
 
   renderMarkdown(content: string): SafeHtml {
-    return this.markdown.renderSafe(content);
+    const cached = this.markdownCache.get(content);
+    if (cached) return cached;
+    if (this.markdownCache.size >= 500) {
+      const keys = Array.from(this.markdownCache.keys()).slice(0, 100);
+      for (const k of keys) this.markdownCache.delete(k);
+    }
+    const rendered = this.markdown.renderSafe(content);
+    this.markdownCache.set(content, rendered);
+    return rendered;
   }
 
   private highlightAndRender(): void {
@@ -382,7 +409,7 @@ export class ChatComponent implements AfterViewInit {
   }
 
   onMessagesClick(event: MouseEvent): void {
-    this.markdown.handleCopyClick(event);
+    this.markdown.handleBlockInteraction(event);
   }
 
   copyMessageMarkdown(msg: ChatMessage, index: number, event?: Event): void {
@@ -438,6 +465,7 @@ export class ChatComponent implements AfterViewInit {
 
     if (confirm(this.i18n.t('chat.clear_confirm'))) {
       this.chatStorage.clearHistory();
+      this.markdownCache.clear();
       this.messages.set([
         {
           role: 'system',

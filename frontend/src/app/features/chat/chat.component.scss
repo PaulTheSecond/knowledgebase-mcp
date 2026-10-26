@@ -442,6 +442,38 @@
     border-bottom: 1px solid var(--border-color);
   }
 
+  .mermaid-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .btn-toggle-mermaid-code, .btn-fullscreen-mermaid, .btn-copy-mermaid {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+
+    &:hover {
+      background-color: var(--bg-tertiary);
+      color: var(--text-primary);
+      border-color: var(--border-color);
+    }
+
+    &.active {
+      background-color: var(--accent-color);
+      color: white;
+    }
+  }
+
   .mermaid-label {
     display: inline-flex;
     align-items: center;
@@ -470,6 +502,19 @@
     svg {
       max-width: 100%;
       height: auto;
+    }
+  }
+
+  .mermaid-code-container {
+    pre {
+      margin: 0;
+      padding: 14px;
+      background-color: #0d1117;
+      color: #e6edf3;
+      font-size: 12.5px;
+      font-family: Consolas, Monaco, monospace;
+      overflow-x: auto;
+      border-radius: 0;
     }
   }
 

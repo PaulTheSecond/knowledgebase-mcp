@@ -810,7 +810,7 @@ class Indexer:
                 if cs_files_needing_analysis:
                     logger.info(f"Detected {len(cs_files_needing_analysis)} modified/new C# file(s). Running Roslyn delta analysis...")
                     self._run_roslyn_analysis(repo_path, spec, target_files=cs_files_needing_analysis)
-                elif force and any(item[1].suffix.lower() == '.cs' for item in files_to_check):
+                elif force and any(item[0].suffix.lower() == '.cs' for item in files_to_check):
                     logger.info(f"Force re-index requested. Running full Roslyn analysis...")
                     self._run_roslyn_analysis(repo_path, spec)
                 else:

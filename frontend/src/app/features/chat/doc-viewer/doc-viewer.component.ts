@@ -95,6 +95,10 @@ export class DocViewerComponent implements AfterViewChecked {
     this.retryRequested.emit(tab);
   }
 
+  onMarkdownClick(event: MouseEvent): void {
+    this.markdown.handleBlockInteraction(event);
+  }
+
   isMarkdown(filepath: string): boolean {
     return /\.(md|markdown)$/i.test(filepath);
   }

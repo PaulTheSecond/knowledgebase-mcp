@@ -375,11 +375,21 @@ async def serve_spa_or_static(full_path: str = ""):
         raise HTTPException(status_code=404, detail="Not Found")
 
     if angular_dist_dir.exists():
-        # Если запрошен конкретный файл бандла (например, main-xxx.js, styles-xxx.css, favicon.ico)
+        # Если запрошен конкретный файл бандла (например, main-xxx.js, chunk-xxx.js, styles-xxx.css, favicon.ico)
         if full_path:
-            file_path = (angular_dist_dir / full_path).resolve()
+            clean_rel = full_path
+            for pfx in ("dashboard/browser/", "dashboard/", "browser/"):
+                if clean_rel.startswith(pfx):
+                    clean_rel = clean_rel[len(pfx):]
+                    break
+
+            file_path = (angular_dist_dir / clean_rel).resolve()
             if file_path.is_file() and str(file_path).startswith(str(angular_dist_dir.resolve())):
                 return FileResponse(file_path)
+
+            direct_path = (angular_dist_dir / full_path).resolve()
+            if direct_path.is_file() and str(direct_path).startswith(str(angular_dist_dir.resolve())):
+                return FileResponse(direct_path)
 
         # Для маршрутов SPA (/, /repositories, /queue, /chat) отдаем index.html
         index_file = angular_dist_dir / "index.html"

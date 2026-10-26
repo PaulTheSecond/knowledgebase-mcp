@@ -26,6 +26,7 @@ const LANGUAGE_MAP: Record<string, { name: string; prism: string }> = {
   dockerfile: { name: 'Dockerfile', prism: 'docker' },
   md: { name: 'Markdown', prism: 'markdown' },
   markdown: { name: 'Markdown', prism: 'markdown' },
+  mermaid: { name: 'Mermaid', prism: 'none' },
   rust: { name: 'Rust', prism: 'rust' },
   rs: { name: 'Rust', prism: 'rust' },
   go: { name: 'Go', prism: 'go' },
@@ -47,7 +48,7 @@ function escapeHtml(text: string): string {
 /**
  * Сервис форматирования Markdown и подсветки синтаксиса.
  * Обеспечивает красивое оформление блоков кода с плашками языков,
- * кнопками копирования в буфер и рендеринг схем Mermaid.
+ * кнопками копирования в буфер и интерактивный рендеринг схем Mermaid.
  */
 @Injectable({
   providedIn: 'root'
@@ -71,7 +72,7 @@ export class MarkdownService {
           const rawLang: string = (typeof token === 'object' ? token.lang : '') || '';
           const lang = rawLang.trim().toLowerCase();
 
-          // 1. Обработка блоков диаграмм Mermaid
+          // 1. Обработка блоков диаграмм Mermaid с кнопками: Код, Во весь экран, Копировать
           if (lang === 'mermaid') {
             const encodedCode = encodeURIComponent(rawText);
             const escapedCode = escapeHtml(rawText);
@@ -84,18 +85,38 @@ export class MarkdownService {
                     </svg>
                     Диаграмма Mermaid
                   </span>
-                  <button class="btn-copy-mermaid" type="button" title="Скопировать Mermaid код">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                    </svg>
-                    <span>Копировать код</span>
-                  </button>
+                  <div class="mermaid-header-actions">
+                    <button class="btn-toggle-mermaid-code" type="button" title="Переключить просмотр кода диаграммы">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="16 18 22 12 16 6"/>
+                        <polyline points="8 6 2 12 8 18"/>
+                      </svg>
+                      <span class="btn-toggle-text">Код</span>
+                    </button>
+                    <button class="btn-fullscreen-mermaid" type="button" title="Развернуть диаграмму на весь экран">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 3 21 3 21 9"/>
+                        <polyline points="9 21 3 21 3 15"/>
+                        <line x1="21" y1="3" x2="14" y2="10"/>
+                        <line x1="3" y1="21" x2="10" y2="14"/>
+                      </svg>
+                      <span>На весь экран</span>
+                    </button>
+                    <button class="btn-copy-mermaid" type="button" title="Скопировать Mermaid код">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                      </svg>
+                      <span>Копировать</span>
+                    </button>
+                  </div>
                 </div>
                 <div class="mermaid-diagram-loading">
                   <span class="spinner-sm"></span> Отрисовка диаграммы...
                 </div>
                 <div class="mermaid-svg-container"></div>
-                <pre class="mermaid-raw-source" style="display:none"><code>${escapedCode}</code></pre>
+                <div class="mermaid-code-container" style="display: none;">
+                  <pre class="language-mermaid"><code>${escapedCode}</code></pre>
+                </div>
               </div>
             `;
           }
@@ -165,34 +186,53 @@ export class MarkdownService {
     const blocks = container.querySelectorAll<HTMLElement>('.mermaid-block-wrapper:not([data-rendered])');
 
     for (const block of Array.from(blocks)) {
+      block.setAttribute('data-rendered', 'rendering');
+
       let code = '';
       const encodedCode = block.getAttribute('data-mermaid-code');
       if (encodedCode) {
         code = decodeURIComponent(encodedCode);
       } else {
-        const rawEl = block.querySelector<HTMLElement>('.mermaid-raw-source code');
+        const rawEl = block.querySelector<HTMLElement>('.mermaid-code-container code');
         if (rawEl) {
           code = rawEl.textContent || '';
         }
       }
-      if (!code) continue;
+      if (!code) {
+        block.setAttribute('data-rendered', 'empty');
+        continue;
+      }
 
       const loadingEl = block.querySelector<HTMLElement>('.mermaid-diagram-loading');
       const svgContainer = block.querySelector<HTMLElement>('.mermaid-svg-container');
 
-      const result = await this.mermaidService.render(code);
-      if (loadingEl) loadingEl.style.display = 'none';
+      try {
+        const result = await this.mermaidService.render(code);
+        if (loadingEl) loadingEl.style.display = 'none';
 
-      if (result.svg && svgContainer) {
-        svgContainer.innerHTML = result.svg;
-        block.setAttribute('data-rendered', 'true');
-      } else {
+        if (result.svg && svgContainer) {
+          svgContainer.innerHTML = result.svg;
+          block.setAttribute('data-rendered', 'true');
+        } else {
+          block.setAttribute('data-rendered', 'error');
+          if (svgContainer) {
+            svgContainer.innerHTML = `
+              <div class="mermaid-error-banner">
+                <div class="mermaid-error-title">⚠️ Ошибка синтаксиса диаграммы Mermaid</div>
+                <div class="mermaid-error-desc">${escapeHtml(result.error || '')}</div>
+                <pre class="mermaid-error-raw"><code>${escapeHtml(code)}</code></pre>
+              </div>
+            `;
+          }
+        }
+      } catch (err: any) {
+        if (loadingEl) loadingEl.style.display = 'none';
         block.setAttribute('data-rendered', 'error');
         if (svgContainer) {
           svgContainer.innerHTML = `
             <div class="mermaid-error-banner">
-              <div class="mermaid-error-title">⚠️ Ошибка синтаксиса диаграммы Mermaid</div>
-              <div class="mermaid-error-desc">${escapeHtml(result.error || '')}</div>
+              <div class="mermaid-error-title">⚠️ Не удалось отобразить диаграмму</div>
+              <div class="mermaid-error-desc">${escapeHtml(err?.message || '')}</div>
               <pre class="mermaid-error-raw"><code>${escapeHtml(code)}</code></pre>
             </div>
           `;
@@ -202,55 +242,239 @@ export class MarkdownService {
   }
 
   /**
-   * Обработчик кликов на кнопки копирования кода/диаграммы через делегирование
+   * Обработчик кликов на кнопки блоков кода и диаграмм через делегирование
    */
-  async handleCopyClick(event: MouseEvent): Promise<boolean> {
+  async handleBlockInteraction(event: MouseEvent): Promise<boolean> {
     const target = event.target as HTMLElement;
-    const copyBtn = target.closest<HTMLButtonElement>('.btn-copy-code, .btn-copy-mermaid');
-    if (!copyBtn) return false;
 
-    event.preventDefault();
-    event.stopPropagation();
-
-    let textToCopy = '';
-
-    if (copyBtn.classList.contains('btn-copy-mermaid')) {
-      const wrapper = copyBtn.closest<HTMLElement>('.mermaid-block-wrapper');
+    // 1. Копирование кода диаграммы Mermaid
+    const copyMermaidBtn = target.closest<HTMLButtonElement>('.btn-copy-mermaid');
+    if (copyMermaidBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const wrapper = copyMermaidBtn.closest<HTMLElement>('.mermaid-block-wrapper');
       const encoded = wrapper?.getAttribute('data-mermaid-code');
+      let textToCopy = '';
       if (encoded) {
         textToCopy = decodeURIComponent(encoded);
       } else {
-        const rawEl = wrapper?.querySelector<HTMLElement>('.mermaid-raw-source code');
-        if (rawEl) {
-          textToCopy = rawEl.textContent || '';
+        const rawEl = wrapper?.querySelector<HTMLElement>('.mermaid-code-container code');
+        if (rawEl) textToCopy = rawEl.textContent || '';
+      }
+      if (textToCopy) {
+        await navigator.clipboard.writeText(textToCopy);
+        const span = copyMermaidBtn.querySelector('span');
+        if (span) {
+          const prev = span.textContent;
+          span.textContent = 'Скопировано!';
+          copyMermaidBtn.classList.add('copied');
+          setTimeout(() => {
+            span.textContent = prev;
+            copyMermaidBtn.classList.remove('copied');
+          }, 2000);
         }
       }
-    } else {
-      const wrapper = copyBtn.closest<HTMLElement>('.code-block-wrapper');
-      const codeEl = wrapper?.querySelector('code');
-      if (codeEl) {
-        textToCopy = codeEl.textContent || '';
-      }
+      return true;
     }
 
-    if (!textToCopy) return false;
-
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-      const span = copyBtn.querySelector('span');
-      if (span) {
-        const originalText = span.textContent;
-        span.textContent = 'Скопировано!';
-        copyBtn.classList.add('copied');
-        setTimeout(() => {
-          span.textContent = originalText;
-          copyBtn.classList.remove('copied');
-        }, 2000);
+    // 2. Переключение "Код" / "Диаграмма"
+    const toggleBtn = target.closest<HTMLButtonElement>('.btn-toggle-mermaid-code');
+    if (toggleBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const wrapper = toggleBtn.closest<HTMLElement>('.mermaid-block-wrapper');
+      if (!wrapper) return true;
+      const svgContainer = wrapper.querySelector<HTMLElement>('.mermaid-svg-container');
+      const codeContainer = wrapper.querySelector<HTMLElement>('.mermaid-code-container');
+      const textSpan = toggleBtn.querySelector('.btn-toggle-text');
+      const isCodeVisible = codeContainer && codeContainer.style.display !== 'none';
+      if (isCodeVisible) {
+        if (codeContainer) codeContainer.style.display = 'none';
+        if (svgContainer) svgContainer.style.display = 'flex';
+        if (textSpan) textSpan.textContent = 'Код';
+        toggleBtn.classList.remove('active');
+      } else {
+        if (svgContainer) svgContainer.style.display = 'none';
+        if (codeContainer) codeContainer.style.display = 'block';
+        if (textSpan) textSpan.textContent = 'Диаграмма';
+        toggleBtn.classList.add('active');
       }
       return true;
-    } catch (err) {
-      console.warn('Не удалось скопировать в буфер обмена:', err);
-      return false;
     }
+
+    // 3. Открытие диаграммы на весь экран (Fullscreen Modal с Zoom/Pan)
+    const fullscreenBtn = target.closest<HTMLButtonElement>('.btn-fullscreen-mermaid');
+    if (fullscreenBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const wrapper = fullscreenBtn.closest<HTMLElement>('.mermaid-block-wrapper');
+      if (!wrapper) return true;
+      const svgContainer = wrapper.querySelector<HTMLElement>('.mermaid-svg-container');
+      const svgEl = svgContainer?.querySelector('svg');
+      let rawCode = '';
+      const encoded = wrapper.getAttribute('data-mermaid-code');
+      if (encoded) rawCode = decodeURIComponent(encoded);
+      if (svgEl) {
+        this.openFullscreenModal(svgEl.outerHTML, rawCode);
+      }
+      return true;
+    }
+
+    // 4. Обычные блоки исходного кода (копирование)
+    const copyCodeBtn = target.closest<HTMLButtonElement>('.btn-copy-code');
+    if (copyCodeBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const wrapper = copyCodeBtn.closest<HTMLElement>('.code-block-wrapper');
+      const codeEl = wrapper?.querySelector('code');
+      const textToCopy = codeEl?.textContent || '';
+      if (textToCopy) {
+        await navigator.clipboard.writeText(textToCopy);
+        const span = copyCodeBtn.querySelector('span');
+        if (span) {
+          const prev = span.textContent;
+          span.textContent = 'Скопировано!';
+          copyCodeBtn.classList.add('copied');
+          setTimeout(() => {
+            span.textContent = prev;
+            copyCodeBtn.classList.remove('copied');
+          }, 2000);
+        }
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Алиас для обратной совместимости
+   */
+  async handleCopyClick(event: MouseEvent): Promise<boolean> {
+    return this.handleBlockInteraction(event);
+  }
+
+  /**
+   * Открывает полноэкранный модальный просмотр диаграммы с масштабированием
+   */
+  openFullscreenModal(svgHtml: string, rawCode: string = ''): void {
+    const existing = document.querySelector('.mermaid-fullscreen-overlay');
+    if (existing) existing.remove();
+
+    // Очищаем инлайновые ограничения max-width Mermaid, чтобы диаграмма масштабировалась в модальном окне
+    const cleanSvgHtml = svgHtml
+      .replace(/style="[^"]*max-width:[^;"]*;?[^"]*"/gi, '')
+      .replace(/width="100%"/gi, '');
+
+    let zoom = 1.0;
+    const overlay = document.createElement('div');
+    overlay.className = 'mermaid-fullscreen-overlay';
+
+    overlay.innerHTML = `
+      <div class="mermaid-modal-header">
+        <div class="mermaid-modal-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v3a3 3 0 0 0 3 3h6"/>
+          </svg>
+          Диаграмма Mermaid (Полноэкранный просмотр)
+        </div>
+        <div class="mermaid-modal-controls">
+          <button type="button" class="mermaid-modal-btn btn-zoom-out" title="Уменьшить масштаб">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            <span>-</span>
+          </button>
+          <button type="button" class="mermaid-modal-btn btn-zoom-reset" title="Сбросить масштаб">
+            <span class="zoom-level-text">100%</span>
+          </button>
+          <button type="button" class="mermaid-modal-btn btn-zoom-in" title="Увеличить масштаб">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            <span>+</span>
+          </button>
+          ${rawCode ? `
+            <button type="button" class="mermaid-modal-btn btn-modal-copy" title="Скопировать Mermaid код">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>Копировать код</span>
+            </button>
+          ` : ''}
+          <button type="button" class="mermaid-modal-btn btn-close-modal" title="Закрыть (Esc)">
+            ✕ Закрыть
+          </button>
+        </div>
+      </div>
+      <div class="mermaid-modal-body">
+        <div class="mermaid-modal-svg-wrapper">
+          ${cleanSvgHtml}
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const svgWrapper = overlay.querySelector<HTMLElement>('.mermaid-modal-svg-wrapper');
+    const zoomText = overlay.querySelector<HTMLElement>('.zoom-level-text');
+    const bodyEl = overlay.querySelector<HTMLElement>('.mermaid-modal-body');
+
+    const updateZoom = (newZoom: number) => {
+      zoom = Math.min(3.5, Math.max(0.3, newZoom));
+      if (svgWrapper) svgWrapper.style.transform = `scale(${zoom})`;
+      if (zoomText) zoomText.textContent = `${Math.round(zoom * 100)}%`;
+    };
+
+    overlay.querySelector('.btn-zoom-in')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      updateZoom(zoom + 0.2);
+    });
+
+    overlay.querySelector('.btn-zoom-out')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      updateZoom(zoom - 0.2);
+    });
+
+    overlay.querySelector('.btn-zoom-reset')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      updateZoom(1.0);
+    });
+
+    overlay.querySelector('.btn-modal-copy')?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (rawCode) {
+        await navigator.clipboard.writeText(rawCode);
+        const span = (e.currentTarget as HTMLElement).querySelector('span');
+        if (span) {
+          const prev = span.textContent;
+          span.textContent = '✓ Скопировано!';
+          setTimeout(() => span.textContent = prev, 2000);
+        }
+      }
+    });
+
+    const closeModal = () => {
+      document.removeEventListener('keydown', onKeyDown);
+      overlay.remove();
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        closeModal();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    overlay.querySelector('.btn-close-modal')?.addEventListener('click', closeModal);
+
+    // Zoom on wheel with Ctrl
+    bodyEl?.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        updateZoom(zoom + (e.deltaY < 0 ? 0.15 : -0.15));
+      }
+    }, { passive: false });
   }
 }

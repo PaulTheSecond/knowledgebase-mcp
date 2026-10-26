@@ -51,12 +51,18 @@ export class MermaidService {
    * предотвращая падение интерфейса, и возвращает описание ошибки.
    */
   async render(code: string): Promise<{ svg: string; error?: string }> {
-    const cleanCode = code.trim();
+    let cleanCode = code.trim();
+    // Очищаем случайные обрамления Markdown ```mermaid ... ```
+    cleanCode = cleanCode
+      .replace(/^```\s*(mermaid)?\s*/i, '')
+      .replace(/\s*```\s*$/, '')
+      .trim();
+
     if (!cleanCode) {
       return { svg: '', error: 'Диаграмма пуста' };
     }
 
-    const id = `mermaid_diag_${++this.idCounter}_${Date.now()}`;
+    const id = `mermaid_${++this.idCounter}_${Date.now()}`;
     const m = getMermaid();
     if (!m || typeof m.render !== 'function') {
       return { svg: '', error: 'Модуль Mermaid не загружен' };
@@ -67,7 +73,6 @@ export class MermaidService {
       const result = await m.render(id, cleanCode);
       return { svg: result.svg };
     } catch (err: any) {
-      // Mermaid может оставлять временный svg-элемент с ошибкой в DOM, удаляем его
       const stray = document.getElementById(id) || document.getElementById(`d${id}`);
       if (stray) {
         stray.remove();

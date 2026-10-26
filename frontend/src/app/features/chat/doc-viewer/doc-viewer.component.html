@@ -117,7 +117,7 @@
         </div>
       } @else if (isMarkdown(tab.filepath) && tab.viewMode === 'rendered') {
         <!-- Режим отрендеренного Markdown с диаграммами Mermaid -->
-        <div class="markdown-preview-container markdown-body" #markdownPreview [innerHTML]="getRenderedMarkdown(tab)">
+        <div class="markdown-preview-container markdown-body" #markdownPreview (click)="onMarkdownClick($event)" [innerHTML]="getRenderedMarkdown(tab)">
         </div>
       } @else {
         <!-- Режим исходного кода с номерами строк и подсветкой фрагмента -->
