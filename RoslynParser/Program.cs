@@ -28,6 +28,32 @@ namespace RoslynParser
                 return;
             }
 
+            HashSet<string>? targetFiles = null;
+            for (int i = 1; i < args.Length; i++)
+            {
+                if (args[i] == "--files" && i + 1 < args.Length)
+                {
+                    var filesArg = args[i + 1];
+                    if (File.Exists(filesArg))
+                    {
+                        targetFiles = new HashSet<string>(
+                            File.ReadAllLines(filesArg)
+                                .Where(l => !string.IsNullOrWhiteSpace(l))
+                                .Select(p => Path.GetFullPath(p.Trim())),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                    }
+                    else
+                    {
+                        targetFiles = new HashSet<string>(
+                            filesArg.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                .Select(p => Path.GetFullPath(p.Trim())),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                    }
+                }
+            }
+
             MSBuildLocator.RegisterDefaults();
 
             using var workspace = MSBuildWorkspace.Create();
@@ -69,6 +95,11 @@ namespace RoslynParser
                 {
                     if (document.FilePath == null) continue;
                     
+                    if (targetFiles != null && !targetFiles.Contains(Path.GetFullPath(document.FilePath)))
+                    {
+                        continue;
+                    }
+
                     var model = await document.GetSemanticModelAsync();
                     if (model == null) continue;
 

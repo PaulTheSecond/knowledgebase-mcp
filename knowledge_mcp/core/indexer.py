@@ -106,10 +106,11 @@ class Indexer:
     # Roslyn: семантический анализ .NET проектов
     # ──────────────────────────────────────────────────────────────────────
 
-    def _run_roslyn_analysis(self, repo_path: Path, spec: pathspec.PathSpec):
+    def _run_roslyn_analysis(self, repo_path: Path, spec: pathspec.PathSpec, target_files: Optional[List[Path]] = None):
         """
         Запускает RoslynParser для .NET проектов и заполняет self.csharp_cache.
         Кэш содержит символы и рёбра для каждого .cs файла.
+        При передаче target_files парсинг выполняется инкрементально только для указанных файлов.
         """
         self.csharp_cache = {}
 
@@ -134,47 +135,68 @@ class Indexer:
         parser_dll = app_root / "RoslynParser" / "bin" / "Release" / "net8.0" / "RoslynParser.dll"
         parser_csproj = app_root / "RoslynParser" / "RoslynParser.csproj"
 
-        for proj in csharp_projects:
-            if "RoslynParser" in str(proj):
-                continue
+        files_arg_file = None
+        if target_files:
+            import tempfile
+            tf = tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False, suffix='.txt')
+            for p in target_files:
+                tf.write(str(p.resolve()) + "\n")
+            tf.close()
+            files_arg_file = tf.name
 
-            logger.info(f"Running Roslyn semantic analysis on {proj}...")
+        try:
+            for proj in csharp_projects:
+                if "RoslynParser" in str(proj):
+                    continue
 
-            if parser_dll.exists():
-                cmd = ["dotnet", str(parser_dll), str(proj)]
-            else:
-                cmd = [
-                    "dotnet", "run", "-c", "Release",
-                    "--project", str(parser_csproj),
-                    "--", str(proj)
-                ]
+                if target_files:
+                    logger.info(f"Running Roslyn delta analysis for {len(target_files)} file(s) on {proj}...")
+                else:
+                    logger.info(f"Running Roslyn semantic analysis on {proj}...")
 
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode != 0:
-                logger.error(f"Roslyn analysis failed for {proj}: {res.stderr}")
-                continue
+                if parser_dll.exists():
+                    cmd = ["dotnet", str(parser_dll), str(proj)]
+                else:
+                    cmd = [
+                        "dotnet", "run", "-c", "Release",
+                        "--project", str(parser_csproj),
+                        "--", str(proj)
+                    ]
+                if files_arg_file:
+                    cmd.extend(["--files", files_arg_file])
 
-            try:
-                data = json.loads(res.stdout)
-
-                for s in data.get('symbols', []):
-                    fp = get_resolved(s['file_path'])
-                    if fp not in self.csharp_cache:
-                        self.csharp_cache[fp] = {'symbols': [], 'edges': []}
-                    self.csharp_cache[fp]['symbols'].append(s)
-
-                id_to_file = {
-                    s['ast_node_id']: get_resolved(s['file_path'])
-                    for s in data.get('symbols', [])
-                }
-
-                for e in data.get('edges', []):
-                    if e['source_ast_id'] in id_to_file:
-                        fp = id_to_file[e['source_ast_id']]
-                        self.csharp_cache[fp]['edges'].append(e)
-
-            except Exception as ex:
-                logger.error(f"Failed to parse Roslyn output for {proj}: {ex}")
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                if res.returncode != 0:
+                    logger.error(f"Roslyn analysis failed for {proj}: {res.stderr}")
+                    continue
+    
+                try:
+                    data = json.loads(res.stdout)
+    
+                    for s in data.get('symbols', []):
+                        fp = get_resolved(s['file_path'])
+                        if fp not in self.csharp_cache:
+                            self.csharp_cache[fp] = {'symbols': [], 'edges': []}
+                        self.csharp_cache[fp]['symbols'].append(s)
+    
+                    id_to_file = {
+                        s['ast_node_id']: get_resolved(s['file_path'])
+                        for s in data.get('symbols', [])
+                    }
+    
+                    for e in data.get('edges', []):
+                        if e['source_ast_id'] in id_to_file:
+                            fp = id_to_file[e['source_ast_id']]
+                            self.csharp_cache[fp]['edges'].append(e)
+    
+                except Exception as ex:
+                    logger.error(f"Failed to parse Roslyn output for {proj}: {ex}")
+        finally:
+            if files_arg_file and os.path.exists(files_arg_file):
+                try:
+                    os.unlink(files_arg_file)
+                except Exception:
+                    pass
 
     # ──────────────────────────────────────────────────────────────────────
     # Общий helper: создание чанка + постановка в очередь эмбеддингов
@@ -785,8 +807,11 @@ class Indexer:
                     if res[4] in ('updated', 'added') and res[1].suffix.lower() == '.cs'
                 ]
 
-                if cs_files_needing_analysis or (force and any(item[1].suffix.lower() == '.cs' for item in files_to_check)):
-                    logger.info(f"Detected {len(cs_files_needing_analysis)} modified/new C# file(s). Running Roslyn semantic analysis...")
+                if cs_files_needing_analysis:
+                    logger.info(f"Detected {len(cs_files_needing_analysis)} modified/new C# file(s). Running Roslyn delta analysis...")
+                    self._run_roslyn_analysis(repo_path, spec, target_files=cs_files_needing_analysis)
+                elif force and any(item[1].suffix.lower() == '.cs' for item in files_to_check):
+                    logger.info(f"Force re-index requested. Running full Roslyn analysis...")
                     self._run_roslyn_analysis(repo_path, spec)
                 else:
                     logger.info(f"All C# files in '{repo_id}' are unchanged/cached by CAS. Skipping heavy Roslyn analysis.")
