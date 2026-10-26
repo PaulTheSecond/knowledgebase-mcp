@@ -1,174 +1,190 @@
-# Roadmap: Autonomous Operation & Knowledge Management
+# Дорожная карта: Автономная работа и управление базой знаний
 
-This document outlines the planned evolution of the knowledge base MCP server toward fully autonomous operation — automatically reacting to changes in connected repositories and providing deep code comprehension tools.
+В данном документе описана стратегия развития MCP-сервера базы знаний (`knowledge-mcp`) в сторону полной автономности: автоматической реакции на изменения в подключенных репозиториях, глубокого структурного понимания кода и оптимизации работы с AI-ассистентами.
 
-Current version: **v1.7.0 (v1.8 in progress)**
+Текущая версия: **v1.8.0 (в разработке / завершается)**
 
 ---
 
-## Roadmap Visualization
+## Визуализация дорожной карты
 
 ```mermaid
-flowchart TD
-    subgraph S_PAST["Completed Releases"]
-        v1_7["v1.7: Hardening & Container Distribution\nDocker Hub CI/CD publication & registry mirrors"]
-    end
-
-    subgraph S_CURRENT["Current Work"]
-        v1_8["v1.8: Multi-Worktree, CAS & Hybrid Sync Engine\n• Multi-worktree workspaces & CAS deduplication (~1.5 GB)\n• JIT git status (2-3 ms) + Win32 watcher + Agent hooks\n• Code review graph & Rules hub (.kb/)"]
-    end
-
-    subgraph S_NEXT["Next Minor Releases"]
-        v1_9["v1.9: Multi-Provider LLM Profiles & Protocol Support\n• User-scoped and shared LLM provider profiles\n• OpenAI-compatible, Ollama, and local gateway protocols\n• Secure credential management in Dashboard Settings\n• Endpoint diagnostics and model auto-discovery"]
-        v1_10["v1.10: Multi-User Authentication, RBAC & Team Workspaces\n• User accounts and password management (Argon2)\n• Role-Based Access Control (Admin, Developer, Viewer)\n• Per-user private profiles, chat history, and audit logs\n• Team workspace permissions"]
-    end
-
-    subgraph S_FUTURE["Future Horizon"]
-        v2_0["v2.0: Visual Knowledge Graph Explorer\n• Interactive in-browser dependency & call graph\n• Blast-radius visualization"]
-    end
-
-    v1_7 --> v1_8
-    v1_8 --> v1_9
-    v1_9 --> v1_10
-    v1_10 --> v2_0
-
-    style v1_8 fill:#1f6feb,stroke:#58a6ff,stroke-width:2px,color:#ffffff
-    style v1_9 fill:#238636,stroke:#3fb950,stroke-width:2px,color:#ffffff
-    style v1_10 fill:#8957e5,stroke:#a371f7,stroke-width:2px,color:#ffffff
-    style v2_0 fill:#30363d,stroke:#8b949e,stroke-width:1px,color:#c9d1d9
+timeline
+    title Эволюция проекта Knowledge Base MCP
+    v0.9 : Ранние версии
+         : Базовый полнотекстовый поиск (FTS)
+         : Отсутствие графа вызовов и зависимостей
+    v1.2 : Стабильное ядро
+         : Гибридный поиск и индексация графа (Roslyn / Tree-sitter)
+    v1.3 - v1.4 : Триггеры и вебхуки
+         : Управление секретами в RAM (PAT / SSH)
+         : Криптографическая валидация (HMAC-SHA256)
+         : Опрос по расписанию (Cron)
+    v1.5 - v1.6 : Автономный конвейер и Web UI
+         : SQLite FIFO-очередь с экспоненциальным backoff
+         : No-Build SPA дашборд (Basic Auth, WebSockets)
+         : Интерактивный RAG-чат с локальными LLM (OmniRoute)
+    v1.6.1 : Оптимизация хранилища и Delta-Sync
+         : Парсинг файлов коммитов из полезной нагрузки вебхука
+         : FTS5 external content (content='chunks') и FULL auto_vacuum
+         : Батчинг транзакций SQLite (1400+ файлов / 23k+ чанков)
+    v1.6.2 : IDE-инспектор документов и диаграммы
+         : Многовкладочный просмотр файлов с подсветкой строк цитат
+         : Разделитель экрана с памятью и SVG-рендеринг Mermaid
+         : Интеграция с локальными путями репозиториев
+    v1.7 : Контейнерная дистрибуция и харденинг
+         : Автоматическая публикация образов в Docker Hub / зеркала
+         : Руководства по безопасному развертыванию
+    v1.8 : Мульти-ворктри, CAS-дедупликация и гибридный синк
+         : Поддержка нескольких ворктри (паттерн Orbita)
+         : Хранилище CAS на SHA-256 (~1.5 ГБ вместо 7–10 ГБ, сжатие >80%)
+         : Гибридный JIT-синк (2–3 мс) + Win32 watcher + хуки агентов
+         : Граф ревью кода (радиус поражения, оценка рисков, TESTED_BY)
+         : Хаб правил проектов (.kb/, экономия до 95% токенов)
+         : Дашборд телеметрии (/dashboard) и профили без следов
+    v1.9 : Профили LLM и протокольная интеграция
+         : Пользовательские и общие профили провайдеров LLM
+         : Совместимость с OpenAI API, Ollama и локальными шлюзами
+         : Управление учетными данными и автопоиск моделей в UI
+    v1.10 : Мульти-пользовательский доступ и RBAC
+         : Учетные записи пользователей и Argon2-хеширование
+         : Ролевой доступ (Admin, Developer, Viewer)
+         : Изолированные сессии RAG-чата и журнал аудита
+    v2.0 (Горизонт) : Визуальный эксплорер графа знаний
+         : Интерактивный браузерный граф вызовов и зависимостей
+         : Визуализация радиуса поражения (blast radius) в UI
 ```
 
 ---
 
-## v1.3: Base Configuration (Env / Config File) — ✅ *Completed*
-- Configure subscriptions and triggers via environment variables (`.env`) or a config file (`config.yaml`).
-- Enables autonomous operation at container startup without requiring any visual interface.
+## v1.3: Базовая конфигурация (Env / Файл настроек) — ✅ *Завершено*
+- Конфигурация подписок и триггеров через переменные окружения (`.env`) или конфигурационный файл (`config.yaml`).
+- Полностью автономная работа сервера сразу при старте контейнера без обязательного наличия визуального интерфейса.
 
-## v1.3.1: Update Sources — ✅ *Completed*
-- Define source parameters for Git repositories in configuration.
-- Secure credential management in RAM (PAT via `http.extraHeader`, SSH without saving tokens on disk).
+## v1.3.1: Источники обновлений (Sources) — ✅ *Завершено*
+- Определение параметров для Git-репозиториев (целевые ветки, таймауты).
+- Безопасное хранение учетных данных в оперативной памяти (PAT через заголовок `http.extraHeader`, SSH-ключи без сохранения на диск).
 
-## v1.4: Trigger Configuration — ✅ *Completed*
-- HTTP endpoint `/webhook/git` supporting GitHub, Gitea (`X-Hub-Signature-256`, `X-Gitea-Signature`) and GitLab (`X-Gitlab-Token`).
-- Periodic scheduled updates (Cron expressions).
+## v1.4: Настройка триггеров (Triggers & Webhooks) — ✅ *Завершено*
+- Входящий HTTP-эндпоинт `/webhook/git` с поддержкой GitHub, Gitea (`X-Hub-Signature-256`, `X-Gitea-Signature`) и GitLab (`X-Gitlab-Token`).
+- Периодическая фоновая синхронизация по настраиваемому расписанию (Cron-выражения).
 
-## v1.5: Autonomous Processing Lifecycle — ✅ *Completed*
-- SQLite-backed FIFO queue (`sync_queue`) with persistent status tracking.
-- Worker process with exponential backoff retries (1m, 5m, 15m), fatal halt protection, and Git SHA idempotency.
+## v1.5: Автономный жизненный цикл обработки — ✅ *Завершено*
+- Отказоустойчивая FIFO-очередь в SQLite (`sync_queue`) с фиксацией статуса выполнения.
+- Фоновый воркер с экспоненциальной задержкой повторов (1 мин, 5 мин, 15 мин), защитой от фатальных сбоев и идемпотентностью по SHA коммита.
 
-## v1.6: Management Dashboard & RAG Chat — ✅ *Completed*
-- Lightweight No-Build SPA web interface on FastAPI (HTML5, Vanilla CSS/JS).
-- Basic Auth security with short-lived session tokens for WebSockets and SSE.
-- Real-time indexing telemetry with progress bars and queue viewer.
-- Interactive RAG Chat with SSE streaming, code syntax highlighting, and clickable file sources.
-
----
-
-## v1.6.1: Maintenance, Storage Optimization & Large-Scale Indexing — ✅ *Completed*
-- **Payload file parsing:** Extract modified and added file paths directly from webhook commit payloads (`commits[].added`, `commits[].modified`, `commits[].removed`) and pass them to the indexer for instant delta-indexing without scanning entire repositories.
-- **Docker Compose portability:** Relative volume mounts (`./data:/data`) and `.env` configuration file ingestion.
-- **Storage optimization (ADR-006):** FTS5 external content table (`content='chunks'`) eliminating 100% text duplication; `PRAGMA auto_vacuum = FULL;` for automatic file compaction.
-- **Transaction batching & resilience:** Periodic batch commits (`BATCH_COMMIT_SIZE = 50`) and SQLite engine tuning (`temp_store = MEMORY`, `cache_size = -64000`, `busy_timeout = 60000`) enabling seamless indexing of 1,400+ files / 23,000+ chunks without disk I/O errors.
-- **Local repository support (`local_path`):** Direct indexing of locally mounted folders without requiring remote Git clone/pull or credentials.
-- **Mutation testing:** Setup `mutmut` for testing mutation resilience across the database and persistence layers.
-- **Documentation refresh:** Comprehensive update of `README.md`, ADRs, and coding standards.
-
-## v1.6.2: Interactive RAG Chat, IDE-Style Doc Inspector & Diagramming — ✅ *Completed*
-- **IDE-style Tabbed Document Viewer (ADR-007):** Dedicated right-hand inspector panel with multi-tab support for simultaneous inspection of referenced files.
-- **Citation line range highlighting & auto-scroll:** Exact line ranges (e.g. lines 6–9) highlighted in yellow-orange (`.line-highlight`) with smooth auto-scroll to the citation; toggle between full document view and isolated chunk snippet.
-- **Rendered Markdown & Raw Code View:** Switch seamlessly between formatted Markdown preview (with checklist and table rendering) and raw syntax-highlighted code with line numbers.
-- **Mermaid diagram rendering:** Rich SVG diagram rendering for Mermaid blocks with Dark/Light theme auto-sync, styled code headers with programming language labels and one-click clipboard copying.
-- **Resizable Splitter & Dialogue Memory:** Drag-to-resize split view defaulting to 45% with double-click reset; browser-persisted chat history with a "New Dialog" reset action.
-- **Configured Repo Path Resolution:** Backend `/api/chat/file` path resolution across all configured repository roots (`local_path`, `clones_dir`, `project_dir`) supporting `full_file=true`.
-
-## v1.7: Container Distribution & Deployment Hardening — ✅ *Completed*
-- **Automated Container Registry Publication (Docker Hub / YCR):**
-  - Fully automated GitHub Actions CI/CD workflow (`.github/workflows/docker-publish.yml`) for automated Docker Hub image builds (`:latest`, semver tags).
-  - Production distribution guide for proxy-safe container deployments and Docker daemon registry mirrors (`registry-mirrors`) in restricted network environments.
-  - See detailed guide: [Container Registry Publication & Distribution Guide](deployment-and-docker-registry.md).
-- *Note:* Resource telemetry (memory, disk, token consumption) and queue management extensions have been promoted into the comprehensive `/dashboard` architecture in **v1.8**.
-
-## v1.8: Multi-Worktree, CAS Deduplication & Hybrid Sync Engine — 🚀 *In Progress*
-*Target Release: v1.8.0 | Architectural Reference: [ADR-008: Multi-Worktree, CAS Deduplication and Hybrid Sync](adr-008-multi-worktree-cas-and-hybrid-sync.md)*
-
-- **Multi-Worktree Workspaces & Automatic Discovery:**
-  - Native workspace orchestration for multi-repository environments with Git worktrees (e.g. enterprise pattern `C:\Repos\DVCN\Orbita`: `worktrees/master`, `worktrees/{task}`).
-  - Auto-discovery of active worktrees and tasks via filesystem inspection and `git rev-parse --abbrev-ref HEAD`.
-  - Configurable project-level groups via the `projects:` schema in `config.yaml`.
-- **CAS (Content-Addressable Storage) Deduplication Engine:**
-  - Complete decoupling of logical paths (`files`) and physical file bodies (`file_contents` keyed by SHA-256).
-  - AST symbols (`symbols`), text chunks (`chunks`), vector embeddings (`chunks_vec`), and FTS index (`chunks_fts`) bound directly to unique file content hashes.
-  - Storage footprint drastically reduced from 7–10 GB down to **~1.5 GB** across 10+ concurrent worktrees (over 80% compression ratio), with zero redundant embedding computations.
-- **100% Backward Compatibility:**
-  - Seamless zero-config support for classic single-repository configurations (`project_id='default'`, `branch='master'`).
-  - Safe, automated database migration (`20261101_12_cas_and_multi_worktree`) preserving all historical indexes with zero downtime.
-  - Legacy repositories automatically benefit from microsecond JIT checks and code review tools.
-- **Hybrid Synchronization Engine (JIT + Watcher + Hooks):**
-  - **JIT Microsecond Validation:** Real-time `git status --porcelain` check (2–3 ms) before serving any MCP query, guaranteeing 100% fresh context and eliminating hallucinations when code is modified in external IDEs.
-  - **Win32 Kernel File Watcher:** Zero-overhead Windows OS kernel subscription (`ReadDirectoryChangesW`) for proactive background cache invalidation in Cursor and Codex/Copilot environments.
-  - **Agent Tool Hooks:** Direct lifecycle integration with Claude Code (`PostToolUse` for `Edit`/`Write`, `PreToolUse` for query nudge, `SessionStart`) and Antigravity custom plugins.
-- **Code Review Graph & Blast Radius Analysis (CRG Best Practices):**
-  - Tool `knowledge_review_context`: Instant diff analysis between task worktree and `master`, calculating change blast radius and upstream caller impact.
-  - Risk scoring (0–100) combining cyclomatic complexity, call graph depth, and test coverage gaps.
-  - Deep test associations: Automated AST parsing of test suites for C# (.NET / Roslyn) and TypeScript/Python (Tree-sitter), generating `TESTED_BY` edges and identifying un-tested modified methods (Test Gaps).
-- **Centralized Institutional Memory & Rules Token Optimizer:**
-  - Automated indexing of repository documentation (`.kb/` directory) and institutional guidelines (`CLAUDE.md`, `.cursorrules`).
-  - Tool `knowledge_get_project_rules(topic)`: Provides targeted rule retrieval on-demand, replacing massive 76 KB instruction injections with compact 1.5 KB contextual snippets and saving up to 95% of prompt tokens.
-  - Tool `knowledge_search_docs`: Dedicated semantic and keyword search across `.kb/` architectural documents.
-- **Dedicated Web UI Dashboard (`/dashboard`) & Telemetry:**
-  - **Token Savings Telemetry Widget:** Real-time tracking of tokens saved through RAG precision and rule chunking (`token_savings_log`), context compression percentages, and estimated LLM cost reductions.
-  - **CAS Storage Compression Widget:** Live comparison of SQLite database footprint versus uncompressed worktree storage (*"Stored: 1.48 GB | Virtual: 8.65 GB | Saved: 7.17 GB / 83%"*).
-  - **Engine Health Monitor:** Real-time status indicators for Win32 File Watcher, JIT check latency (ms), and background sync queues.
-  - **Multi-Branch Navigation:** Hierarchical workspace view in `/repositories` and branch-scoped filtering in `/queue` and `/chat`.
-- **Zero-Footprint Multi-Agent Presets:**
-  - Turnkey configuration presets and hook configurations for **Claude Code**, **Antigravity (AGY)**, **Cursor**, and **Codex/Copilot**.
-  - Absolute zero-footprint guarantee: Zero temporary files, metadata, or databases written into client code repositories.
+## v1.6: Панель управления и интерактивный RAG-чат — ✅ *Завершено*
+- Легковесный No-Build SPA веб-интерфейс на базе FastAPI (чистый HTML5, Vanilla CSS и JS).
+- Безопасность на базе Basic Auth с генерацией короткоживущих сессионных токенов для WebSockets и SSE.
+- Телеметрия индексации в реальном времени с прогресс-барами и визуализатором очереди задач.
+- Интерактивный RAG-чат с SSE-стримингом ответов, подсветкой синтаксиса и кликабельными ссылками на исходный код.
 
 ---
 
-## v1.9: Multi-Provider LLM Profiles & Protocol Support — 📋 *Planned*
-*Target Release: v1.9.0 | Focus: Architecture, Configuration & Infrastructure Management*
+## v1.6.1: Оптимизация хранилища, батчинг и быстрая Delta-синхронизация — ✅ *Завершено*
+- **Парсинг файлов из коммитов (Payload):** Прямое извлечение путей измененных, добавленных и удаленных файлов из вебхука (`commits[].added`, `commits[].modified`, `commits[].removed`) для мгновенной дельта-индексации без сканирования всего репозитория.
+- **Портативность Docker Compose:** Относительные пути монтирования томов (`./data:/data`) и прозрачная загрузка конфигурации из `.env`.
+- **Оптимизация хранения SQLite (ADR-006):** Таблица FTS5 с внешним контентом (`content='chunks'`), исключающая дублирование исходного текста; включение `PRAGMA auto_vacuum = FULL;` для автоматического сжатия базы данных.
+- **Батчинг транзакций и устойчивость к нагрузкам:** Периодическая фиксация транзакций пакетами (`BATCH_COMMIT_SIZE = 50`) и тюнинг параметров движка SQLite (`temp_store = MEMORY`, `cache_size = -64000`, `busy_timeout = 60000`), позволившие бесперебойно проиндексировать 1 400+ файлов и 23 000+ фрагментов кода без ошибок дискового I/O.
+- **Поддержка локальных репозиториев (`local_path`):** Прямая индексация локально примонтированных каталогов без необходимости клонирования, SSH-ключей или токенов.
+- **Мутационное тестирование:** Настройка `mutmut` для проверки устойчивости базы данных и слоя персистентности.
+- **Обновление документации:** Актуализация архитектурных решений (ADR), стандартов кодирования и `README.md`.
 
-- **User-Scoped & Shared Provider Profiles:**
-  - Configurable LLM profile presets in database/config with ownership metadata (`owner`, `is_shared`).
-  - Support for shared organization profiles (managed by administrator) and personal user-defined profiles.
-  - Active profile selection persisted per authenticated user session.
-  - Universal protocol compatibility: OpenAI-compatible Chat Completions (`/v1/chat/completions`), Ollama API, and local inference gateways (vLLM, LM Studio, LocalAI, OmniRoute, LiteLLM).
-  - Broad provider support: commercial model APIs (Anthropic, OpenAI, Google, DeepSeek, Mistral) and open-source models via self-hosted backends (Llama, Qwen, DeepSeek).
-  - Passwordless operation for local inference servers (omitting mandatory API keys for local endpoints).
+## v1.6.2: Интерактивный RAG-чат, IDE-инспектор документов и диаграммы — ✅ *Завершено*
+- **Многовкладочный инспектор документов в стиле IDE (ADR-007):** Выделенная правая панель с вкладками для одновременного параллельного изучения нескольких файлов из цитат.
+- **Подсветка строк и автоскролл к цитате:** Точная подсветка диапазонов строк (например, строки 6–9) оранжево-желтым цветом (`.line-highlight`) с плавным скроллом к фрагменту; быстрое переключение между просмотром изолированного фрагмента и полным файлом.
+- **Переключение Markdown / Исходный код:** Удобный переключатель между форматированным представлением Markdown (с чекбоксами и таблицами) и сырым кодом с номерами строк и синтаксической подсветкой.
+- **Рендеринг диаграмм Mermaid:** Отображение блоков Mermaid в виде интерактивных SVG с автоматической синхронизацией темной/светлой темы, шапками блоков кода с бейджем языка и копированием в один клик.
+- **Разделитель с памятью и история диалога:** Перетаскиваемый разделитель (по умолчанию 45%) с быстрым сбросом по двойному клику; сохранение истории сообщений в памяти браузера с кнопкой «Новый диалог».
+- **Разрешение путей репозиториев:** Бэкенд `/api/chat/file` с автоматическим сопоставлением путей по всем подключенным корням репозиториев (`local_path`, `clones_dir`, `project_dir`) с поддержкой `full_file=true`.
 
-- **Secure Credential & Endpoint Management in Settings:**
-  - Dedicated provider management interface within Dashboard Settings: create, edit, test, and save provider presets.
-  - API key and bearer token management with masked inputs (`••••••••`), validation, and persistent storage.
-  - Clear visual indicator for credential origin: environment variables (`ENV`) vs. stored configuration.
-
-- **Connection Diagnostics & Model Discovery:**
-  - Endpoint healthcheck with real-time latency and time-to-first-token (TTFT) benchmarking.
-  - Auto-discovery querying standard `/v1/models` endpoints to populate available model names directly in Settings.
-
----
-
-## v1.10: Multi-User Authentication, RBAC & Team Workspaces — 📋 *Planned*
-*Target Release: v1.10.0 | Focus: Enterprise Readiness, Security & Team Collaboration*
-
-- **User Account Management & Modern Authentication:**
-  - Dedicated `users` database table with secure password hashing (Argon2 / bcrypt).
-  - Transition from single-password Basic Auth to session-based token authentication (JWT / secure HTTP-only cookies).
-  - User self-service profile management (change password, interface theme, personal language preferences).
-
-- **Role-Based Access Control (RBAC):**
-  - Granular role hierarchy: `Admin` (full system settings, repository connections, global triggers), `Developer` (querying, triggering sync, managing personal LLM profiles), `Viewer` (read-only search and documentation inspection).
-  - Repository-level access control: restrict visibility of sensitive codebases to designated teams or user groups.
-
-- **Isolated User State & Collaboration:**
-  - Per-user RAG chat sessions and history stored securely in SQLite with export capability.
-  - Audit log tracking user actions: manual sync triggers, configuration changes, and repository access.
+## v1.7: Контейнерная дистрибуция и надежность развертывания — ✅ *Завершено*
+- **Автоматическая сборка и публикация образов (Docker Hub / реестры):**
+  - Полноценный пайплайн GitHub Actions CI/CD (`.github/workflows/docker-publish.yml`) для сборки многоплатформенных образов (`:latest`, семантические теги версий).
+  - Подробные руководства по работе через корпоративные прокси и настройке зеркал Docker daemon (`registry-mirrors`) для изолированных сетей.
+  - См. руководство: [Публикация и дистрибуция контейнеров](deployment-and-docker-registry.md).
+- *Примечание:* Расширенные метрики мониторинга ресурсов (память, диск, токен-метрики) и управление очередью синхронизации перенесены в полноценную архитектуру `/dashboard` в рамках **v1.8**.
 
 ---
 
-## v2.0 (Future Horizon): Visual Knowledge Graph & Architecture Explorer — 🔭 *Future Horizon*
-*Estimate: Major milestone*
-- **Interactive Graph UI:** In-browser visualizer (using Cytoscape.js or vis.js) embedded in Web Dashboard.
-- **Dependency & Call Navigation:** Click-through navigation across symbols, inheritance hierarchies, and method call chains.
-- **Visual Impact Analysis:** Interactive blast-radius visualization highlighting modules and symbols affected by proposed code changes.
-- **Architecture Export:** Exporting architectural diagrams in SVG and Markdown formats.
+## v1.8: Мульти-ворктри, CAS-дедупликация и гибридный движок синхронизации — 🚀 *В разработке (завершается)*
+*Целевой релиз: v1.8.0 | Архитектурная спецификация: [ADR-008: Multi-Worktree, CAS Deduplication and Hybrid Sync](adr-008-multi-worktree-cas-and-hybrid-sync.md)*
+
+- **Рабочие пространства с несколькими Worktree и автообнаружение:**
+  - Нативная оркестрация рабочих пространств для корпоративных репозиториев с Git Worktrees (паттерн компании `C:\Repos\DVCN\Orbita`: `worktrees/master`, `worktrees/{task}`).
+  - Автоматическое обнаружение активных ворктри и рабочих задач через файловую систему и `git rev-parse --abbrev-ref HEAD`.
+  - Гибкая группировка репозиториев через секцию `projects:` в `config.yaml`.
+- **Движок дедупликации CAS (Content-Addressable Storage):**
+  - Полное разделение логических путей (`files`) и физического содержимого файлов (`file_contents` с первичным ключом по SHA-256).
+  - Символы AST (`symbols`), текстовые фрагменты (`chunks`), векторные эмбеддинги (`chunks_vec`) и поисковый индекс (`chunks_fts`) привязаны напрямую к хешам содержимого.
+  - Радикальное сокращение дискового пространства с 7–10 ГБ до **~1.5 ГБ** для 10+ параллельных ворктри (сжатие более 80%) с полным исключением повторной векторизации неизмененных файлов.
+- **100% обратная совместимость:**
+  - Прозрачная работа со стандартными одиночными репозиториями (`project_id='default'`, `branch='master'`) без изменения существующего кода.
+  - Безопасная автоматическая миграция базы данных (`20261101_12_cas_and_multi_worktree`) с сохранением всех исторических индексов без простоя.
+  - Мгновенные JIT-проверки и инструменты ревью кода работают одинаково эффективно для всех типов подключений.
+- **Гибридный движок синхронизации (JIT + Watcher + Хуки):**
+  - **Микросекундная валидация JIT:** Мгновенная проверка `git status --porcelain` (2–3 мс) перед выполнением любого MCP-запроса, гарантирующая 100% актуальность контекста и исключающая галлюцинации LLM при правках в сторонних IDE.
+  - **Kernel File Watcher (Win32):** Подписка на системные события ядра Windows (`ReadDirectoryChangesW`) с нулевым оверхедом для упреждающей инвалидации кэша в средах Cursor, Codex и Copilot.
+  - **Хуки для AI-агентов:** Прямая интеграция жизненного цикла с Claude Code (`PostToolUse` для событий `Edit`/`Write`, `PreToolUse` для подсказок актуализации, `SessionStart`) и плагинами Antigravity.
+- **Граф ревью кода и анализ радиуса поражения (Blast Radius):**
+  - Инструмент `knowledge_review_context`: Мгновенный diff-анализ между рабочей веткой и `master` с расчетом радиуса поражения изменений и каскадных вызовов вверх по иерархии (upstream callers).
+  - Оценка рисков (Risk Score от 0 до 100) на основе цикломатической сложности, глубины графа вызовов и пробелов в покрытии тестами.
+  - Глубокие ассоциации с тестами: Автоматический парсинг тестовых наборов для C# (.NET / Roslyn) и TypeScript/Python (Tree-sitter), генерация связей `TESTED_BY` и выявление нетестированных измененных методов (Test Gaps).
+  - Фильтрация автогенерируемого кода: Исключение файлов `*.Designer.cs`, `*ModelSnapshot.cs` и `*.g.cs` из тяжелого анализа, что предотвращает зависания и экономит дисковое пространство.
+- **Централизованный хаб правил и оптимизатор токенов:**
+  - Автоматическая индексация внутренней документации репозитория (каталог `.kb/`) и корпоративных регламентов (`CLAUDE.md`, `.cursorrules`).
+  - Инструмент `knowledge_get_project_rules(topic)`: Точечная выдача только необходимых правил по теме вместо внедрения массивных файлов инструкций по 70–80 КБ, экономящая до 95% токенов контекста.
+  - Инструмент `knowledge_search_docs`: Выделенный семантический и лексический поиск по архитектурным документам `.kb/`.
+- **Дашборд веб-интерфейса (`/dashboard`) и расширенная телеметрия:**
+  - **Виджет экономии токенов:** Учет сэкономленных токенов благодаря точности RAG и фрагментации правил (`token_savings_log`), процент сжатия контекста и финансовая экономия на API моделей.
+  - **Виджет сжатия CAS:** Отображение реального размера базы SQLite в сравнении с виртуальным объемом несжатых ворктри (*«Хранилище: 1.48 ГБ | Виртуально: 8.65 ГБ | Сэкономлено: 7.17 ГБ / 83%»*).
+  - **Мониторинг здоровья движка:** Индикаторы статуса Win32 File Watcher, задержки JIT-проверок (мс) и состояния очереди фоновой синхронизации.
+  - **Навигация по веткам и проектам:** Иерархический просмотр воркспейсов в `/repositories`, фильтрация по веткам в очереди и чате.
+- **Пресеты конфигурации для AI-агентов (Zero-Footprint):**
+  - Готовые профили и хуки для **Claude Code**, **Antigravity (AGY)**, **Cursor** и **Codex/Copilot**.
+  - Гарантия нулевого следа: полное отсутствие временных файлов, кэша или служебных баз данных внутри клиентских репозиториев с кодом.
+
+---
+
+## v1.9: Мульти-провайдерные профили LLM и протокольная интеграция — 📋 *Запланировано*
+*Целевой релиз: v1.9.0 | Фокус: Архитектура, конфигурация и гибкость инфраструктуры*
+
+- **Пользовательские и общие профили провайдеров:**
+  - Настраиваемые пресеты профилей LLM в базе данных и конфигурации с метаданными владельца (`owner`, `is_shared`).
+  - Поддержка корпоративных общедоступных профилей (управляются администратором) и персональных профилей пользователей.
+  - Сохранение активного профиля для текущей пользовательской сессии.
+  - Универсальная протокольная совместимость: OpenAI-совместимый Chat Completions (`/v1/chat/completions`), Ollama API и локальные шлюзы инференса (vLLM, LM Studio, LocalAI, OmniRoute, LiteLLM).
+  - Поддержка широкого спектра провайдеров: коммерческие API (Anthropic, OpenAI, Google, DeepSeek, Mistral) и локальные open-source модели (Llama, Qwen, DeepSeek Coder).
+  - Поддержка работы без ключей API для локальных серверов инференса.
+- **Безопасное управление учетными данными в настройках:**
+  - Интерфейс управления провайдерами в разделе настроек: создание, тестирование соединения, редактирование и сохранение.
+  - Маскирование ключей API и токенов (`••••••••`) при вводе и хранении.
+  - Визуальный индикатор источника учетных данных: переменные окружения (`ENV`) против сохраненной базы настроек.
+- **Диагностика соединений и автопоиск моделей:**
+  - Проверка доступности эндпоинта (healthcheck) с замером сетевой задержки и времени до первого токена (TTFT).
+  - Автоматическое обнаружение доступных моделей через запрос к стандартным эндпоинтам `/v1/models` с заполнением выпадающего списка в UI.
+
+---
+
+## v1.10: Многопользовательский доступ, RBAC и командные пространства — 📋 *Запланировано*
+*Целевой релиз: v1.10.0 | Фокус: Корпоративная безопасность и командная работа*
+
+- **Управление пользователями и современная аутентификация:**
+  - Выделенная таблица пользователей `users` с надежным хешированием паролей (Argon2 / bcrypt).
+  - Переход от единого пароля Basic Auth к сессионной токенной авторизации (JWT / защищенные HTTP-only cookies).
+  - Личный кабинет пользователя: смена пароля, выбор темы оформления и языка интерфейса.
+- **Ролевое управление доступом (RBAC):**
+  - Иерархия ролей: `Admin` (полный доступ к настройкам, подключению репозиториев и триггерам), `Developer` (поиск, запуск ручной синхронизации, настройка своих профилей LLM), `Viewer` (только чтение, поиск и просмотр документации).
+  - Разграничение доступа на уровне репозиториев: ограничение видимости конфиденциальных проектов для определенных команд.
+- **Изоляция пользовательских данных и аудит:**
+  - Персональные сессии RAG-чата и изолированная история сообщений в SQLite с возможностью экспорта.
+  - Журнал аудита действий (Audit Log): фиксация ручных запусков синхронизации, изменений настроек и доступа к проектам.
+
+---
+
+## v2.0 (Горизонт): Визуальный эксплорер графа знаний и архитектуры — 🔭 *Горизонт планирования*
+*Оценка: Крупный мажорный релиз*
+- **Интерактивный граф в веб-интерфейсе:** Встроенный браузерный визуализатор графа (на базе Cytoscape.js или vis.js) в Web Dashboard.
+- **Навигация по зависимостям и вызовам:** Интерактивное перемещение по цепочкам вызовов, иерархиям наследования и связанным классам.
+- **Визуальный анализ влияния (Blast Radius):** Наглядное цветовое подсвечивание модулей и методов, затронутых планируемыми изменениями кода.
+- **Экспорт архитектурных схем:** Выгрузка актуальных архитектурных диаграмм в форматах SVG и Markdown.
