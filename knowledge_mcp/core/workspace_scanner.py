@@ -55,6 +55,33 @@ class DiscoveredTarget:
             "language": self.language,
         }
 
+def resolve_workspace_root(workspace_root_val: Optional[str]) -> Optional[Path]:
+    """Умное разрешение пути workspace_root с поддержкой кросс-платформенности (Windows хост <-> Linux Docker)."""
+    if not workspace_root_val:
+        return None
+    try:
+        p = Path(workspace_root_val)
+        if p.exists() and p.is_dir():
+            return p.resolve()
+    except Exception:
+        pass
+        
+    clean_ws = str(workspace_root_val).replace("\\", "/")
+    if "repos/" in clean_ws.lower():
+        rel_tail = clean_ws.lower().split("repos/", 1)[-1].lstrip("/")
+        repos_dir_env = os.environ.get("REPOS_DIR")
+        candidates = []
+        if repos_dir_env:
+            candidates.append(Path(repos_dir_env) / rel_tail)
+        candidates.extend([Path("/repos") / rel_tail, Path("C:/Repos") / rel_tail, Path("c:/repos") / rel_tail])
+        for cand in candidates:
+            try:
+                if cand.exists() and cand.is_dir():
+                    return cand.resolve()
+            except Exception:
+                pass
+    return None
+
 class WorkspaceScanner:
     """Сканер воркспейсов, рабочих деревьев Git (worktrees) и документации."""
 
@@ -122,9 +149,9 @@ class WorkspaceScanner:
             logger.warning(f"У проекта '{project_id}' не указан workspace_root.")
             return []
 
-        workspace_root = Path(workspace_root_val).resolve()
-        if not workspace_root.exists() or not workspace_root.is_dir():
-            logger.warning(f"Workspace root не существует или не является директорией: {workspace_root}")
+        workspace_root = resolve_workspace_root(workspace_root_val)
+        if not workspace_root or not workspace_root.is_dir():
+            logger.warning(f"Workspace root не существует или не является директорией: {workspace_root_val}")
             return []
 
         configured_repos = project_config.get("repositories", [])
@@ -359,8 +386,8 @@ class WorkspaceScanner:
             ws_root_val = proj.get("workspace_root")
             if not ws_root_val:
                 continue
-            ws_root = Path(ws_root_val).resolve()
-            if not is_subpath(file_path, ws_root):
+            ws_root = resolve_workspace_root(ws_root_val)
+            if not ws_root or not is_subpath(file_path, ws_root):
                 continue
 
             targets = scanner.scan_workspace(proj)

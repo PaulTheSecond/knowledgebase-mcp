@@ -15,17 +15,17 @@ services:
       - path: .env
         required: false
     environment:
-      - DB_PATH=${DB_PATH:-/data/knowledge.db}
+      - DB_PATH=/data/knowledge.db
       - CONFIG_PATH=/data/config.yaml
       - PYTHONUNBUFFERED=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_OFFLINE=1
-      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-admin}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-dev_secret_12345}
       - GITHUB_PAT=${GITHUB_PAT:-}
-      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:20128/v1}
+      - LLM_BASE_URL=${DOCKER_LLM_BASE_URL:-http://host.docker.internal:20128/v1}
       - LLM_MODEL=${LLM_MODEL:-kr/claude-sonnet-4.5}
-      - LLM_API_KEY=${LLM_API_KEY:-sk-local}
+      - LLM_API_KEY=${LLM_API_KEY:-sk-1a88d79028c9b93b-6m30qv-e5a42f22}
     
     # Ограничение ресурсов контейнера
     deploy:

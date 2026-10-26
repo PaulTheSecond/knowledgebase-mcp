@@ -12,3 +12,7 @@ tree-sitter-c-sharp
 tree-sitter-typescript
 tree-sitter-javascript
 tree-sitter-sql
+python-dotenv
+httpx
+pyyaml
+watchdog

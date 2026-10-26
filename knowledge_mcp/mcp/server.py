@@ -62,8 +62,9 @@ def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[st
     # 3. Проверка корня проекта
     proj_cfg = get_project_config(project_id)
     if proj_cfg and proj_cfg.get("workspace_root"):
-        p = Path(proj_cfg["workspace_root"]).resolve()
-        if p.exists():
+        from knowledge_mcp.core.workspace_scanner import resolve_workspace_root
+        p = resolve_workspace_root(proj_cfg["workspace_root"])
+        if p and p.exists():
             return p
 
     return None

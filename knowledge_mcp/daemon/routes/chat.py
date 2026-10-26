@@ -48,6 +48,12 @@ def get_llm_settings(config: dict) -> tuple[str, str]:
     chat_cfg = config.get("server", {}).get("dashboard", {}).get("chat", {})
     
     base_url = os.environ.get("LLM_BASE_URL") or chat_cfg.get("api_base") or "http://localhost:20128/v1"
+    if os.path.exists("/.dockerenv"):
+        base_url = (
+            base_url
+            .replace("://127.0.0.1:", "://host.docker.internal:")
+            .replace("://localhost:", "://host.docker.internal:")
+        )
     base_url = base_url.rstrip("/")
     if not base_url.endswith("/chat/completions"):
         endpoint_url = f"{base_url}/chat/completions"

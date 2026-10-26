@@ -24,9 +24,9 @@ RUN npm run build
 # dotnet/runtime:8.0 НЕ подходит: MSBuildLocator ищет SDK при запуске и падает.
 FROM mcr.microsoft.com/dotnet/sdk:8.0
 
-# Устанавливаем Python 3.11 и libicu (нужна для Roslyn Unicode-обработки)
+# Устанавливаем Python 3.11, git, curl и libicu (нужна для Roslyn Unicode-обработки)
 RUN apt-get update && apt-get install -y \
-    python3.11 python3.11-venv python3-pip libicu-dev \
+    python3.11 python3.11-venv python3-pip libicu-dev git curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3.11 -m venv /opt/venv
@@ -39,10 +39,10 @@ COPY requirements.txt .
 
 # torch в отдельном RUN — инвалидируется только при смене версии torch,
 # а не при любом изменении requirements.txt
-RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir --default-timeout=1000 --retries 10 torch --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Остальные зависимости — инвалидируются только при изменении requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=1000 --retries 10 -r requirements.txt
 
 # Устанавливаем свой путь для кэша HF, чтобы скачанная модель не перетиралась volume из docker-compose
 ENV HF_HOME=/app/models
@@ -61,7 +61,7 @@ COPY --from=dotnet-builder /roslyn/out /app/RoslynParser/bin/Release/net8.0/
 COPY --from=frontend-builder /frontend/dist/dashboard/browser /app/frontend/dist/dashboard/browser
 
 RUN mkdir -p /data
-ENV DB_PATH=/data/knowledge_roslyn.db
+ENV DB_PATH=/data/knowledge.db
 ENV TRANSFORMERS_OFFLINE=1
 ENV HF_HUB_OFFLINE=1
 ENV PYTHONUNBUFFERED=1
