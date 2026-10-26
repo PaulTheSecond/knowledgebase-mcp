@@ -315,22 +315,17 @@ class AgentPresetManager:
                     actions_taken.append(f"Updated Claude guidelines: {claude_md}")
 
             elif ag == "antigravity":
-                agy_dir = (base_dir / ".agent") if scope == "project" else (base_dir / ".gemini" / "antigravity")
-                agy_dir.mkdir(parents=True, exist_ok=True)
-                mcp_path = agy_dir / "mcp_config.json"
+                # Antigravity discovers configs in ~/.gemini/config and ~/.gemini/antigravity
+                agy_dirs = []
+                if scope == "project":
+                    agy_dirs.append(base_dir / ".agent")
+                else:
+                    if (base_dir / ".gemini" / "config").exists():
+                        agy_dirs.append(base_dir / ".gemini" / "config")
+                    agy_dirs.append(base_dir / ".gemini" / "antigravity")
 
-                data: Dict[str, Any] = {}
-                if mcp_path.exists():
-                    try:
-                        backup_path = agy_dir / "mcp_config.json.bak"
-                        backup_path.write_text(mcp_path.read_text(encoding="utf-8"), encoding="utf-8")
-                        actions_taken.append(f"Backup created: {backup_path}")
-                        data = json.loads(mcp_path.read_text(encoding="utf-8"))
-                    except Exception:
-                        data = {}
-
-                mcp_servers = data.setdefault("mcpServers", {})
-                mcp_servers["knowledgebase"] = {
+                rule_text = cls.get_preset_files("antigravity").get("rule_snippet.md", "")
+                server_def = {
                     "command": py_exe,
                     "args": ["-m", "knowledge_mcp.main", "--db-path", db_path, "mcp"],
                     "cwd": str(repo_root),
@@ -339,15 +334,41 @@ class AgentPresetManager:
                         "PYTHONUNBUFFERED": "1"
                     }
                 }
-                mcp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-                actions_taken.append(f"Updated Antigravity MCP config: {mcp_path}")
 
-                rules_dir = agy_dir / "rules"
-                rules_dir.mkdir(parents=True, exist_ok=True)
-                rule_file = rules_dir / "knowledgebase.md"
-                rule_text = cls.get_preset_files("antigravity").get("rule_snippet.md", "")
-                rule_file.write_text(rule_text, encoding="utf-8")
-                actions_taken.append(f"Updated Antigravity rule: {rule_file}")
+                for agy_dir in agy_dirs:
+                    agy_dir.mkdir(parents=True, exist_ok=True)
+                    mcp_path = agy_dir / "mcp_config.json"
+
+                    data: Dict[str, Any] = {}
+                    if mcp_path.exists():
+                        try:
+                            backup_path = agy_dir / "mcp_config.json.bak"
+                            backup_path.write_text(mcp_path.read_text(encoding="utf-8"), encoding="utf-8")
+                            actions_taken.append(f"Backup created: {backup_path}")
+                            data = json.loads(mcp_path.read_text(encoding="utf-8"))
+                        except Exception:
+                            data = {}
+
+                    mcp_servers = data.setdefault("mcpServers", {})
+                    # Update knowledge-base or knowledgebase key cleanly
+                    key_name = "knowledge-base" if "knowledge-base" in mcp_servers else "knowledgebase"
+                    mcp_servers[key_name] = server_def
+                    mcp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                    actions_taken.append(f"Updated Antigravity MCP config: {mcp_path}")
+
+                    # Rules directory
+                    rules_dir = agy_dir / "rules"
+                    rules_dir.mkdir(parents=True, exist_ok=True)
+                    rule_file = rules_dir / "knowledgebase.md"
+                    rule_file.write_text(rule_text, encoding="utf-8")
+                    actions_taken.append(f"Updated Antigravity rule: {rule_file}")
+
+                    # If mcp/knowledge-base directory exists (custom schemas), add instructions.md
+                    mcp_kb_dir = agy_dir / "mcp" / key_name
+                    if mcp_kb_dir.is_dir():
+                        inst_file = mcp_kb_dir / "instructions.md"
+                        inst_file.write_text(rule_text, encoding="utf-8")
+                        actions_taken.append(f"Updated Antigravity MCP instructions: {inst_file}")
 
             elif ag == "cursor":
                 cursor_dir = base_dir / ".cursor"
