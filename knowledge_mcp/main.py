@@ -168,13 +168,17 @@ def _compute_status_data(db_instance: KnowledgeDB) -> dict:
             stats = db_instance.get_repo_stats(repo_id)
         if not stats or not isinstance(stats, dict):
             stats = {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
+        sem_status = db_instance.get_semantic_status(repo_id, project_id="default", branch=repo.get("branch", "master"))
         repos_data.append({
             "id": repo_id,
             "url": repo.get("url") or repo.get("local_path", ""),
             "branch": repo.get("branch", "master"),
             "files_count": stats["files_count"],
             "chunks_count": stats["chunks_count"],
-            "vectors_count": stats["vectors_count"]
+            "vectors_count": stats["vectors_count"],
+            "semantic_status": sem_status.get("status") if sem_status else None,
+            "last_semantic_full_sync": sem_status.get("last_full_sync") if sem_status else None,
+            "semantic_error": sem_status.get("error_message") if sem_status else None
         })
 
     # Проектные воркспейсы (Multi-repo Worktrees / v1.8)
@@ -186,13 +190,17 @@ def _compute_status_data(db_instance: KnowledgeDB) -> dict:
             r_id = p_repo.get("id")
             stats = all_stats.get((r_id, proj_id)) or {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
             branch = "master" if r_id != "browser-extension" else "main"
+            sem_status = db_instance.get_semantic_status(r_id, project_id=proj_id, branch=branch)
             repos_data.append({
                 "id": f"{proj_id}/{r_id}",
                 "url": f"{ws_root}/{base_path}/{p_repo.get('path', r_id)}",
                 "branch": branch,
                 "files_count": stats["files_count"],
                 "chunks_count": stats["chunks_count"],
-                "vectors_count": stats["vectors_count"]
+                "vectors_count": stats["vectors_count"],
+                "semantic_status": sem_status.get("status") if sem_status else None,
+                "last_semantic_full_sync": sem_status.get("last_full_sync") if sem_status else None,
+                "semantic_error": sem_status.get("error_message") if sem_status else None
             })
         doc_stats = all_stats.get(("docs", proj_id)) or {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
         fc = doc_stats.get("files_count", 0) if isinstance(doc_stats, dict) else 0

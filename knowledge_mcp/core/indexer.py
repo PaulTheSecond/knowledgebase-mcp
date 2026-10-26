@@ -19,6 +19,8 @@ from .markdown_parser import MarkdownParser
 
 logger = logging.getLogger(__name__)
 
+ROSLYN_FULL_SYNC_TTL_DAYS = int(os.environ.get("ROSLYN_FULL_SYNC_TTL_DAYS", "7"))
+
 
 def hash_file(filepath: Path, chunk_size: int = 8192) -> str:
     """Вычисляет SHA-256 хэш содержимого файла."""
@@ -106,13 +108,21 @@ class Indexer:
     # Roslyn: семантический анализ .NET проектов
     # ──────────────────────────────────────────────────────────────────────
 
-    def _run_roslyn_analysis(self, repo_path: Path, spec: pathspec.PathSpec, target_files: Optional[List[Path]] = None):
+    def _run_roslyn_analysis(
+        self,
+        repo_path: Path,
+        spec: pathspec.PathSpec,
+        target_files: Optional[List[Path]] = None
+    ) -> tuple[bool, Optional[str]]:
         """
         Запускает RoslynParser для .NET проектов и заполняет self.csharp_cache.
         Кэш содержит символы и рёбра для каждого .cs файла.
         При передаче target_files парсинг выполняется инкрементально только для указанных файлов.
+        Возвращает (success: bool, error_message: Optional[str]).
         """
         self.csharp_cache = {}
+        all_success = True
+        last_error = None
 
         # Оптимизированный поиск .sln файлов с уважением к .gitignore
         csharp_projects = [f for f in self._walk_files(repo_path, spec) if f.suffix == '.sln']
@@ -120,7 +130,7 @@ class Indexer:
             csharp_projects = [f for f in self._walk_files(repo_path, spec) if f.suffix == '.csproj']
 
         if not csharp_projects:
-            return
+            return True, None
 
         # Кэш path.resolve() для избежания миллионов обращений к диску по Docker Volume.
         # ВАЖНО: объявляем ВНЕ цикла по проектам, чтобы кэш не сбрасывался на каждой итерации.
@@ -167,7 +177,10 @@ class Indexer:
 
                 res = subprocess.run(cmd, capture_output=True, text=True)
                 if res.returncode != 0:
-                    logger.error(f"Roslyn analysis failed for {proj}: {res.stderr}")
+                    err_msg = res.stderr.strip() if res.stderr else f"Roslyn exited with code {res.returncode}"
+                    logger.error(f"Roslyn analysis failed for {proj}: {err_msg}")
+                    all_success = False
+                    last_error = err_msg
                     continue
     
                 try:
@@ -191,16 +204,154 @@ class Indexer:
     
                 except Exception as ex:
                     logger.error(f"Failed to parse Roslyn output for {proj}: {ex}")
+                    all_success = False
+                    last_error = str(ex)
         finally:
             if files_arg_file and os.path.exists(files_arg_file):
                 try:
                     os.unlink(files_arg_file)
                 except Exception:
                     pass
+        if not csharp_projects:
+            return True, None
+        return all_success, last_error
 
     # ──────────────────────────────────────────────────────────────────────
     # Общий helper: создание чанка + постановка в очередь эмбеддингов
     # ──────────────────────────────────────────────────────────────────────
+
+    def _is_semantic_stale(self, status_row: Optional[dict]) -> bool:
+        """Проверяет, превысил ли возраст последнего полного скана Roslyn TTL (по умолчанию 7 дней)."""
+        if not status_row:
+            return True
+        last_full = status_row.get("last_full_sync")
+        if not last_full:
+            return True
+        try:
+            from datetime import datetime
+            if isinstance(last_full, str):
+                dt = datetime.fromisoformat(last_full.replace(" ", "T"))
+            else:
+                dt = last_full
+            age_days = (datetime.now() - dt).total_seconds() / 86400.0
+            return age_days >= ROSLYN_FULL_SYNC_TTL_DAYS
+        except Exception as e:
+            logger.warning(f"Failed parsing last_full_sync timestamp '{last_full}': {e}")
+            return False
+
+    def _enrich_csharp_semantics(
+        self,
+        repo_path: Path,
+        repo_id: str,
+        project_id: str = "default",
+        branch: str = "master"
+    ):
+        """
+        Обогащает C# файлы высокоточными семантическими символами и рёбрами из Roslyn.
+        Заменяет предварительные синтаксические символы Tree-Sitter, связывая новые символы
+        с уже существующими чанками (не трогая сами чанки и эмбеддинги).
+        """
+        if not self.csharp_cache:
+            return
+
+        cursor = self.db.conn.cursor()
+        cursor.execute("""
+            SELECT id, path, content_hash FROM files
+            WHERE repo_id = ? AND project_id = ? AND branch = ?
+        """, (repo_id, project_id, branch))
+        known_files = {row['path']: row for row in cursor.fetchall()}
+
+        enriched_files_count = 0
+        all_unresolved_records = []
+
+        self.db.begin_transaction()
+        try:
+            for resolved_path, cache_hit in self.csharp_cache.items():
+                try:
+                    rel_path = resolved_path.relative_to(repo_path).as_posix()
+                except ValueError:
+                    rel_path = resolved_path.name
+
+                file_row = known_files.get(rel_path)
+                if not file_row:
+                    continue
+
+                file_id = file_row['id']
+                content_hash = file_row['content_hash']
+
+                cursor.execute("""
+                    SELECT id, line_start, line_end FROM chunks
+                    WHERE file_id = ?
+                    ORDER BY line_start ASC
+                """, (file_id,))
+                file_chunks = cursor.fetchall()
+
+                def find_chunk_id(line_start: int, line_end: int) -> Optional[str]:
+                    if not file_chunks:
+                        return None
+                    for ch in file_chunks:
+                        if ch['line_start'] <= line_start and ch['line_end'] >= line_end:
+                            return ch['id']
+                    best_id = None
+                    best_overlap = -1
+                    for ch in file_chunks:
+                        overlap = min(ch['line_end'], line_end) - max(ch['line_start'], line_start)
+                        if overlap > best_overlap:
+                            best_overlap = overlap
+                            best_id = ch['id']
+                    return best_id if best_overlap > 0 else file_chunks[0]['id']
+
+                # Очищаем предварительные символы Tree-Sitter (каскадно удаляет рёбра)
+                self.db.clear_file_symbols(file_id)
+
+                sym_records = [
+                    (
+                        file_id,
+                        s['name'],
+                        s['qualified_name'],
+                        s['kind'],
+                        s['language'],
+                        s['line_start'],
+                        s['line_end'],
+                        s['signature'],
+                        find_chunk_id(s['line_start'], s['line_end']),
+                        content_hash
+                    )
+                    for s in cache_hit['symbols']
+                ]
+                sym_rowids = self.db.add_symbols_batch(sym_records)
+
+                ast_to_sym_id = {}
+                for i, s in enumerate(cache_hit['symbols']):
+                    if i < len(sym_rowids):
+                        ast_to_sym_id[s['ast_node_id']] = sym_rowids[i]
+
+                for e in cache_hit['edges']:
+                    src_ast_id = e.get('source_ast_id')
+                    target_qname = e.get('target_qualified_name') or e.get('target_name')
+                    kind = e.get('kind', 'CALLS')
+                    src_sym_id = ast_to_sym_id.get(src_ast_id)
+                    if src_sym_id and target_qname:
+                        all_unresolved_records.append((src_sym_id, target_qname, kind))
+
+                enriched_files_count += 1
+
+            if all_unresolved_records:
+                self.db.add_unresolved_refs_batch(all_unresolved_records)
+
+            self.db.commit_transaction()
+            logger.info(f"Roslyn semantic enrichment applied to {enriched_files_count} C# file(s).")
+        except Exception as e:
+            self.db.rollback_transaction()
+            logger.error(f"Failed applying Roslyn semantic enrichment: {e}")
+            raise
+
+        try:
+            resolved_count = self.db.resolve_pending_references(limit=10000)
+            if resolved_count > 0:
+                logger.info(f"Resolved {resolved_count} cross-reference edges from Roslyn semantics.")
+        except Exception as e:
+            logger.warning(f"Error resolving references after Roslyn enrichment: {e}")
 
     def _add_chunk_with_embedding(
         self,
@@ -719,7 +870,12 @@ class Indexer:
 
         spec = self._get_ignore_spec(repo_path)
 
-        # Семантический анализ Roslyn запускается ниже только при наличии новых или изменённых C# файлов (CAS-кэш)
+        # Оценка потребности в полном сканировании Roslyn (двухфазная модель)
+        status_row = self.db.get_semantic_status(repo_id, project_id=project_id, branch=branch)
+        is_stale = self._is_semantic_stale(status_row)
+        needs_full_roslyn = force or (not status_row) or status_row.get("status") in ("pending", "failed") or is_stale
+        if needs_full_roslyn:
+            logger.info(f"Full Roslyn semantic pass needed for '{repo_id}' (force={force}, status={status_row.get('status') if status_row else 'none'}, stale={is_stale}).")
 
         # Конвертируем sqlite3.Row в чистые dict для thread-safety
         known_files_raw = self.db.get_known_files(repo_id, project_id=project_id, branch=branch)
@@ -773,7 +929,7 @@ class Indexer:
                         and (known.get('chunks_count', 0) == 0 or known.get('symbols_count', 0) == 0)
                     )
 
-                    if not is_orphan:
+                    if not is_orphan and not (needs_full_roslyn and is_cs):
                         if known['mtime'] == mtime:
                             return (rel_path, filepath, mtime, None, 'unchanged', None)
                         file_hash = hash_file(filepath)
@@ -801,20 +957,11 @@ class Indexer:
                 logger.info(f"Found {total_files} files to check. Starting content hashing...")
                 results = list(executor.map(check_file, files_to_check))
 
-                # Определяем, есть ли .cs файлы, которым действительно требуется глубокий анализ Roslyn
+                # Определяем .cs файлы, требующие анализа
                 cs_files_needing_analysis = [
                     res[1] for res in results
                     if res[4] in ('updated', 'added') and res[1].suffix.lower() == '.cs'
                 ]
-
-                if cs_files_needing_analysis:
-                    logger.info(f"Detected {len(cs_files_needing_analysis)} modified/new C# file(s). Running Roslyn delta analysis...")
-                    self._run_roslyn_analysis(repo_path, spec, target_files=cs_files_needing_analysis)
-                elif force and any(item[0].suffix.lower() == '.cs' for item in files_to_check):
-                    logger.info(f"Force re-index requested. Running full Roslyn analysis...")
-                    self._run_roslyn_analysis(repo_path, spec)
-                else:
-                    logger.info(f"All C# files in '{repo_id}' are unchanged/cached by CAS. Skipping heavy Roslyn analysis.")
 
                 processed = 0
                 log_step = max(1, total_files // 10) if total_files > 0 else 1
@@ -920,6 +1067,58 @@ class Indexer:
                 }
             })
             self._embed_pending_chunks(repo_id, chunks_to_embed, sync_buffer)
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Фаза 2: Семантическое обогащение графа вызовов через Roslyn
+        # ──────────────────────────────────────────────────────────────────────
+        csharp_files_exist = any(item[0].suffix.lower() == '.cs' for item in files_to_check)
+        if csharp_files_exist:
+            from knowledge_mcp.daemon.status_ws import broadcast_sync
+            if needs_full_roslyn:
+                logger.info(f"Phase 2: Running full Roslyn semantic analysis for '{repo_id}'...")
+                broadcast_sync({
+                    "type": "sync_progress",
+                    "data": {
+                        "repo_id": repo_id,
+                        "progress": 85,
+                        "status": "roslyn_analysis",
+                        "message": "Phase 2: Compiling C# solution with Roslyn..."
+                    }
+                })
+                success, err_msg = self._run_roslyn_analysis(repo_path, spec)
+                if success:
+                    self._enrich_csharp_semantics(repo_path, repo_id, project_id, branch)
+                    self.db.update_semantic_status(repo_id, status='completed', project_id=project_id, branch=branch, is_full=True)
+                    logger.info(f"Phase 2: Full Roslyn analysis succeeded for '{repo_id}'.")
+                else:
+                    self.db.update_semantic_status(repo_id, status='failed', project_id=project_id, branch=branch, error_message=err_msg)
+                    logger.warning(f"Phase 2: Full Roslyn analysis failed: {err_msg}. Repository remains operational on Tree-Sitter.")
+            else:
+                if cs_files_needing_analysis:
+                    logger.info(f"Phase 2: Running Roslyn delta analysis for {len(cs_files_needing_analysis)} file(s) in '{repo_id}'...")
+                    broadcast_sync({
+                        "type": "sync_progress",
+                        "data": {
+                            "repo_id": repo_id,
+                            "progress": 85,
+                            "status": "roslyn_analysis",
+                            "message": f"Phase 2: Running delta Roslyn analysis on {len(cs_files_needing_analysis)} file(s)..."
+                        }
+                    })
+                    success, err_msg = self._run_roslyn_analysis(repo_path, spec, target_files=cs_files_needing_analysis)
+                    if success:
+                        self._enrich_csharp_semantics(repo_path, repo_id, project_id, branch)
+                        self.db.update_semantic_status(repo_id, status='completed', project_id=project_id, branch=branch, is_full=False)
+                        logger.info(f"Phase 2: Delta Roslyn analysis succeeded for '{repo_id}'.")
+                    else:
+                        self.db.update_semantic_status(repo_id, status='failed', project_id=project_id, branch=branch, error_message=err_msg)
+                        logger.warning(f"Phase 2: Delta Roslyn analysis failed: {err_msg}. Repository remains operational on Tree-Sitter.")
+                else:
+                    logger.info("Phase 2: All C# files unchanged and semantic index is fresh. Skipping Roslyn.")
+
+        # Очищаем кэш семантики после завершения
+        self.csharp_cache = {}
+        gc.collect()
 
         # Финальная верификация: отчёт о проблемных файлах
         self._write_sync_report(repo_id, sync_buffer)

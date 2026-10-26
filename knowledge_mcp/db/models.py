@@ -412,6 +412,27 @@ class KnowledgeDB:
             """
         })
 
+        migrations.append({
+            "id": "20261103_15_semantic_indexing_status",
+            "up": """
+                CREATE TABLE IF NOT EXISTS semantic_indexing_status (
+                    repo_id TEXT NOT NULL,
+                    project_id TEXT DEFAULT 'default',
+                    branch TEXT DEFAULT 'master',
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+                    last_full_sync DATETIME,
+                    last_delta_sync DATETIME,
+                    error_message TEXT,
+                    retry_count INTEGER DEFAULT 0,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (repo_id, project_id, branch)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_semantic_status 
+                ON semantic_indexing_status(status, updated_at);
+            """
+        })
+
         for migration in migrations:
             if migration["id"] not in applied_migrations:
                 logger.info(f"Applying sqlite migration: {migration['id']}")
@@ -1730,6 +1751,94 @@ class KnowledgeDB:
                 """, (status, last_error))
             self._auto_commit()
             self.invalidate_stats_cache()
+
+    def get_semantic_status(
+        self,
+        repo_id: str,
+        project_id: str = "default",
+        branch: str = "master"
+    ) -> Optional[dict]:
+        """Возвращает текущий статус семантической индексации Roslyn для репозитория."""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT repo_id, project_id, branch, status,
+                       last_full_sync, last_delta_sync, error_message, retry_count, updated_at
+                FROM semantic_indexing_status
+                WHERE repo_id = ? AND project_id = ? AND branch = ?
+            """, (repo_id, project_id, branch))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def update_semantic_status(
+        self,
+        repo_id: str,
+        status: str,
+        project_id: str = "default",
+        branch: str = "master",
+        is_full: bool = False,
+        error_message: Optional[str] = None
+    ) -> None:
+        """Обновляет статус семантической индексации Roslyn.
+        
+        Args:
+            repo_id: ID репозитория
+            status: 'pending' | 'running' | 'completed' | 'failed'
+            project_id: ID проекта
+            branch: Ветка
+            is_full: True, если завершился полный прогон Roslyn
+            error_message: Сообщение об ошибке (при status == 'failed')
+        """
+        with self.lock:
+            cursor = self.conn.cursor()
+            now_sql = "datetime('now', 'localtime')"
+            
+            cursor.execute("""
+                SELECT retry_count FROM semantic_indexing_status
+                WHERE repo_id = ? AND project_id = ? AND branch = ?
+            """, (repo_id, project_id, branch))
+            row = cursor.fetchone()
+
+            if row:
+                current_retry = row["retry_count"] or 0
+                retry_count = current_retry + 1 if status == "failed" else (0 if status == "completed" else current_retry)
+                if status == "completed":
+                    if is_full:
+                        cursor.execute(f"""
+                            UPDATE semantic_indexing_status
+                            SET status = ?, last_full_sync = {now_sql}, error_message = NULL, retry_count = 0, updated_at = {now_sql}
+                            WHERE repo_id = ? AND project_id = ? AND branch = ?
+                        """, (status, repo_id, project_id, branch))
+                    else:
+                        cursor.execute(f"""
+                            UPDATE semantic_indexing_status
+                            SET status = ?, last_delta_sync = {now_sql}, error_message = NULL, retry_count = 0, updated_at = {now_sql}
+                            WHERE repo_id = ? AND project_id = ? AND branch = ?
+                        """, (status, repo_id, project_id, branch))
+                elif status == "failed":
+                    cursor.execute(f"""
+                        UPDATE semantic_indexing_status
+                        SET status = ?, error_message = ?, retry_count = ?, updated_at = {now_sql}
+                        WHERE repo_id = ? AND project_id = ? AND branch = ?
+                    """, (status, error_message, retry_count, repo_id, project_id, branch))
+                else:
+                    cursor.execute(f"""
+                        UPDATE semantic_indexing_status
+                        SET status = ?, updated_at = {now_sql}
+                        WHERE repo_id = ? AND project_id = ? AND branch = ?
+                    """, (status, repo_id, project_id, branch))
+            else:
+                retry_count = 1 if status == "failed" else 0
+                last_full = now_sql if (status == "completed" and is_full) else "NULL"
+                last_delta = now_sql if (status == "completed" and not is_full) else "NULL"
+                cursor.execute(f"""
+                    INSERT INTO semantic_indexing_status (
+                        repo_id, project_id, branch, status,
+                        last_full_sync, last_delta_sync, error_message, retry_count, updated_at
+                    ) VALUES (?, ?, ?, ?, {last_full}, {last_delta}, ?, ?, {now_sql})
+                """, (repo_id, project_id, branch, status, error_message, retry_count))
+
+            self._auto_commit()
 
     def add_to_queue(self, repo_id: str, changed_files: Optional[List[str]] = None) -> int:
         """Добавляет репозиторий в очередь на синхронизацию.
