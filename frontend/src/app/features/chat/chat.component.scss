@@ -415,13 +415,56 @@
 
   .code-block-wrapper pre {
     margin: 0 !important;
-    padding: 14px 16px !important;
-    background-color: transparent !important;
+    padding-top: 14px !important;
+    padding-bottom: 14px !important;
+    padding-right: 16px !important;
+    padding-left: 3.8em !important;
+    background-color: #0d1117 !important;
     overflow-x: auto;
     font-family: Consolas, Monaco, "Courier New", monospace;
     font-size: 13px !important;
     line-height: 1.55;
     color: #e6edf3;
+    position: relative;
+
+    &.line-numbers {
+      counter-reset: linenumber;
+
+      > code {
+        position: relative;
+        white-space: pre;
+        font-family: inherit;
+        font-size: inherit;
+        line-height: inherit;
+      }
+
+      .line-numbers-rows {
+        position: absolute;
+        pointer-events: none;
+        top: 0;
+        left: -3.8em;
+        width: 3em;
+        letter-spacing: -1px;
+        border-right: 1px solid rgba(255, 255, 255, 0.12);
+        user-select: none;
+        -webkit-user-select: none;
+
+        > span {
+          display: block;
+          counter-increment: linenumber;
+
+          &:before {
+            content: counter(linenumber);
+            color: #6e7681;
+            display: block;
+            padding-right: 0.8em;
+            text-align: right;
+            font-size: 12px;
+            line-height: 1.55;
+          }
+        }
+      }
+    }
   }
 
   // ── Стили диаграмм Mermaid ──

@@ -93,6 +93,9 @@ export class ChatComponent implements AfterViewInit, AfterViewChecked {
       const unrendered = container.querySelector('.mermaid-block-wrapper:not([data-rendered])');
       if (unrendered) {
         this.markdown.renderMermaid(container);
+      }
+      const unnumbered = container.querySelector('pre.line-numbers:not([data-numbered])');
+      if (unnumbered) {
         this.markdown.highlightCode(container);
       }
     }

@@ -8,21 +8,40 @@ declare const Prism: any;
 const LANGUAGE_MAP: Record<string, { name: string; prism: string }> = {
   cs: { name: 'C#', prism: 'csharp' },
   csharp: { name: 'C#', prism: 'csharp' },
+  'c#': { name: 'C#', prism: 'csharp' },
   dotnet: { name: '.NET C#', prism: 'csharp' },
+  c: { name: 'C', prism: 'clike' },
+  cpp: { name: 'C++', prism: 'clike' },
+  'c++': { name: 'C++', prism: 'clike' },
+  cc: { name: 'C++', prism: 'clike' },
+  cxx: { name: 'C++', prism: 'clike' },
   ts: { name: 'TypeScript', prism: 'typescript' },
   typescript: { name: 'TypeScript', prism: 'typescript' },
   js: { name: 'JavaScript', prism: 'javascript' },
   javascript: { name: 'JavaScript', prism: 'javascript' },
+  mjs: { name: 'JavaScript', prism: 'javascript' },
+  cjs: { name: 'JavaScript', prism: 'javascript' },
+  jsx: { name: 'React JSX', prism: 'javascript' },
+  tsx: { name: 'React TSX', prism: 'typescript' },
   py: { name: 'Python', prism: 'python' },
   python: { name: 'Python', prism: 'python' },
+  py3: { name: 'Python', prism: 'python' },
   json: { name: 'JSON', prism: 'json' },
+  jsonc: { name: 'JSON', prism: 'json' },
   yaml: { name: 'YAML', prism: 'yaml' },
   yml: { name: 'YAML', prism: 'yaml' },
   sh: { name: 'Bash', prism: 'bash' },
   bash: { name: 'Bash', prism: 'bash' },
   shell: { name: 'Shell', prism: 'bash' },
+  zsh: { name: 'Zsh', prism: 'bash' },
+  powershell: { name: 'PowerShell', prism: 'bash' },
+  ps1: { name: 'PowerShell', prism: 'bash' },
+  pwsh: { name: 'PowerShell', prism: 'bash' },
   sql: { name: 'SQL', prism: 'sql' },
-  docker: { name: 'Docker', prism: 'docker' },
+  pgsql: { name: 'PostgreSQL', prism: 'sql' },
+  postgres: { name: 'PostgreSQL', prism: 'sql' },
+  mysql: { name: 'MySQL', prism: 'sql' },
+  docker: { name: 'Dockerfile', prism: 'docker' },
   dockerfile: { name: 'Dockerfile', prism: 'docker' },
   md: { name: 'Markdown', prism: 'markdown' },
   markdown: { name: 'Markdown', prism: 'markdown' },
@@ -32,8 +51,13 @@ const LANGUAGE_MAP: Record<string, { name: string; prism: string }> = {
   go: { name: 'Go', prism: 'go' },
   golang: { name: 'Go', prism: 'go' },
   html: { name: 'HTML', prism: 'markup' },
+  htm: { name: 'HTML', prism: 'markup' },
   xml: { name: 'XML', prism: 'markup' },
-  css: { name: 'CSS', prism: 'css' }
+  svg: { name: 'SVG', prism: 'markup' },
+  css: { name: 'CSS', prism: 'css' },
+  scss: { name: 'SCSS', prism: 'css' },
+  sass: { name: 'SASS', prism: 'css' },
+  less: { name: 'LESS', prism: 'css' }
 };
 
 function escapeHtml(text: string): string {
@@ -121,25 +145,46 @@ export class MarkdownService {
             `;
           }
 
-          // 2. Стандартные блоки исходного кода с плашкой языка и копированием
+          // 2. Стандартные блоки исходного кода с плашкой языка, подсветкой синтаксиса и номерами строк (IDE-style)
           const langInfo = LANGUAGE_MAP[lang] || {
             name: lang ? lang.toUpperCase() : 'КОД',
             prism: lang || 'none'
           };
-          const escaped = escapeHtml(rawText);
+          const prismLang = langInfo.prism;
+
+          // Синхронная подсветка синтаксиса через Prism
+          let highlighted = '';
+          if (typeof Prism !== 'undefined' && Prism.languages && prismLang !== 'none') {
+            const grammar = Prism.languages[prismLang] || Prism.languages.clike;
+            if (grammar) {
+              try {
+                highlighted = Prism.highlight(rawText, grammar, prismLang);
+              } catch {
+                highlighted = escapeHtml(rawText);
+              }
+            } else {
+              highlighted = escapeHtml(rawText);
+            }
+          } else {
+            highlighted = escapeHtml(rawText);
+          }
+
+          const linesCount = rawText ? rawText.split('\n').length : 1;
+          const gutterPadding = linesCount > 999 ? '4.8em' : (linesCount > 99 ? '4.2em' : '3.8em');
+          const encodedCode = encodeURIComponent(rawText);
 
           return `
-            <div class="code-block-wrapper">
+            <div class="code-block-wrapper" data-code="${encodedCode}">
               <div class="code-block-header">
                 <span class="code-lang-label">${langInfo.name}</span>
-                <button class="btn-copy-code" type="button" title="Скопировать код">
+                <button class="btn-copy-code" type="button" title="Скопировать чистый код без номеров строк">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                   </svg>
                   <span>Копировать</span>
                 </button>
               </div>
-              <pre class="language-${langInfo.prism}"><code class="language-${langInfo.prism}">${escaped}</code></pre>
+              <pre class="line-numbers language-${prismLang}" style="padding-left: ${gutterPadding} !important;"><code class="language-${prismLang}">${highlighted}</code></pre>
             </div>
           `;
         }
@@ -170,10 +215,18 @@ export class MarkdownService {
   }
 
   /**
-   * Запускает подсветку синтаксиса Prism для всех блоков в контейнере
+   * Запускает подсветку синтаксиса Prism и нумерацию строк для всех блоков в контейнере
    */
   highlightCode(container: HTMLElement): void {
     if (typeof Prism !== 'undefined' && container) {
+      const pres = container.querySelectorAll<HTMLElement>('pre.line-numbers:not([data-numbered])');
+      pres.forEach(pre => {
+        pre.setAttribute('data-numbered', 'true');
+        const code = pre.querySelector('code');
+        if (code) {
+          Prism.highlightElement(code);
+        }
+      });
       Prism.highlightAllUnder(container);
     }
   }
@@ -326,8 +379,14 @@ export class MarkdownService {
       event.preventDefault();
       event.stopPropagation();
       const wrapper = copyCodeBtn.closest<HTMLElement>('.code-block-wrapper');
-      const codeEl = wrapper?.querySelector('code');
-      const textToCopy = codeEl?.textContent || '';
+      let textToCopy = '';
+      const encoded = wrapper?.getAttribute('data-code');
+      if (encoded) {
+        textToCopy = decodeURIComponent(encoded);
+      } else {
+        const codeEl = wrapper?.querySelector('code');
+        textToCopy = codeEl?.textContent || '';
+      }
       if (textToCopy) {
         await navigator.clipboard.writeText(textToCopy);
         const span = copyCodeBtn.querySelector('span');
