@@ -467,11 +467,16 @@ def get_configured_repo_roots(config: dict) -> List[Tuple[Optional[str], Path]]:
         for doc_rel in proj.get("docs_paths", []):
             doc_cand = (ws_root / doc_rel).resolve()
             if doc_cand.exists():
-                target_doc_root = doc_cand if doc_cand.is_dir() else doc_cand.parent
-                if ("docs", target_doc_root) not in roots:
-                    roots.append(("docs", target_doc_root))
-                if (proj_id, target_doc_root) not in roots:
-                    roots.append((proj_id, target_doc_root))
+                if doc_cand.is_dir():
+                    if ("docs", doc_cand) not in roots:
+                        roots.append(("docs", doc_cand))
+                    if (proj_id, doc_cand) not in roots:
+                        roots.append((proj_id, doc_cand))
+                else:
+                    if ("docs", doc_cand) not in roots:
+                        roots.append(("docs", doc_cand))
+                    if (proj_id, doc_cand) not in roots:
+                        roots.append((proj_id, doc_cand))
 
     return roots
 
@@ -525,6 +530,11 @@ async def read_file_endpoint(
     if repo_id:
         for r_id, r_root in repo_roots:
             if r_id == repo_id:
+                if r_root.is_file():
+                    if clean_filepath == r_root.name or clean_filepath.endswith("/" + r_root.name):
+                        target_path = r_root
+                        break
+                    continue
                 candidate = (r_root / clean_filepath).resolve()
                 if candidate.is_file():
                     target_path = candidate
@@ -546,6 +556,12 @@ async def read_file_endpoint(
     # Б. Если repo_id не указан или файл в целевом репо не найден:
     if not target_path:
         for r_id, r_root in repo_roots:
+            if r_root.is_file():
+                if clean_filepath == r_root.name or clean_filepath.endswith("/" + r_root.name):
+                    target_path = r_root
+                    found_repo_id = r_id
+                    break
+                continue
             candidate = (r_root / clean_filepath).resolve()
             if candidate.is_file():
                 target_path = candidate
@@ -570,9 +586,97 @@ async def read_file_endpoint(
         if candidate.is_file():
             target_path = candidate
 
-    # 3. Если файл не найден
-    if not target_path or not target_path.exists() or not target_path.is_file():
+    # Д. Поиск в подпапках корней репозиториев с отсечением служебных каталогов
+    if not target_path:
+        filename = Path(clean_filepath).name
+        candidate_roots = [
+            (r_id, r_root) for r_id, r_root in repo_roots if r_id == repo_id
+        ] if repo_id else repo_roots
+
+        exclude_dirs = {
+            ".git", "node_modules", "bin", "obj", ".idea", ".vscode",
+            "dist", "build", ".venv", "venv", "__pycache__", ".cache"
+        }
+
+        for r_id, r_root in candidate_roots:
+            if not r_root.is_dir():
+                continue
+            try:
+                for cur_dir, dirs, files in os.walk(r_root):
+                    # Отсекаем служебные и скрытые папки
+                    dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
+                    if filename in files:
+                        cand = (Path(cur_dir) / filename).resolve()
+                        if cand.is_file() and _is_path_safe(cand, allowed_roots):
+                            target_path = cand
+                            found_repo_id = r_id
+                            break
+                if target_path:
+                    break
+            except Exception:
+                continue
+
+    # Е. Fallback на чтение из CAS-хранилища базы данных (таблица file_contents)
+    db_content: Optional[str] = None
+    if not target_path:
+        try:
+            filename = Path(clean_filepath).name
+            db_path = os.environ.get("DB_PATH", os.environ.get("KNOWLEDGE_DB_PATH", config.get("db_path", "/data/knowledge.db")))
+            if not Path(db_path).exists():
+                db_path = "data/knowledge.db" if Path("data/knowledge.db").exists() else "knowledge.db"
+
+            if Path(db_path).exists():
+                import sqlite3
+                sconn = sqlite3.connect(db_path)
+                try:
+                    sc = sconn.cursor()
+                    q = """
+                        SELECT fc.content, f.repo_id
+                        FROM files f
+                        JOIN file_contents fc ON (fc.hash = f.content_hash OR fc.hash = f.hash)
+                        WHERE (f.path = ? OR f.path LIKE ? OR f.path LIKE ?)
+                    """
+                    p = [clean_filepath, f"%/{filename}", f"%\\{filename}"]
+                    if repo_id:
+                        q_with_repo = q + " AND (f.repo_id = ? OR f.repo_id = 'docs') AND LENGTH(fc.content) > 0 LIMIT 1"
+                        sc.execute(q_with_repo, p + [repo_id])
+                        r = sc.fetchone()
+                    else:
+                        r = None
+
+                    if not r or not r[0]:
+                        q_any = q + " AND LENGTH(fc.content) > 0 LIMIT 1"
+                        sc.execute(q_any, p)
+                        r = sc.fetchone()
+
+                    if r and r[0]:
+                        db_content = r[0]
+                        found_repo_id = r[1] or found_repo_id
+                finally:
+                    sconn.close()
+        except Exception as e:
+            logger.debug(f"Database CAS fallback check failed: {e}")
+
+    # 3. Если файл не найден ни на диске, ни в базе данных
+    if not target_path and db_content is None:
         raise HTTPException(status_code=404, detail="File not found")
+
+    # 4. Если файл получен из CAS базы данных
+    if db_content is not None:
+        lines = db_content.splitlines(keepends=True)
+        total_lines = len(lines)
+        start = max(1, start_line) - 1
+        end = min(total_lines, end_line) if end_line else total_lines
+        content = "".join(lines) if full_file else "".join(lines[start:end])
+        return {
+            "content": content,
+            "filepath": filepath,
+            "repo_id": found_repo_id,
+            "start_line": start + 1,
+            "end_line": end,
+            "total_lines": total_lines,
+            "is_full_file": full_file,
+        }
 
     # 4. Проверка безопасности: путь должен начинаться с одного из разрешенных корней
     if not _is_path_safe(target_path, allowed_roots):

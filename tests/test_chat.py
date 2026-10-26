@@ -396,6 +396,10 @@ class TestChatAPI(unittest.TestCase):
             doc_file.parent.mkdir(parents=True, exist_ok=True)
             doc_file.write_text("# Project Guide\nInfo\n", encoding="utf-8")
 
+            nested_doc = ws_root / "work-orders" / "in-progress" / "task-1679.md"
+            nested_doc.parent.mkdir(parents=True, exist_ok=True)
+            nested_doc.write_text("# Task 1679\nDetails here\nLine 3\n", encoding="utf-8")
+
             mock_load_config.return_value = {
                 "server": {"dashboard": {"chat": {"enabled": True}}},
                 "repositories": [],
@@ -407,7 +411,7 @@ class TestChatAPI(unittest.TestCase):
                         "repositories": [
                             {"id": "backend", "path": "backend", "language": "csharp"}
                         ],
-                        "docs_paths": [".kb"]
+                        "docs_paths": [".kb", "work-orders"]
                     }
                 ]
             }
@@ -437,6 +441,44 @@ class TestChatAPI(unittest.TestCase):
             )
             self.assertEqual(res_doc.status_code, 200)
             self.assertIn("# Project Guide", res_doc.json()["content"])
+
+            # 4. Чтение вложенного документа по имени файла без указания промежуточной папки
+            res_nested = self.client.get(
+                "/api/chat/file?filepath=task-1679.md&repo_id=docs&full_file=true",
+                auth=("admin", "secret")
+            )
+            self.assertEqual(res_nested.status_code, 200)
+            self.assertEqual(res_nested.json()["repo_id"], "docs")
+            self.assertIn("# Task 1679", res_nested.json()["content"])
+
+            # 5. Fallback на CAS-хранилище SQLite, если файл отсутствует на диске
+            test_db_path = Path(tmp_dir) / "test_cas.db"
+            import sqlite3
+            sconn = sqlite3.connect(test_db_path)
+            try:
+                sc = sconn.cursor()
+                sc.execute("CREATE TABLE files (path TEXT, repo_id TEXT, content_hash TEXT, hash TEXT)")
+                sc.execute("CREATE TABLE file_contents (hash TEXT, content TEXT)")
+                sc.execute(
+                    "INSERT INTO files VALUES (?, ?, ?, ?)",
+                    ("docs/archived-plan.md", "docs", "hash123", "hash123")
+                )
+                sc.execute(
+                    "INSERT INTO file_contents VALUES (?, ?)",
+                    ("hash123", "# Archived Plan\nThis content is only in SQLite CAS.")
+                )
+                sconn.commit()
+            finally:
+                sconn.close()
+
+            with patch.dict(os.environ, {"DB_PATH": str(test_db_path)}):
+                res_cas = self.client.get(
+                    "/api/chat/file?filepath=archived-plan.md&repo_id=docs&full_file=true",
+                    auth=("admin", "secret")
+                )
+                self.assertEqual(res_cas.status_code, 200)
+                self.assertEqual(res_cas.json()["repo_id"], "docs")
+                self.assertIn("# Archived Plan", res_cas.json()["content"])
 
     @patch("httpx.AsyncClient.post")
     @patch("knowledge_mcp.daemon.routes.chat.load_config")

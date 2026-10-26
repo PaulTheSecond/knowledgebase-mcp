@@ -161,7 +161,13 @@ def _compute_status_data(db_instance: KnowledgeDB) -> dict:
     repos_data = []
     for repo in config.get("repositories", []):
         repo_id = repo.get("id")
-        stats = all_stats.get((repo_id, None)) or all_stats.get((repo_id, "default")) or {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
+        stats = None
+        if isinstance(all_stats, dict):
+            stats = all_stats.get((repo_id, None)) or all_stats.get((repo_id, "default"))
+        if not stats and hasattr(db_instance, "get_repo_stats"):
+            stats = db_instance.get_repo_stats(repo_id)
+        if not stats or not isinstance(stats, dict):
+            stats = {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
         repos_data.append({
             "id": repo_id,
             "url": repo.get("url") or repo.get("local_path", ""),
@@ -189,7 +195,8 @@ def _compute_status_data(db_instance: KnowledgeDB) -> dict:
                 "vectors_count": stats["vectors_count"]
             })
         doc_stats = all_stats.get(("docs", proj_id)) or {"files_count": 0, "chunks_count": 0, "vectors_count": 0}
-        if doc_stats["files_count"] > 0:
+        fc = doc_stats.get("files_count", 0) if isinstance(doc_stats, dict) else 0
+        if isinstance(fc, (int, float)) and fc > 0:
             repos_data.append({
                 "id": f"{proj_id}/docs",
                 "url": f"{ws_root} (Docs & .kb)",
