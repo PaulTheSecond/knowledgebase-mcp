@@ -21,22 +21,44 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
     path_obj = Path(db_path).absolute()
     
     if read_only:
-        # Для Read-Only режима используем URI
+        # Для Read-Only режима используем URI (mode=ro с fallback на immutable=1 при блокировках 9p/drvfs)
         uri_path = f"{path_obj.as_uri()}?mode=ro"
         logger.info(f"Opening database in Read-Only mode: {uri_path}")
         conn = sqlite3.connect(uri_path, uri=True, timeout=timeout, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
+            conn.execute("PRAGMA temp_store = MEMORY;")
+            conn.execute("PRAGMA cache_size = -64000;")
+        except sqlite3.OperationalError as e:
+            if "unable to open" in str(e).lower():
+                uri_path_imm = f"{path_obj.as_uri()}?immutable=1"
+                logger.warning(
+                    f"Read-only mode=ro failed ({e}), likely due to Docker 9p/drvfs WAL lock desync. "
+                    f"Falling back to immutable=1: {uri_path_imm}"
+                )
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = sqlite3.connect(uri_path_imm, uri=True, timeout=timeout, check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys = ON;")
+                conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
+                conn.execute("PRAGMA temp_store = MEMORY;")
+                conn.execute("PRAGMA cache_size = -64000;")
+            else:
+                raise
     else:
         # Режим записи
         logger.info(f"Opening database in Write mode: {path_obj}")
         conn = sqlite3.connect(str(path_obj), timeout=timeout, check_same_thread=False)
-
-    conn.row_factory = sqlite3.Row
-    
-    # Всегда включаем внешние ключи и таймаут ожидания блокировок
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
-    conn.execute("PRAGMA temp_store = MEMORY;")
-    conn.execute("PRAGMA cache_size = -64000;")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
+        conn.execute("PRAGMA temp_store = MEMORY;")
+        conn.execute("PRAGMA cache_size = -64000;")
     
     # Режим WAL, synchronous = NORMAL и auto_vacuum = FULL для пишущих соединений
     if not read_only:

@@ -211,10 +211,87 @@ class TestPresetAndSyncCLI:
         db_after.close()
         assert content_deleted is None
 
-    def test_cli_sync_file_missing_file_or_flag(self, capsys):
+    def test_cli_sync_file_missing_file_or_flag(self, temp_db, capsys):
+        _, db_path = temp_db
         """Проверяет выход с ошибкой, если не передан ни --file, ни --check-status."""
-        test_args = ["main.py", "sync-file"]
+        test_args = ["main.py", "--db-path", str(db_path), "sync-file"]
         with patch.object(sys, "argv", test_args):
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
+
+    def test_agent_preset_manager_install_claude_merges_without_overwrite(self, tmp_path):
+        """Проверяет безопасное слияние (merge) пресетов Claude без затирания существующих настроек."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings_file = claude_dir / "settings.json"
+        
+        # Создаем исходный конфиг с другим MCP сервером и плагинами
+        initial_data = {
+            "enabledPlugins": {"my-plugin": True},
+            "mcpServers": {
+                "other-tool": {"command": "node", "args": ["index.js"]}
+            }
+        }
+        settings_file.write_text(json.dumps(initial_data), encoding="utf-8")
+        
+        actions = AgentPresetManager.install_presets("claude", home_dir=tmp_path, python_executable="my_python")
+        assert len(actions) >= 2
+        
+        # 1. Проверяем наличие бэкапа
+        assert (claude_dir / "settings.json.bak").is_file()
+        
+        # 2. Проверяем сохранность существующих данных и добавление knowledgebase
+        merged = json.loads(settings_file.read_text(encoding="utf-8"))
+        assert "my-plugin" in merged["enabledPlugins"]
+        assert "other-tool" in merged["mcpServers"]
+        assert "knowledgebase" in merged["mcpServers"]
+        assert merged["mcpServers"]["knowledgebase"]["command"] == "my_python"
+        
+        # 3. Проверяем хуки
+        assert "hooks" in merged
+        assert len(merged["hooks"]["SessionStart"]) == 1
+        assert len(merged["hooks"]["PostToolUse"]) == 1
+        assert len(merged["hooks"]["PreToolUse"]) == 1
+        
+        # 4. Проверяем CLAUDE.md
+        claude_md = claude_dir / "CLAUDE.md"
+        assert claude_md.is_file()
+        assert "knowledge_get_project_rules" in claude_md.read_text(encoding="utf-8")
+
+    def test_cli_preset_install_command(self, tmp_path, capsys):
+        """Тест CLI-команды `preset claude --install`."""
+        with patch.object(Path, "home", return_value=tmp_path):
+            test_args = ["main.py", "preset", "claude", "--install"]
+            with patch.object(sys, "argv", test_args):
+                main()
+                
+        captured = capsys.readouterr()
+        assert "Успешно установлены пресеты для агента 'claude'" in captured.out
+        assert (tmp_path / ".claude" / "settings.json").is_file()
+
+    def test_agent_preset_manager_install_all_agents(self, tmp_path):
+        """Проверяет установку пресетов сразу для всех агентов ('all')."""
+        actions = AgentPresetManager.install_presets("all", home_dir=tmp_path, python_executable="python_test")
+        assert len(actions) == 7
+        assert (tmp_path / ".claude" / "settings.json").is_file()
+        assert (tmp_path / ".claude" / "CLAUDE.md").is_file()
+        assert (tmp_path / ".gemini" / "antigravity" / "mcp_config.json").is_file()
+        assert (tmp_path / ".gemini" / "antigravity" / "rules" / "knowledgebase.md").is_file()
+        assert (tmp_path / ".cursor" / "mcp.json").is_file()
+        assert (tmp_path / ".cursor" / "rules" / "knowledgebase.mdc").is_file()
+        assert (tmp_path / ".codex" / "instructions.md").is_file()
+
+    def test_agent_preset_manager_install_project_scope(self, tmp_path):
+        """Проверяет установку пресета на уровне проекта (scope='project')."""
+        actions = AgentPresetManager.install_presets("all", home_dir=tmp_path, python_executable="proj_python", scope="project")
+        assert len(actions) == 7
+        # Для проекта файлы создаются внутри tmp_path как корня проекта
+        assert (tmp_path / ".claude" / "settings.json").is_file()
+        assert (tmp_path / "CLAUDE.md").is_file()
+        assert (tmp_path / ".cursor" / "mcp.json").is_file()
+        assert (tmp_path / ".cursorrules").is_file()
+        assert (tmp_path / ".agent" / "mcp_config.json").is_file()
+        assert (tmp_path / ".agent" / "rules" / "knowledgebase.md").is_file()
+        assert (tmp_path / ".codex" / "instructions.md").is_file()
+

@@ -79,6 +79,57 @@ Connected AI agents have access to rich read-only tools:
 
 ---
 
+## ⚡ Quick Start: One-Click Machine Bootstrap
+
+To set up Knowledge Base MCP and connect your AI coding assistants on any fresh machine (Windows, Linux, macOS), use one of the frictionless methods below:
+
+### Option 1: Automated Script (Recommended after git clone)
+
+Clone the repository and run the zero-configuration setup script:
+
+`ash
+git clone https://github.com/qasaur/knowledgebase-mcp.git
+cd knowledgebase-mcp
+`
+
+- **Windows (PowerShell)**:
+  `powershell
+  .\setup.ps1
+  `
+- **Linux / macOS (Bash)**:
+  `ash
+  chmod +x ./setup.sh && ./setup.sh
+  `
+
+**What the script does automatically in ~15 seconds**:
+1. Validates Python 3.10+ runtime.
+2. Creates an isolated .venv virtual environment (preventing conflicts with global packages).
+3. Installs all dependencies and registers the global knowledge-mcp CLI.
+4. Auto-configures your AI coding assistants (**Claude Code**, **Antigravity**, **Cursor**, **Codex**) with absolute interpreter paths, JIT lifecycle hooks, and safe JSON merge.
+5. Verifies database connectivity and readiness.
+
+*Targeting a specific agent or local project scope*:
+`powershell
+.\setup.ps1 -Agent claude                       # Only Claude Code
+.\setup.ps1 -Agent cursor -ProjectScope          # Only Cursor, inside current repository root
+`
+
+---
+
+### Option 2: Global CLI via pipx (Zero-Clone Setup)
+
+If you want to use Knowledge MCP across all your projects without cloning its source code:
+
+`ash
+# Install globally in an isolated environment via pipx
+pipx install git+https://github.com/qasaur/knowledgebase-mcp.git
+
+# Auto-configure your coding agents
+knowledge-mcp preset all --install
+`
+
+---
+
 ## 🐳 Quick Start (Docker)
 
 ### 1. Configure Environment
@@ -210,7 +261,7 @@ npm run build
 
 ### Testing & Quality Assurance
 
-- **Run Unit & Integration Tests (137 passing tests):**
+- **Run Unit & Integration Tests (142 passing tests):**
   ```bash
   pytest
   ```
@@ -267,36 +318,75 @@ When commits are pushed, Knowledge MCP extracts the touched files and performs t
 ## ⚡ Indexing Performance: Cold Start vs. CAS Caching
 
 > [!IMPORTANT]
-> **Первая синхронизация (Холодный старт)**:
-> При первичном добавлении репозитория или проекта в базу Knowledge MCP выполняет **глубокий семантический и компиляторный анализ**:
-> - **C# / .NET Проекты**: Нативный компиляторный анализатор **Roslyn** (MSBuildWorkspace) компилирует синтаксические деревья, полностью резолвит FQDN типов, параметры дженериков, отслеживает реализации интерфейсов (DI / MassTransit / EF Core) и строит граф вызовов (symbol_edges). Для крупных корпоративных монорепозиториев (например, ~5 000 файлов C#) первичная компиляция занимает **~1.5–2 часа**.
-> - **Полнотекстовый поиск**: FTS5 токенизирует и строит инвертированный морфологический индекс для каждого чанка.
+> **Initial Synchronization (Cold Start)**:
+> When initially adding a repository or project, Knowledge MCP conducts **deep compiler-grade semantic analysis**:
+> - **C# / .NET Projects**: The native **Roslyn** compiler engine (MSBuildWorkspace) compiles syntax trees, fully resolves type FQDNs, generic type arguments, interface implementations (DI / MassTransit / EF Core), and constructs complete call graphs (`symbol_edges`). For large enterprise monorepos (e.g. ~5,000 C# files), initial compilation takes **~1.5–2 hours**.
+> - **Full-Text Search**: SQLite FTS5 tokenizes and constructs an inverted morphological index for every chunk.
 >
-> **Последующая синхронизация (Тёплый старт — секунды)**:
-> - На всех последующих синхронизациях (по Git вебхуку, расписанию Cron, кнопке в UI или переключении веток) система использует **дифференциальный хеш-анализ и Content-Addressable Storage (CAS)**.
-> - Если C# файлы не изменялись или их контент уже закэширован в CAS, **тяжёлый компилятор Roslyn полностью пропускается**.
-> - Повторная синхронизация всей базы занимает **всего 1–3 секунды** (вместо часов).
+> **Subsequent Synchronizations (Warm Delta Sync — Seconds)**:
+> - On all subsequent syncs (via Git webhook, Cron schedule, Web UI trigger, or branch switching), the system leverages **differential content hashing and Content-Addressable Storage (CAS)**.
+> - If C# files remain unchanged or their content hash is already cached in CAS, **heavy Roslyn compilation is completely bypassed**.
+> - Subsequent synchronization of the entire workspace completes in **just 1–3 seconds** (instead of hours).
 
-### 💡 Сравнение с легковесными инструментами (CodeGraphReview и графовые СУБД)
+### 💡 Comparison with Lightweight Graph Tools (CodeGraphReview & Graph Databases)
 
-| Возможность / Метрика | Knowledge MCP | Легковесные графовые инструменты (CodeGraphReview) |
+| Feature / Metric | Knowledge MCP | Lightweight Graph Tools (CodeGraphReview) |
 | :--- | :--- | :--- |
-| **Глубина анализа C#** | Полноценный **Roslyn SemanticModel** (точные FQDN, типы параметров, вызовы, DI-интерфейсы) | Поверхностный Tree-sitter / Regex (только имена функций без семантики типов) |
-| **Время первой синхронизации** | ~1.5–2 часа на 5 000 C# файлов (полная компиляция MSBuild) | ~2–5 минут (синтаксический разбор без компилятора) |
-| **Последующая (дельта) синхронизация** | **1–3 секунды** (CAS-кэш полностью пропускает неизменённые C# файлы) | Повторный обход файлов / проверка mtime |
-| **Размер базы данных** | **~790 МБ** на 10 000+ файлов и 100 000 чанков (CAS-дедупликация + FTS5 external content) | **3–5+ ГБ** (раздутые графовые указатели Neo4j / ненормализованный JSON) |
-| **Полнотекстовый поиск по коду** | Встроенный морфологический FTS5 + векторный поиск + граф (RRF-ранжирование) | Зачастую отсутствует или требует внешнего Elasticsearch |
+| **C# Analysis Depth** | Full **Roslyn SemanticModel** (exact FQDNs, parameter types, invocations, DI interfaces) | Shallow Tree-sitter / Regex (function names only without type semantics) |
+| **Initial Sync Time** | ~1.5–2 hours for 5,000 C# files (complete MSBuild compilation) | ~2–5 minutes (syntax parsing without compiler) |
+| **Subsequent (Delta) Sync** | **1–3 seconds** (CAS cache completely skips unchanged C# files) | Repeated file traversal / mtime polling |
+| **Database Footprint** | **~790 MB** across 10,000+ files and 100,000 chunks (CAS deduplication + FTS5 external content) | **3–5+ GB** (bloated Neo4j graph pointers / unnormalized JSON) |
+| **Code Full-Text Search** | Built-in morphological FTS5 + vector search + call graph (RRF ranking) | Often absent or requires external Elasticsearch |
 
 ---
 
-## 🤖 Connecting to AI Agents (MCP Client Config)
+## 🤖 Turnkey AI Agent Setup (Claude Code, Antigravity, Cursor, Codex)
 
-Add the following to your AI client configuration (e.g. `mcp.json` or Antigravity config):
+Knowledge Base MCP provides a built-in automated installer that configures AI coding agents in a single command. It supports **User Scope** (recommended, Zero-Footprint across all repositories & worktrees) and **Project Scope** (isolated to current workspace).
+
+### 🚀 One-Command Auto-Installation
+
+```bash
+# 1. User Global Scope (Default: Zero-Footprint across all repositories & worktrees)
+python -m knowledge_mcp.main preset claude --install       # Configures ~/.claude/settings.json + CLAUDE.md
+python -m knowledge_mcp.main preset antigravity --install  # Configures ~/.gemini/antigravity/mcp_config.json + rules
+python -m knowledge_mcp.main preset cursor --install       # Configures ~/.cursor/mcp.json + rules
+python -m knowledge_mcp.main preset codex --install        # Configures ~/.codex/instructions.md
+python -m knowledge_mcp.main preset all --install          # Configures all 4 agents in one step
+
+# 2. Project Scope (Local to current workspace root)
+python -m knowledge_mcp.main preset claude --install --project  # Configures ./.claude/settings.json + ./CLAUDE.md
+python -m knowledge_mcp.main preset cursor --install --project  # Configures ./.cursor/mcp.json + ./.cursorrules
+python -m knowledge_mcp.main preset all --install --project     # Configures all agents inside current workspace
+```
+
+### 🛡️ Safety & Architecture Guarantees
+- **Safe JSON Merge**: Intelligently merges `mcpServers.knowledgebase` and agent hooks without overwriting existing plugins (`enabledPlugins`), permissions, or other MCP servers (e.g. `impactos-knowledge`).
+- **Automatic Backups**: Generates a `.bak` backup copy (e.g. `settings.json.bak`) before modifying any existing configuration.
+- **Environment Binding**: Injects the absolute path to the active Python interpreter (`sys.executable`) from your virtual environment.
+- **JIT Hook Automation (Claude Code)**:
+  - `SessionStart`: Runs `sync-file --check-status` to verify database health upon session startup.
+  - `PostToolUse`: Intercepts `Edit|Write` tool actions and instantly triggers `sync-file --file "$FILE"` (20–40 ms incremental AST & symbol update).
+  - `PreToolUse`: Nudges the agent toward semantic search (`knowledge_search`, `knowledge_find_symbol`) instead of brute-force directory Grep.
+- **Prompt Rules Delivery**: Automatically appends institutional guidelines (`knowledge_get_project_rules`) to the agent's instructions.
+
+### 🌐 User Scope vs. Project Scope
+
+| Mode | Command Flag | Target Paths | Zero-Footprint (Clean Git Status) |
+| :--- | :--- | :--- | :---: |
+| **User Scope (Default)** | `--install` | `~/.claude/`, `~/.gemini/`, `~/.cursor/`, `~/.codex/` | **Yes** (Client repositories remain 100% clean) |
+| **Project Scope** | `--install --project` | `./.claude/`, `./.cursor/`, `./.agent/`, `./.cursorrules` | **No** (Configuration files placed in workspace root) |
+
+---
+
+### Manual MCP Client Configuration (Fallback)
+
+If you prefer configuring your agent manually, add the following to your AI client's configuration file (e.g. `~/.cursor/mcp.json` or `~/.gemini/antigravity/mcp_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "knowledge-mcp": {
+    "knowledgebase": {
       "command": "python",
       "args": ["-m", "knowledge_mcp.main", "mcp"],
       "cwd": "C:/Repos/knowledgebase-mcp"
@@ -310,7 +400,7 @@ Or when running via Docker:
 ```json
 {
   "mcpServers": {
-    "knowledge-mcp": {
+    "knowledgebase": {
       "command": "docker",
       "args": ["exec", "-i", "knowledge-mcp", "python", "-m", "knowledge_mcp.main", "mcp"]
     }

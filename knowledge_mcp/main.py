@@ -443,6 +443,10 @@ def main():
     mcp_parser = subparsers.add_parser("mcp", help="Start the MCP stdio server")
     mcp_parser.add_argument("--with-embeddings", action="store_true",
                             help="Enable vector search (loads ~150MB model, high quality RAG)")
+    mcp_parser.add_argument("--read-only", action="store_true", default=True,
+                            help="Open database in read-only mode (default: True)")
+    mcp_parser.add_argument("--write", dest="read_only", action="store_false",
+                            help="Open database in write mode")
 
     # Режим генерации интеграционных пресетов для AI-агентов (Claude, Antigravity, Cursor, Codex)
     preset_parser = subparsers.add_parser("preset", help="Generate or display integration presets for AI agents")
@@ -451,6 +455,10 @@ def main():
                                help="Target AI agent (default: all)")
     preset_parser.add_argument("--output-dir", type=str, default=None,
                                help="Directory to save preset files (if omitted, snippets are printed to stdout)")
+    preset_parser.add_argument("--install", action="store_true",
+                               help="Safely install and merge preset into agent user profile config")
+    preset_parser.add_argument("--project", "--local", dest="scope", action="store_const", const="project", default="user",
+                               help="Install preset into current project/workspace root instead of user global profile (default: user)")
 
     # Режим быстрой синхронизации одного файла (хуки PostToolUse)
     sync_file_parser = subparsers.add_parser("sync-file", help="JIT index or check single file for agent hooks")
@@ -468,7 +476,13 @@ def main():
 
     if args.command == "preset":
         from knowledge_mcp.core.agent_presets import AgentPresetManager
-        if args.output_dir:
+        if getattr(args, "install", False):
+            scope = getattr(args, "scope", "user")
+            actions = AgentPresetManager.install_presets(args.agent, scope=scope)
+            print(f"[KnowledgeBase MCP] Успешно установлены пресеты для агента '{args.agent}':")
+            for act in actions:
+                print(f"  - {act}")
+        elif args.output_dir:
             created = AgentPresetManager.export_presets(args.agent, args.output_dir)
             print(f"[KnowledgeBase MCP] Успешно создано {len(created)} файл(ов) пресета в '{args.output_dir}':")
             for f in created:
@@ -477,6 +491,10 @@ def main():
             AgentPresetManager.print_presets(args.agent)
         return
     elif args.command == "sync-file":
+        if not getattr(args, "check_status", False) and not getattr(args, "file", None):
+            logger.error("Требуется указать --file <путь> или --check-status")
+            sys.exit(1)
+
         db_path = getattr(args, "db_path", os.environ.get("DB_PATH", "data/knowledge.db"))
         db = KnowledgeDB(db_path)
 
@@ -496,10 +514,6 @@ def main():
             print(f"Indexed files in CAS: {files_count}")
             db.close()
             return
-
-        if not getattr(args, "file", None):
-            logger.error("Требуется указать --file <путь> или --check-status")
-            sys.exit(1)
 
         target_file = Path(args.file).resolve()
         from knowledge_mcp.core.workspace_scanner import WorkspaceScanner
@@ -569,7 +583,7 @@ def main():
             # но мы хотя бы предупреждаем в stderr.
             
         use_emb = getattr(args, 'with_embeddings', False)
-        asyncio.run(start_mcp_server(args.db_path, enable_embeddings=use_emb))
+        asyncio.run(start_mcp_server(args.db_path, enable_embeddings=use_emb, read_only=getattr(args, "read_only", True)))
     else:
         # Для sync и serve нужен полный стек (включая Indexer с эмбеддингами)
         init_components(args.db_path)

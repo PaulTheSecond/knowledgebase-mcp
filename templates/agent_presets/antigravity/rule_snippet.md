@@ -1,9 +1,9 @@
-# Приоритет KnowledgeBase MCP в Antigravity
+# KnowledgeBase MCP Priority in Antigravity
 
-При решении задач разработки, навигации по кодовой базе и рефакторинга всегда отдавай приоритет инструментам KnowledgeBase MCP:
-- `knowledge_search` — семантический и гибридный поиск по базе знаний и кодовой базе.
-- `knowledge_find_symbol` — быстрый переход к декларациям классов, методов, интерфейсов.
-- `knowledge_get_callers` / `knowledge_get_callees` — анализ графа вызовов и зависимостей.
-- `knowledge_review_context` — оценка радиуса поражения (blast radius), рисков и пробелов в тестах перед внесением изменений.
+When tackling development, codebase navigation, and refactoring tasks, always prioritize KnowledgeBase MCP tools:
+- `knowledge_search` — semantic and hybrid search across the knowledge base and codebase.
+- `knowledge_find_symbol` — fast navigation to declarations of classes, methods, and interfaces.
+- `knowledge_get_callers` / `knowledge_get_callees` — call graph and dependency analysis.
+- `knowledge_review_context` — blast radius assessment, risk analysis, and test gap evaluation before making modifications.
 
-Перед началом реализации любой задачи вызови `knowledge_get_project_rules(topic=...)` для загрузки релевантных проектных правил, архитектурных инвариантов и стандартов тестирования.
+Before implementing any task, invoke `knowledge_get_project_rules(topic=...)` to load relevant project guidelines, architectural invariants, and testing standards.

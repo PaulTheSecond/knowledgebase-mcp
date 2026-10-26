@@ -1,14 +1,9 @@
-"""
-Модуль управления интеграционными пресетами для AI-агентов:
-Claude Code, Antigravity, Cursor, Codex.
-Обеспечивает Zero-Footprint интеграцию и генерацию конфигурационных файлов.
-"""
-
 import json
 import logging
+import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +43,15 @@ EMBEDDED_PRESETS: Dict[str, Dict[str, str]] = {
                 "PreToolUse": [
                     {
                         "matcher": "Grep|Glob",
-                        "command": "echo \"[KnowledgeBase MCP] Рекомендуется использовать knowledge_search или knowledge_review_context для точного семантического и графового анализа перед глобальным Grep/Glob.\""
+                        "command": "echo \"[KnowledgeBase MCP] Prioritize knowledge_search or knowledge_review_context for precise semantic and graph-based analysis before running broad Grep/Glob scans.\""
                     }
                 ]
             }
         }, indent=2, ensure_ascii=False) + "\n",
         "CLAUDE.md.snippet": (
-            "В начале сессии или перед реализацией задачи вызови MCP-инструмент "
-            "knowledge_get_project_rules(topic=...) для получения актуальных стандартов кода, "
-            "правил работы с тестовой БД и изоляции тестов.\n"
+            "At session startup or before implementing a task, invoke the KnowledgeBase MCP tool "
+            "`knowledge_get_project_rules(topic=...)` to retrieve active coding standards, "
+            "test database rules, and test isolation guidelines.\n"
         )
     },
     "antigravity": {
@@ -72,12 +67,12 @@ EMBEDDED_PRESETS: Dict[str, Dict[str, str]] = {
             }
         }, indent=2, ensure_ascii=False) + "\n",
         "rule_snippet.md": (
-            "# Приоритет KnowledgeBase MCP в Antigravity\n\n"
-            "При решении задач разработки, навигации по кодовой базе и рефакторинга всегда отдавай приоритет "
-            "инструментам KnowledgeBase MCP (`knowledge_search`, `knowledge_find_symbol`, `knowledge_get_callers`, "
-            "`knowledge_get_callees`, `knowledge_review_context`). Перед реализацией новой функциональности или запуском "
-            "тестов вызови `knowledge_get_project_rules(topic=...)` для загрузки релевантных проектных правил, "
-            "архитектурных инвариантов и стандартов тестирования.\n"
+            "# KnowledgeBase MCP Priority in Antigravity\n\n"
+            "When tackling development, codebase navigation, and refactoring tasks, always prioritize "
+            "KnowledgeBase MCP tools (`knowledge_search`, `knowledge_find_symbol`, `knowledge_get_callers`, "
+            "`knowledge_get_callees`, `knowledge_review_context`). Before implementing any task, "
+            "invoke `knowledge_get_project_rules(topic=...)` to load relevant project guidelines, "
+            "architectural invariants, and testing standards.\n"
         )
     },
     "cursor": {
@@ -175,9 +170,6 @@ class AgentPresetManager:
         created_files: List[Path] = []
 
         for ag in agents_to_export:
-            # Определение целевой директории для агента:
-            # Если пользователь передал каталог, названный в честь агента (например, .claude или antigravity),
-            # пишем прямо в него. Иначе создаем поддиректорию с именем агента.
             cleaned_dirname = base_out.name.lower().strip(".")
             if len(agents_to_export) == 1 and cleaned_dirname == ag:
                 target_dir = base_out
@@ -212,3 +204,191 @@ class AgentPresetManager:
                 print(f"\n--- [{ag}] {filename} ---")
                 print(content.rstrip())
             print()
+
+    @classmethod
+    def install_presets(
+        cls,
+        agent: str = "all",
+        home_dir: Optional[Path] = None,
+        python_executable: Optional[str] = None,
+        scope: str = "user"
+    ) -> List[str]:
+        """
+        Автоматически и безопасно устанавливает (merge) пресеты в системные профили пользователя:
+        - Claude Code: ~/.claude/settings.json + ~/.claude/CLAUDE.md
+        - Antigravity: ~/.gemini/antigravity/mcp_config.json + rules/knowledgebase.md
+        - Cursor: ~/.cursor/mcp.json + ~/.cursor/rules/knowledgebase.mdc
+        - Codex / Copilot: ~/.codex/instructions.md
+
+        Сохраняет резервные копии (.bak) и выполняет умное слияние (safe merge),
+        не затирая существующие пользовательские плагины, права и другие MCP-серверы.
+        """
+        agent = agent.lower().strip()
+        if agent != "all" and agent not in AVAILABLE_AGENTS:
+            raise ValueError(f"Неизвестный агент: '{agent}'. Доступны: {', '.join(AVAILABLE_AGENTS)}, all")
+
+        agents_to_install = AVAILABLE_AGENTS if agent == "all" else [agent]
+        scope = scope.lower().strip()
+        base_dir = home_dir if home_dir else (Path.cwd() if scope == "project" else Path.home())
+        py_exe = python_executable or sys.executable
+        actions_taken: List[str] = []
+
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        db_path = os.environ.get("DB_PATH", str(repo_root / "data" / "knowledge.db"))
+
+        for ag in agents_to_install:
+            if ag == "claude":
+                claude_dir = base_dir / ".claude"
+                claude_dir.mkdir(parents=True, exist_ok=True)
+                settings_path = claude_dir / "settings.json"
+
+                data: Dict[str, Any] = {}
+                if settings_path.exists():
+                    try:
+                        backup_path = claude_dir / "settings.json.bak"
+                        backup_path.write_text(settings_path.read_text(encoding="utf-8"), encoding="utf-8")
+                        actions_taken.append(f"Backup created: {backup_path}")
+                        data = json.loads(settings_path.read_text(encoding="utf-8"))
+                    except Exception as e:
+                        logger.warning(f"Failed to read existing settings.json: {e}")
+                        data = {}
+
+                # 1. Merge mcpServers
+                mcp_servers = data.setdefault("mcpServers", {})
+                mcp_servers["knowledgebase"] = {
+                    "command": py_exe,
+                    "args": ["-m", "knowledge_mcp.main", "--db-path", db_path, "mcp"],
+                    "cwd": str(repo_root),
+                    "env": {
+                        "PYTHONPATH": str(repo_root),
+                        "PYTHONUNBUFFERED": "1"
+                    }
+                }
+
+                # 2. Merge hooks
+                hooks = data.setdefault("hooks", {})
+                # SessionStart
+                session_start = hooks.setdefault("SessionStart", [])
+                if not any("sync-file --check-status" in h.get("command", "") for h in session_start):
+                    session_start.append({"command": f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file --check-status'})
+
+                # PostToolUse
+                post_tool = hooks.setdefault("PostToolUse", [])
+                if not any("sync-file --file" in h.get("command", "") for h in post_tool):
+                    post_tool.append({
+                        "matcher": "Edit|Write",
+                        "command": f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file --file "$FILE"'
+                    })
+
+                # PreToolUse
+                pre_tool = hooks.setdefault("PreToolUse", [])
+                if not any("knowledge_search" in h.get("command", "") for h in pre_tool):
+                    pre_tool.append({
+                        "matcher": "Grep|Glob",
+                        "command": 'echo "[KnowledgeBase MCP] Prioritize knowledge_search or knowledge_review_context for precise semantic and graph-based analysis before running broad Grep/Glob scans."'
+                    })
+
+                settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                actions_taken.append(f"Updated Claude settings: {settings_path}")
+
+                # 3. Append to CLAUDE.md
+                claude_md = base_dir / "CLAUDE.md" if scope == "project" else claude_dir / "CLAUDE.md"
+                md_text = claude_md.read_text(encoding="utf-8") if claude_md.exists() else ""
+                if "knowledge_get_project_rules" not in md_text:
+                    snippet = (
+                        "\n\n## KnowledgeBase MCP\n"
+                        "At session startup or before implementing a task, invoke the KnowledgeBase MCP tool "
+                        "`knowledge_get_project_rules(topic=...)` to retrieve active coding standards, "
+                        "test database rules, and test isolation guidelines.\n"
+                    )
+                    claude_md.write_text(md_text.rstrip() + snippet, encoding="utf-8")
+                    actions_taken.append(f"Updated Claude guidelines: {claude_md}")
+
+            elif ag == "antigravity":
+                agy_dir = (base_dir / ".agent") if scope == "project" else (base_dir / ".gemini" / "antigravity")
+                agy_dir.mkdir(parents=True, exist_ok=True)
+                mcp_path = agy_dir / "mcp_config.json"
+
+                data: Dict[str, Any] = {}
+                if mcp_path.exists():
+                    try:
+                        backup_path = agy_dir / "mcp_config.json.bak"
+                        backup_path.write_text(mcp_path.read_text(encoding="utf-8"), encoding="utf-8")
+                        actions_taken.append(f"Backup created: {backup_path}")
+                        data = json.loads(mcp_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        data = {}
+
+                mcp_servers = data.setdefault("mcpServers", {})
+                mcp_servers["knowledgebase"] = {
+                    "command": py_exe,
+                    "args": ["-m", "knowledge_mcp.main", "--db-path", db_path, "mcp"],
+                    "cwd": str(repo_root),
+                    "env": {
+                        "PYTHONPATH": str(repo_root),
+                        "PYTHONUNBUFFERED": "1"
+                    }
+                }
+                mcp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                actions_taken.append(f"Updated Antigravity MCP config: {mcp_path}")
+
+                rules_dir = agy_dir / "rules"
+                rules_dir.mkdir(parents=True, exist_ok=True)
+                rule_file = rules_dir / "knowledgebase.md"
+                rule_text = cls.get_preset_files("antigravity").get("rule_snippet.md", "")
+                rule_file.write_text(rule_text, encoding="utf-8")
+                actions_taken.append(f"Updated Antigravity rule: {rule_file}")
+
+            elif ag == "cursor":
+                cursor_dir = base_dir / ".cursor"
+                cursor_dir.mkdir(parents=True, exist_ok=True)
+                mcp_path = cursor_dir / "mcp.json"
+
+                data: Dict[str, Any] = {}
+                if mcp_path.exists():
+                    try:
+                        backup_path = cursor_dir / "mcp.json.bak"
+                        backup_path.write_text(mcp_path.read_text(encoding="utf-8"), encoding="utf-8")
+                        actions_taken.append(f"Backup created: {backup_path}")
+                        data = json.loads(mcp_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        data = {}
+
+                mcp_servers = data.setdefault("mcpServers", {})
+                mcp_servers["knowledgebase"] = {
+                    "command": py_exe,
+                    "args": ["-m", "knowledge_mcp.main", "--db-path", db_path, "mcp"],
+                    "cwd": str(repo_root),
+                    "env": {
+                        "PYTHONPATH": str(repo_root),
+                        "PYTHONUNBUFFERED": "1"
+                    }
+                }
+                mcp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                actions_taken.append(f"Updated Cursor MCP config: {mcp_path}")
+
+                if scope == "project":
+                    rule_file = base_dir / ".cursorrules"
+                    rule_text = cls.get_preset_files("cursor").get("cursorrules.snippet", "")
+                    rule_file.write_text(rule_text, encoding="utf-8")
+                    actions_taken.append(f"Updated Cursor rule: {rule_file}")
+                else:
+                    rules_dir = cursor_dir / "rules"
+                    rules_dir.mkdir(parents=True, exist_ok=True)
+                    rule_file = rules_dir / "knowledgebase.mdc"
+                    rule_text = cls.get_preset_files("cursor").get("cursorrules.snippet", "")
+                    rule_file.write_text(rule_text, encoding="utf-8")
+                    actions_taken.append(f"Updated Cursor rule: {rule_file}")
+
+            elif ag == "codex":
+                codex_dir = base_dir / ".codex"
+                codex_dir.mkdir(parents=True, exist_ok=True)
+                inst_path = codex_dir / "instructions.md"
+
+                existing = inst_path.read_text(encoding="utf-8") if inst_path.exists() else ""
+                snippet = cls.get_preset_files("codex").get("system_prompt.snippet", "")
+                if "knowledge_search" not in existing:
+                    inst_path.write_text((existing.rstrip() + "\n\n" + snippet).strip() + "\n", encoding="utf-8")
+                    actions_taken.append(f"Updated Codex instructions: {inst_path}")
+
+        return actions_taken

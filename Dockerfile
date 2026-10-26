@@ -1,63 +1,67 @@
-# ── Stage 1: Сборка RoslynParser ───────────────────────────────────────────
-# Используем официальный SDK-образ — не нужен wget + bash-скрипт (~210 MB)
+# ── Stage 1: Сборка RoslynParser (.NET 8) ───────────────────────────────────
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS dotnet-builder
 
 WORKDIR /roslyn
-COPY RoslynParser/ .
-# publish создаёт плоский каталог со всеми DLL-зависимостями Roslyn
-RUN dotnet publish -c Release -o /roslyn/out
+# Копируем сначала только .csproj для эффективного кэширования NuGet пакетов
+COPY RoslynParser/RoslynParser.csproj ./
+RUN dotnet restore
+
+# Копируем исходники и собираем плоский каталог со всеми зависимостями Roslyn
+COPY RoslynParser/ ./
+RUN dotnet publish -c Release -o /roslyn/out --no-restore
 
 # ── Stage 2: Сборка Angular 21 Frontend ─────────────────────────────────────
-# Собираем современный SPA дашборд с темами оформления и мультиязычностью
 FROM node:22-alpine AS frontend-builder
 
 WORKDIR /frontend
-# Копируем package*.json отдельно для эффективного кэширования npm ci
+# Кэширование npm ci
 COPY frontend/package*.json ./
 RUN npm ci
 
 COPY frontend/ ./
 RUN npm run build
 
-# ── Stage 3: Финальный образ ────────────────────────────────────────────────
-# Используем dotnet SDK как базу и доустанавливаем Python.
-# dotnet/runtime:8.0 НЕ подходит: MSBuildLocator ищет SDK при запуске и падает.
-FROM mcr.microsoft.com/dotnet/sdk:8.0
+# ── Stage 3: Финальный образ (Python 3.11 Slim Bookworm) ─────────────────────
+# Базируемся на легковесном образе (~150 МБ вместо 2.1 ГБ SDK)
+FROM python:3.11-slim-bookworm
 
-# Устанавливаем Python 3.11, git, curl и libicu (нужна для Roslyn Unicode-обработки)
-RUN apt-get update && apt-get install -y \
-    python3.11 python3.11-venv python3-pip libicu-dev git curl \
+# Устанавливаем минимально необходимые runtime-пакеты (libicu72 для Unicode-парсинга Roslyn, git, curl)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libicu72 git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3.11 -m venv /opt/venv
+# Переносим .NET 8 runtime и MSBuild SDK из stage 1 (без тяжелых шаблонов и powershell)
+COPY --from=dotnet-builder /usr/share/dotnet/dotnet /usr/share/dotnet/dotnet
+COPY --from=dotnet-builder /usr/share/dotnet/host /usr/share/dotnet/host
+COPY --from=dotnet-builder /usr/share/dotnet/shared/Microsoft.NETCore.App /usr/share/dotnet/shared/Microsoft.NETCore.App
+COPY --from=dotnet-builder /usr/share/dotnet/sdk /usr/share/dotnet/sdk
+COPY --from=dotnet-builder /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref
+
+RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
+
+# Настраиваем изолированное виртуальное окружение Python
+RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-# ── Python зависимости (отдельные слои = максимальный кеш) ─────────────────
+# ── Python зависимости ───────────────────────────────────────────────────────
 COPY requirements.txt .
 
-# torch в отдельном RUN — инвалидируется только при смене версии torch,
-# а не при любом изменении requirements.txt
-RUN pip install --no-cache-dir --default-timeout=1000 --retries 10 torch --extra-index-url https://download.pytorch.org/whl/cpu
+# Установка PyTorch (CPU) и зависимостей с последующей чисткой кэшей байткода
+RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt \
+    && find /opt/venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
+    && find /opt/venv -type f -name "*.pyc" -delete || true
 
-# Остальные зависимости — инвалидируются только при изменении requirements.txt
-RUN pip install --no-cache-dir --default-timeout=1000 --retries 10 -r requirements.txt
-
-# Устанавливаем свой путь для кэша HF, чтобы скачанная модель не перетиралась volume из docker-compose
+# ── Предзагрузка модели эмбеддингов ──────────────────────────────────────────
 ENV HF_HOME=/app/models
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')" \
+    && rm -rf /app/models/hub/.locks /root/.cache
 
-# Предзагрузка NLP-модели, чтобы не скачивать её при каждом старте контейнера
-RUN /opt/venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')"
-
-# ── Код приложения и артефакты сборки ──────────────────────────────────────
-# Копируется последним — изменение кода не инвалидирует кеш pip и dotnet
+# ── Код приложения и артефакты сборки ────────────────────────────────────────
 COPY knowledge_mcp/ /app/knowledge_mcp/
-
-# Копируем собранный RoslynParser из stage 1
 COPY --from=dotnet-builder /roslyn/out /app/RoslynParser/bin/Release/net8.0/
-
-# Копируем скомпилированный Angular SPA из stage 2
 COPY --from=frontend-builder /frontend/dist/dashboard/browser /app/frontend/dist/dashboard/browser
 
 RUN mkdir -p /data
@@ -65,5 +69,9 @@ ENV DB_PATH=/data/knowledge.db
 ENV TRANSFORMERS_OFFLINE=1
 ENV HF_HUB_OFFLINE=1
 ENV PYTHONUNBUFFERED=1
+
+# Проверка работоспособности сервиса (SRE Best Practice)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/ -o /dev/null || exit 1
 
 CMD ["python", "-m", "knowledge_mcp.main", "serve", "--host", "0.0.0.0", "--port", "8000"]

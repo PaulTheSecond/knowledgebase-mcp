@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     def __init__(self, db_path: str | Path, read_only: bool = False):
         self.db_path = Path(db_path)
+        self.read_only = read_only
         self.lock = threading.RLock()
         
         # Если БД не существует, инициализируем схему во временном пишущем соединении
@@ -1427,6 +1428,9 @@ class KnowledgeDB:
         saved_tokens = max(0, baseline_tokens - returned_tokens)
         saved_percent = round((saved_tokens / baseline_tokens * 100)) if baseline_tokens > 0 else 0
         
+        if getattr(self, "read_only", False):
+            return 0
+
         cursor = self.conn.cursor()
         try:
             cursor.execute("""

@@ -77,7 +77,7 @@ def _run_jit_check(
     db_instance: Optional[KnowledgeDB]
 ) -> int:
     """Выполняет JIT-проверку для указанных репозиториев перед выполнением поисковых запросов."""
-    if not db_instance:
+    if not db_instance or getattr(db_instance, "read_only", False):
         return 0
     updated_total = 0
     try:
@@ -1760,7 +1760,7 @@ def create_sse_app():
 # Точка входа
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def start_mcp_server(db_path: str, enable_embeddings: bool = True, read_only: bool = False):
+async def start_mcp_server(db_path: str, enable_embeddings: bool = True, read_only: bool = True):
     """Инициализация БД и запуск MCP-сервера по STDIO (стандарт для локальных агентов)."""
     global db, use_embeddings
 

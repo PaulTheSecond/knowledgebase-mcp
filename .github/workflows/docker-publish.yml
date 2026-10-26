@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "master" ]
     tags: [ "v*.*.*" ]
-  workflow_dispatch: # Позволяет запускать сборку вручную из вкладки Actions
+  workflow_dispatch: # Allows manual workflow execution from the Actions tab
 
 jobs:
   build-and-push:
@@ -42,6 +42,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Кэширование слоев в GitHub Actions для ускорения повторных сборок
+          # Layer caching in GitHub Actions to accelerate repeated builds
           cache-from: type=gha
           cache-to: type=gha,mode=max

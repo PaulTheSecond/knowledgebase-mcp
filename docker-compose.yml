@@ -7,9 +7,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      # Volume для сохранения SQLite БД и кэша репозиториев между перезапусками
+      # Volume for persisting SQLite DB and repository cache across restarts
       - ./data:/data
-      # Директория с локальными исходниками на хосте (монтируется как read-only)
+      # Host directory with local source repositories (mounted read-only)
       - ${REPOS_DIR:-./src}:/repos:ro
     env_file:
       - path: .env
@@ -27,7 +27,7 @@ services:
       - LLM_MODEL=${LLM_MODEL:-kr/claude-sonnet-4.5}
       - LLM_API_KEY=${LLM_API_KEY:-sk-1a88d79028c9b93b-6m30qv-e5a42f22}
     
-    # Ограничение ресурсов контейнера
+    # Container resource constraints
     deploy:
       resources:
         limits:
@@ -37,8 +37,16 @@ services:
           memory: 512M
           cpus: "0.5"
 
-    # Автоматический перезапуск при падении
+    # Automatic restart on failure
     restart: unless-stopped
 
-    # Команда запуска HTTP/WebSocket сервера триггеров и дашборда
+    # Container health check
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/ -o /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    # Startup command for HTTP/WebSocket trigger server and dashboard
     command: python -m knowledge_mcp.main --db-path /data/knowledge.db serve --host 0.0.0.0 --port 8000

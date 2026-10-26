@@ -24,7 +24,7 @@
     "PreToolUse": [
       {
         "matcher": "Grep|Glob",
-        "command": "echo \"[KnowledgeBase MCP] Рекомендуется использовать knowledge_search или knowledge_review_context для точного семантического и графового анализа перед глобальным Grep/Glob.\""
+        "command": "echo \"[KnowledgeBase MCP] Prioritize knowledge_search or knowledge_review_context for precise semantic and graph-based analysis before running broad Grep/Glob scans.\""
       }
     ]
   }
