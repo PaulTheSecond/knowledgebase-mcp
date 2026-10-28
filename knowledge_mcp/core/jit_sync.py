@@ -47,6 +47,9 @@ class JITSyncEngine:
         if not target_path.exists():
             logger.warning(f"JIT sync target path does not exist: {target_path}")
             return 0
+        if not target_path.is_dir():
+            # Одиночные файлы документации не являются директориями git-репозитория
+            return 0
 
         # Выполняем быстрый git status
         try:
