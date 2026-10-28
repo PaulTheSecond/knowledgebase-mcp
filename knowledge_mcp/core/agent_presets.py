@@ -31,19 +31,38 @@ EMBEDDED_PRESETS: Dict[str, Dict[str, str]] = {
             "hooks": {
                 "SessionStart": [
                     {
-                        "command": "python -m knowledge_mcp.main sync-file --check-status"
+                        "matcher": "",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python -m knowledge_mcp.main sync-file --check-status",
+                                "timeout": 15
+                            }
+                        ]
                     }
                 ],
                 "PostToolUse": [
                     {
                         "matcher": "Edit|Write",
-                        "command": "python -m knowledge_mcp.main sync-file --file \"$FILE\""
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python -m knowledge_mcp.main sync-file",
+                                "timeout": 30
+                            }
+                        ]
                     }
                 ],
                 "PreToolUse": [
                     {
                         "matcher": "Grep|Glob",
-                        "command": "echo \"[KnowledgeBase MCP] Prioritize knowledge_search or knowledge_review_context for precise semantic and graph-based analysis before running broad Grep/Glob scans.\""
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "echo \"[KnowledgeBase MCP] Prioritize knowledge_search or knowledge_review_context for precise semantic and graph-based analysis before running broad Grep/Glob scans.\"",
+                                "timeout": 10
+                            }
+                        ]
                     }
                 ]
             }
@@ -266,37 +285,50 @@ class AgentPresetManager:
                     }
                 }
 
-                # 2. Merge hooks
+                # 2. Merge hooks (соответствие официальной схеме Claude Code: matcher + массив hooks)
                 hooks = data.setdefault("hooks", {})
+
+                def _ensure_hook_entry(event_list: list, matcher: str, cmd: str, timeout: int = 30):
+                    # Приводим к стандарту Claude Code, если в конфиге был старый плоский формат
+                    entry = None
+                    for item in event_list:
+                        if "command" in item and "hooks" not in item:
+                            legacy_cmd = item.pop("command")
+                            item["hooks"] = [{"type": "command", "command": legacy_cmd, "timeout": timeout}]
+                        if item.get("matcher", "") == matcher:
+                            entry = item
+                            break
+
+                    if not entry:
+                        entry = {"matcher": matcher, "hooks": []}
+                        event_list.append(entry)
+
+                    hooks_sublist = entry.setdefault("hooks", [])
+                    existing = next((h for h in hooks_sublist if "knowledge_mcp.main" in h.get("command", "") or "KnowledgeBase MCP" in h.get("command", "")), None)
+                    if existing:
+                        existing["command"] = cmd
+                        existing["timeout"] = timeout
+                    else:
+                        hooks_sublist.append({
+                            "type": "command",
+                            "command": cmd,
+                            "timeout": timeout
+                        })
+
                 # SessionStart
                 session_start = hooks.setdefault("SessionStart", [])
-                status_hook = next((h for h in session_start if "sync-file --check-status" in h.get("command", "")), None)
                 expected_status_cmd = f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file --check-status'
-                if status_hook:
-                    status_hook["command"] = expected_status_cmd
-                else:
-                    session_start.append({"command": expected_status_cmd})
+                _ensure_hook_entry(session_start, matcher="", cmd=expected_status_cmd, timeout=15)
 
                 # PostToolUse
                 post_tool = hooks.setdefault("PostToolUse", [])
-                post_hook = next((h for h in post_tool if "sync-file --file" in h.get("command", "")), None)
-                expected_post_cmd = f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file --file "$FILE"'
-                if post_hook:
-                    post_hook["command"] = expected_post_cmd
-                    post_hook["matcher"] = "Edit|Write"
-                else:
-                    post_tool.append({
-                        "matcher": "Edit|Write",
-                        "command": expected_post_cmd
-                    })
+                expected_post_cmd = f'"{py_exe}" -m knowledge_mcp.main --db-path "{db_path}" sync-file'
+                _ensure_hook_entry(post_tool, matcher="Edit|Write", cmd=expected_post_cmd, timeout=30)
 
                 # PreToolUse
                 pre_tool = hooks.setdefault("PreToolUse", [])
-                if not any("knowledge_search" in h.get("command", "") for h in pre_tool):
-                    pre_tool.append({
-                        "matcher": "Grep|Glob",
-                        "command": 'echo "[KnowledgeBase MCP] Prioritize knowledge_search or knowledge_review_context for precise semantic and graph-based analysis before running broad Grep/Glob scans."'
-                    })
+                expected_nudge_cmd = 'echo "[KnowledgeBase MCP] Prioritize knowledge_search or knowledge_review_context for precise semantic and graph-based analysis before running broad Grep/Glob scans."'
+                _ensure_hook_entry(pre_tool, matcher="Grep|Glob", cmd=expected_nudge_cmd, timeout=10)
 
                 settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 actions_taken.append(f"Updated Claude settings: {settings_path}")

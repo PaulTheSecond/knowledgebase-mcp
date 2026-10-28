@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 import logging
@@ -8,6 +9,18 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
+
+# Принудительно настраиваем UTF-8 кодировку для потоков ввода-вывода
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdin, "reconfigure"):
+            sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # Загружаем переменные окружения из .env файла в корне проекта
 load_dotenv()
@@ -407,6 +420,7 @@ async def serve_spa_or_static(full_path: str = ""):
     raise HTTPException(status_code=404, detail="Dashboard index.html not found. Please build frontend first.")
 
 def main():
+    global db, indexer
     if sys.platform == "win32":
         try:
             if hasattr(sys.stdout, "reconfigure"):
@@ -468,6 +482,11 @@ def main():
     preset_parser.add_argument("--project", "--local", dest="scope", action="store_const", const="project", default="user",
                                help="Install preset into current project/workspace root instead of user global profile (default: user)")
 
+    # Режим синхронизации мульти-репозиторного проекта (воркспейса)
+    sync_project_parser = subparsers.add_parser("sync-project", help="Index or delta-sync all repositories and docs in a project workspace")
+    sync_project_parser.add_argument("--project-id", required=True, type=str, help="Project ID from config.yaml (e.g. orbita)")
+    sync_project_parser.add_argument("--force", action="store_true", help="Force re-indexing of all files ignoring mtime/hash cache")
+
     # Режим быстрой синхронизации одного файла (хуки PostToolUse)
     sync_file_parser = subparsers.add_parser("sync-file", help="JIT index or check single file for agent hooks")
     sync_file_parser.add_argument("--file", type=str, default=None, help="Path to modified or created file")
@@ -498,9 +517,50 @@ def main():
         else:
             AgentPresetManager.print_presets(args.agent)
         return
+    elif args.command == "sync-project":
+        from knowledge_mcp.core.config import get_project_config
+        from knowledge_mcp.core.indexer import Indexer
+
+        proj_config = get_project_config(args.project_id)
+        if not proj_config:
+            logger.error(f"Project '{args.project_id}' not found in config.yaml")
+            sys.exit(1)
+
+        db_path = getattr(args, "db_path", os.environ.get("DB_PATH", "data/knowledge.db"))
+        db = KnowledgeDB(db_path)
+        proj_indexer = Indexer(db, use_embeddings=False)
+        print(f"[KnowledgeBase MCP] Starting sync for project '{args.project_id}'...")
+        res = proj_indexer.sync_project(proj_config, force=args.force)
+        print(f"[KnowledgeBase MCP] Completed sync for project '{args.project_id}': {res}")
+        db.close()
+        return
     elif args.command == "sync-file":
-        if not getattr(args, "check_status", False) and not getattr(args, "file", None):
-            logger.error("Требуется указать --file <путь> или --check-status")
+        raw_file = getattr(args, "file", None)
+        if raw_file in ("", "$FILE"):
+            raw_file = None
+
+        if not raw_file and not getattr(args, "check_status", False):
+            if not sys.stdin.isatty():
+                try:
+                    stdin_content = sys.stdin.read().strip()
+                    if stdin_content:
+                        try:
+                            stdin_data = json.loads(stdin_content)
+                            tool_input = stdin_data.get("tool_input", {})
+                            raw_file = (
+                                tool_input.get("file_path")
+                                or tool_input.get("path")
+                                or stdin_data.get("file_path")
+                                or stdin_data.get("path")
+                                or stdin_data.get("file")
+                            )
+                        except json.JSONDecodeError:
+                            raw_file = stdin_content
+                except Exception as e:
+                    logger.debug(f"Could not read stdin for sync-file: {e}")
+
+        if not getattr(args, "check_status", False) and not raw_file:
+            logger.error("Требуется указать --file <путь> или передать JSON хука в stdin, или указать --check-status")
             sys.exit(1)
 
         db_path = getattr(args, "db_path", os.environ.get("DB_PATH", "data/knowledge.db"))
@@ -523,7 +583,7 @@ def main():
             db.close()
             return
 
-        target_file = Path(args.file).resolve()
+        target_file = Path(raw_file).resolve()
         from knowledge_mcp.core.workspace_scanner import WorkspaceScanner
         from knowledge_mcp.core.jit_sync import JITSyncEngine
         from knowledge_mcp.core.indexer import Indexer

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from knowledge_mcp.db.models import KnowledgeDB
-from knowledge_mcp.core.config import get_repository_config
+from knowledge_mcp.core.config import get_repository_config, get_project_config, get_projects
 from knowledge_mcp.core.git_manager import GitManager
 from knowledge_mcp.core.indexer import Indexer
 
@@ -87,6 +87,25 @@ class DaemonWorker:
             if job_id in self._cancelled_jobs:
                 self._cancelled_jobs.discard(job_id)
                 logger.info(f"Job {job_id} was cancelled before execution.")
+                return
+
+            # Проверяем, является ли задача синхронизацией проекта
+            is_project = repo_id.startswith("project:") or any(p.get("id") == repo_id for p in get_projects())
+            if is_project:
+                proj_id = repo_id.split("project:", 1)[1] if repo_id.startswith("project:") else repo_id
+                proj_config = get_project_config(proj_id)
+                if not proj_config:
+                    err = f"Project config for '{proj_id}' not found in config.yaml"
+                    logger.error(err)
+                    self.db.update_job_status(job_id, "failed", attempts=attempts, error_message=err)
+                    return
+
+                logger.info(f"Processing project sync job {job_id} for '{proj_id}'...")
+                self.db.update_system_status("syncing")
+                res = self.indexer.sync_project(proj_config)
+                self.db.update_job_status(job_id, "completed")
+                self.db.update_system_status("idle", last_indexed_at=time.time())
+                logger.info(f"Project '{proj_id}' synced successfully: {res}")
                 return
 
             # Получаем конфигурацию репозитория из config.yaml

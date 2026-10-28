@@ -1158,13 +1158,15 @@ class Indexer:
             logger.warning(f"Failed to optimize database after sync: {e}")
 
     def sync_project(self, project_config: dict, force: bool = False) -> dict:
-        """Синхронизирует мульти-репозиторный воркспейс со всеми репозиториями и документацией."""
+        """Синхронизирует мульти-репозиторный воркспейс со всеми репозиториями и документацией по дельте коммитов."""
         from knowledge_mcp.core.workspace_scanner import WorkspaceScanner
+        import subprocess
+
         scanner = WorkspaceScanner()
         targets = scanner.scan_workspace(project_config)
         logger.info(f"Syncing project '{project_config.get('id')}' with {len(targets)} targets...")
 
-        results = {"total_targets": len(targets), "repos_synced": 0, "docs_synced": 0, "errors": 0}
+        results = {"total_targets": len(targets), "repos_synced": 0, "docs_synced": 0, "skipped": 0, "errors": 0}
         for target in targets:
             try:
                 if target.is_doc:
@@ -1177,13 +1179,53 @@ class Indexer:
                     )
                     results["docs_synced"] += 1
                 else:
+                    target_key = f"{target.project_id}:{target.repo_id}:{target.branch}"
+                    current_sha = None
+                    try:
+                        res = subprocess.run(
+                            ["git", "rev-parse", "HEAD"],
+                            cwd=str(target.absolute_path),
+                            capture_output=True,
+                            text=True,
+                            check=True
+                        )
+                        current_sha = res.stdout.strip()
+                    except Exception:
+                        pass
+
+                    target_files = None
+                    if current_sha and not force:
+                        last_sha = self.db.get_indexed_commit(target_key)
+                        if last_sha == current_sha:
+                            logger.info(f"Target '{target_key}' already up-to-date at SHA {current_sha[:8]}. Skipping.")
+                            results["skipped"] += 1
+                            continue
+                        elif last_sha:
+                            try:
+                                diff_res = subprocess.run(
+                                    ["git", "diff", f"{last_sha}..{current_sha}", "--name-only"],
+                                    cwd=str(target.absolute_path),
+                                    capture_output=True,
+                                    text=True,
+                                    check=True
+                                )
+                                changed = [line.strip() for line in diff_res.stdout.splitlines() if line.strip()]
+                                if changed:
+                                    target_files = changed
+                                    logger.info(f"Target '{target_key}': delta-syncing {len(changed)} changed file(s) ({last_sha[:8]} -> {current_sha[:8]}).")
+                            except Exception as ex:
+                                logger.warning(f"Could not compute git diff for '{target_key}': {ex}")
+
                     self.sync_repo(
                         repo_id=target.repo_id,
                         repo_path=target.absolute_path,
                         project_id=target.project_id,
                         branch=target.branch,
+                        target_files=target_files,
                         force=force
                     )
+                    if current_sha:
+                        self.db.update_indexed_commit(target_key, current_sha)
                     results["repos_synced"] += 1
             except Exception as e:
                 logger.error(f"Failed syncing target {target.absolute_path}: {e}")

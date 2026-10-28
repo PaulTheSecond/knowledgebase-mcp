@@ -24,8 +24,11 @@ class TestDaemonWorker(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         os.close(self.db_fd)
-        if os.path.exists(self.db_path):
-            os.remove(self.db_path)
+        try:
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+        except PermissionError:
+            pass
         self.temp_dir.cleanup()
 
     @patch("knowledge_mcp.daemon.worker.get_repository_config")
@@ -456,6 +459,46 @@ class TestDaemonWorker(unittest.TestCase):
         self.assertIsNotNone(found["started_at"])
         self.assertIsNotNone(found["finished_at"])
         self.assertIsNotNone(found["duration"])
+
+    @patch("knowledge_mcp.daemon.worker.get_project_config")
+    @patch("knowledge_mcp.daemon.worker.get_projects")
+    def test_worker_project_sync(self, mock_get_projects, mock_get_project_config):
+        mock_get_projects.return_value = [{"id": "orbita"}]
+        mock_get_project_config.return_value = {"id": "orbita", "type": "worktree_workspace"}
+
+        worker = DaemonWorker(self.db_path)
+        worker.indexer = MagicMock()
+        worker.indexer.sync_project.return_value = {"total_targets": 2, "repos_synced": 2}
+
+        job_id = self.db.add_to_queue("project:orbita")
+        job = self.db.fetch_next_job()
+        worker.run_job(job)
+
+        worker.indexer.sync_project.assert_called_once_with({"id": "orbita", "type": "worktree_workspace"})
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT status FROM sync_queue WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "completed")
+        worker.db.close()
+
+    @patch("knowledge_mcp.daemon.scheduler.load_config")
+    def test_cron_scheduler_schedules_projects(self, mock_load_config):
+        from knowledge_mcp.daemon.scheduler import CronScheduler
+        mock_load_config.return_value = {
+            "repositories": [],
+            "projects": [
+                {
+                    "id": "orbita",
+                    "triggers": {"cron": "*/10 * * * *"}
+                }
+            ]
+        }
+        scheduler = CronScheduler(self.db)
+        scheduler.start()
+        try:
+            self.assertIn("project:orbita", scheduler._active_timers)
+        finally:
+            scheduler.stop()
 
 
 if __name__ == "__main__":

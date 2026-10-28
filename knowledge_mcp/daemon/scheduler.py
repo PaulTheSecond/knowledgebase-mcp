@@ -83,9 +83,10 @@ class CronScheduler:
         """Запускает планировщик, считывая расписание из config.yaml."""
         config = load_config()
         repositories = config.get("repositories", [])
+        projects = config.get("projects", [])
 
-        if not repositories:
-            logger.info("No repositories configured, cron scheduler idle")
+        if not repositories and not projects:
+            logger.info("No repositories or projects configured, cron scheduler idle")
             return
 
         self._running = True
@@ -106,6 +107,23 @@ class CronScheduler:
 
             logger.info(f"Scheduling cron for repo '{repo_id}': every {interval}s (expression: {cron_expr})")
             self._schedule_repo(repo_id, interval)
+
+        for proj in projects:
+            proj_id = proj.get("id")
+            triggers = proj.get("triggers", {})
+            cron_expr = triggers.get("cron")
+
+            # Для проектов по умолчанию ставим */10 * * * * (каждые 10 минут), если не задано иное
+            if not cron_expr:
+                cron_expr = "*/10 * * * *"
+
+            interval = _parse_cron_interval(cron_expr)
+            if interval is None:
+                interval = 600
+
+            target_id = f"project:{proj_id}"
+            logger.info(f"Scheduling cron for project '{proj_id}': every {interval}s (expression: {cron_expr})")
+            self._schedule_repo(target_id, interval)
 
     def _schedule_repo(self, repo_id: str, interval: int) -> None:
         """Создаёт повторяющийся таймер для одного репозитория.

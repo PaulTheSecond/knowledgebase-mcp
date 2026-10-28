@@ -42,6 +42,8 @@ projects:
   type: worktree_workspace
   base_path: worktrees/master
   tasks_path: worktrees/{task}
+  triggers:
+    cron: "*/10 * * * *"
   docs_paths:
   - .kb
   - CLAUDE.md
