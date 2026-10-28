@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+import time
 from pathlib import Path
 import sqlite_vec
 
@@ -32,7 +33,8 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
             conn.execute("PRAGMA temp_store = MEMORY;")
             conn.execute("PRAGMA cache_size = -64000;")
         except sqlite3.OperationalError as e:
-            if "unable to open" in str(e).lower():
+            err_str = str(e).lower()
+            if "unable to open" in err_str or "disk i/o error" in err_str or "database is locked" in err_str:
                 uri_path_imm = f"{path_obj.as_uri()}?immutable=1"
                 logger.warning(
                     f"Read-only mode=ro failed ({e}), likely due to Docker 9p/drvfs WAL lock desync. "
@@ -51,14 +53,27 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
             else:
                 raise
     else:
-        # Режим записи
+        # Режим записи с автоповторами при конфликтах блокировок 9p/drvfs
         logger.info(f"Opening database in Write mode: {path_obj}")
-        conn = sqlite3.connect(str(path_obj), timeout=timeout, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
-        conn.execute("PRAGMA temp_store = MEMORY;")
-        conn.execute("PRAGMA cache_size = -64000;")
+        max_retries = 5
+        conn = None
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(str(path_obj), timeout=timeout, check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys = ON;")
+                conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
+                conn.execute("PRAGMA temp_store = MEMORY;")
+                conn.execute("PRAGMA cache_size = -64000;")
+                break
+            except sqlite3.OperationalError as e:
+                err_str = str(e).lower()
+                if ("disk i/o error" in err_str or "database is locked" in err_str) and attempt < max_retries - 1:
+                    wait_sec = (attempt + 1) * 0.5
+                    logger.warning(f"Write connection attempt {attempt+1}/{max_retries} failed ({e}). Retrying in {wait_sec}s...")
+                    time.sleep(wait_sec)
+                else:
+                    raise
     
     # Режим WAL, synchronous = NORMAL и auto_vacuum = FULL для пишущих соединений
     if not read_only:
