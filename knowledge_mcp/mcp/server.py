@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional, List, Dict
+from typing import Any, Callable, Optional, List, Dict, Tuple
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -41,10 +41,17 @@ def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[st
     targets = resolve_workspace_targets(project_id)
     if targets and repo_id:
         for t in targets:
-            if t.get("repo_id") == repo_id and (branch is None or t.get("branch") == branch):
-                abs_p = t.get("absolute_path")
-                if abs_p and Path(abs_p).exists():
-                    return Path(abs_p)
+            if t.get("repo_id") == repo_id:
+                t_b = t.get("branch") or ""
+                t_task = t.get("task_name") or ""
+                # Точное совпадение или нечеткое сопоставление имени ветки и ворктри-задачи (например orbit-2045 <-> feature/ORBIT-2045/develop)
+                branch_match = (branch is None or t_b == branch or 
+                                (branch and (branch in t_b or t_b in branch or branch in t_task or t_task in branch or 
+                                             (branch.split('/')[-1] in t_b or (t_task and t_task.replace('orbit-', '') in branch.lower())))))
+                if branch_match:
+                    abs_p = t.get("absolute_path")
+                    if abs_p and Path(abs_p).exists():
+                        return Path(abs_p)
         for t in targets:
             if t.get("repo_id") == repo_id:
                 abs_p = t.get("absolute_path")
@@ -67,6 +74,44 @@ def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[st
         if p and p.exists():
             return p
 
+    return None
+
+
+def _get_changed_line_ranges(repo_path: Path, file_path: str, compare_branch: str) -> Optional[List[Tuple[int, int]]]:
+    """Возвращает список диапазонов измененных строк (start_line, end_line) из git diff."""
+    if not repo_path or not repo_path.exists():
+        return None
+    try:
+        norm_fp = file_path.replace('\\', '/')
+        bases = [
+            f"{compare_branch}...HEAD",
+            compare_branch,
+            f"origin/{compare_branch}...HEAD",
+            f"dvcn/{compare_branch}...HEAD",
+            f"origin/{compare_branch}",
+            f"dvcn/{compare_branch}",
+            "HEAD~1"
+        ]
+        for base in bases:
+            cmd = ["git", "diff", "-U0", base, "--", norm_fp]
+            res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, timeout=5.0)
+            if res.returncode == 0 and res.stdout.strip():
+                ranges = []
+                for line in res.stdout.splitlines():
+                    if line.startswith("@@ "):
+                        parts = line.split(" ")
+                        if len(parts) >= 3 and parts[2].startswith("+"):
+                            hunk = parts[2][1:]
+                            if "," in hunk:
+                                s, c = hunk.split(",", 1)
+                                start, count = int(s), int(c)
+                            else:
+                                start, count = int(hunk), 1
+                            ranges.append((start, start + max(0, count - 1)))
+                if ranges:
+                    return ranges
+    except Exception:
+        pass
     return None
 
 
@@ -642,22 +687,29 @@ def knowledge_read_file(
     if not db_instance:
         raise RuntimeError("KnowledgeDB is not initialized.")
 
-    content = db_instance.get_file_content(path, repo_id=repo_id, project_id=project_id, branch=branch)
-    if content is not None:
-        if isinstance(content, dict):
-            return content.get("content", "")
-        return str(content)
-
-    # Fallback на рабочую копию в файловой системе
+    # 1. Первичная попытка: прямое чтение с диска активной рабочей копии (гарантирует полноту импортов и свежесть)
     if repo_id:
         repo_path = _find_repo_path(project_id, repo_id, branch)
         if repo_path:
             file_on_disk = (repo_path / path).resolve()
             if file_on_disk.is_file():
                 try:
-                    return file_on_disk.read_text(encoding="utf-8", errors="replace")
+                    text = file_on_disk.read_text(encoding="utf-8", errors="replace")
+                    try:
+                        db_instance.upsert_file_content(text, language=file_on_disk.suffix.lstrip('.'))
+                    except Exception:
+                        pass
+                    return text
                 except Exception:
                     pass
+
+    # 2. Чтение из CAS таблицы file_contents
+    content = db_instance.get_file_content(path, repo_id=repo_id, project_id=project_id, branch=branch)
+    if content is not None:
+        if isinstance(content, dict):
+            return content.get("content", "")
+        return str(content)
+
     return None
 
 
@@ -718,7 +770,13 @@ def knowledge_review_context(
     # 2. Поиск измененных символов во всех измененных файлах
     changed_symbols = []
     changed_sym_ids = set()
+    repo_path = _find_repo_path(project_id, repo_id, branch)
+
     for cf in norm_changed_files:
+        diff_ranges = None
+        if repo_path and repo_path.exists():
+            diff_ranges = _get_changed_line_ranges(repo_path, cf, compare_branch)
+
         cursor.execute("""
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.line_start, s.line_end,
                    s.signature, s.language, f.path, f.repo_id
@@ -726,10 +784,20 @@ def knowledge_review_context(
             JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
             WHERE f.project_id = ? AND f.repo_id = ? AND f.branch = ? AND f.path = ?
         """, (project_id, repo_id, branch, cf))
-        for r in cursor.fetchall():
-            sym_dict = dict(r)
-            changed_symbols.append(sym_dict)
-            changed_sym_ids.add(sym_dict['id'])
+        file_symbols = [dict(r) for r in cursor.fetchall()]
+
+        if diff_ranges:
+            for s in file_symbols:
+                ls = s.get('line_start') or 0
+                le = s.get('line_end') or 0
+                overlaps = any(not (le < r[0] or ls > r[1]) for r in diff_ranges)
+                if overlaps:
+                    changed_symbols.append(s)
+                    changed_sym_ids.add(s['id'])
+        else:
+            for s in file_symbols:
+                changed_symbols.append(s)
+                changed_sym_ids.add(s['id'])
 
     # 3. Построение графа радиуса влияния (blast radius)
     impacted_symbols = []
@@ -834,13 +902,17 @@ def knowledge_review_context(
                 })
 
         # г) Эвристики именования тестов
+        exact_names = (
+            f"Test{sym_name}", f"{sym_name}Test", f"{sym_name}Tests", f"test_{sym_name.lower()}",
+            f"Test_{sym_name}", f"test_{sym_name}"
+        )
         cursor.execute("""
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
             FROM symbols s
             JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
-            WHERE (s.name = ? OR s.name = ? OR s.name = ? OR s.name = ?)
-              AND f.project_id = ? AND f.repo_id = ?
-        """, (f"Test{sym_name}", f"{sym_name}Test", f"{sym_name}Tests", f"test_{sym_name.lower()}", project_id, repo_id))
+            WHERE s.name IN (?, ?, ?, ?, ?, ?)
+              AND f.project_id = ?
+        """, (*exact_names, project_id))
         for tr in cursor.fetchall():
             tested_symbol_ids.add(sym_id)
             k = (tr['id'], sym_id)
@@ -855,29 +927,103 @@ def knowledge_review_context(
                     "relation": "naming_pattern"
                 })
 
+        # Для методов/функций проверяем префиксные паттерны xUnit/NUnit (например ResolveAsync_...)
+        if sym.get('kind', '').lower() in ('method', 'function'):
+            cursor.execute("""
+                SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
+                FROM symbols s
+                JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+                WHERE (s.name LIKE ? OR s.name LIKE ? OR s.name LIKE ?)
+                  AND (f.path LIKE '%test%' OR f.path LIKE '%Test%')
+                  AND f.project_id = ?
+            """, (f"{sym_name}_%", f"{sym_name}Should%", f"{sym_name}When%", project_id))
+            for tr in cursor.fetchall():
+                tested_symbol_ids.add(sym_id)
+                k = (tr['id'], sym_id)
+                if k not in seen_test_keys:
+                    seen_test_keys.add(k)
+                    related_tests.append({
+                        "test_id": tr['id'],
+                        "test_name": tr['name'],
+                        "test_file": tr['path'],
+                        "tested_symbol_id": sym_id,
+                        "tested_symbol_name": sym_name,
+                        "relation": "naming_pattern"
+                    })
+
+        # д) Прямые вызовы из тестовых файлов (CALLS ребра или unresolved_refs)
+        cursor.execute("""
+            SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
+            FROM symbol_edges e
+            JOIN symbols s ON e.source_id = s.id
+            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            WHERE e.target_id = ? AND e.kind = 'CALLS'
+              AND (f.path LIKE '%test%' OR f.path LIKE '%Test%' OR s.name LIKE '%test%' OR s.name LIKE '%Test%')
+        """, (sym_id,))
+        for tr in cursor.fetchall():
+            tested_symbol_ids.add(sym_id)
+            k = (tr['id'], sym_id)
+            if k not in seen_test_keys:
+                seen_test_keys.add(k)
+                related_tests.append({
+                    "test_id": tr['id'],
+                    "test_name": tr['name'],
+                    "test_file": tr['path'],
+                    "tested_symbol_id": sym_id,
+                    "tested_symbol_name": sym_name,
+                    "relation": "CALLED_BY_TEST"
+                })
+
+        cursor.execute("""
+            SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
+            FROM unresolved_refs u
+            JOIN symbols s ON u.source_id = s.id
+            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            WHERE u.kind = 'CALLS' AND (u.target_qualified_name = ? OR u.target_qualified_name = ?)
+              AND (f.path LIKE '%test%' OR f.path LIKE '%Test%' OR s.name LIKE '%test%' OR s.name LIKE '%Test%')
+        """, (sym_name, sym_qname))
+        for tr in cursor.fetchall():
+            tested_symbol_ids.add(sym_id)
+            k = (tr['id'], sym_id)
+            if k not in seen_test_keys:
+                seen_test_keys.add(k)
+                related_tests.append({
+                    "test_id": tr['id'],
+                    "test_name": tr['name'],
+                    "test_file": tr['path'],
+                    "tested_symbol_id": sym_id,
+                    "tested_symbol_name": sym_name,
+                    "relation": "CALLED_BY_TEST"
+                })
+
     # Выявляем Test Gaps: измененные функции и методы БЕЗ тестов
     test_gaps = []
     for sym in changed_symbols:
         k_lower = sym['kind'].lower()
         if k_lower in ('method', 'function') and sym['id'] not in tested_symbol_ids:
+            qname = sym.get('qualified_name') or sym['name']
             test_gaps.append({
                 "id": sym['id'],
                 "name": sym['name'],
-                "qualified_name": sym.get('qualified_name') or sym['name'],
+                "qualified_name": qname,
                 "kind": sym['kind'],
                 "file": sym['path']
             })
 
     # 5. Расчет скоринга риска
     base_score = len(norm_changed_files) * 5 + len(changed_symbols) * 3
-    blast_score = len(impacted_symbols) * 4
+    blast_score = len(impacted_symbols) * 2
     test_gap_score = len(test_gaps) * 15
 
     if not norm_changed_files and not changed_symbols:
         risk_score = 0
         risk_level = "low"
     else:
-        risk_score = max(10, min(100, base_score + blast_score + test_gap_score))
+        raw_score = base_score + blast_score + test_gap_score
+        # Если гэпов нет и код покрыт тестами, применяем скидку за надежность
+        if not test_gaps and related_tests:
+            raw_score = int(raw_score * 0.6)
+        risk_score = max(10, min(100, raw_score))
         if risk_score < 30:
             risk_level = "low"
         elif risk_score < 70:

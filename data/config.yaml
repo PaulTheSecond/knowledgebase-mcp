@@ -11,7 +11,7 @@ server:
       model: kr/claude-sonnet-4.5
       api_key: sk-1a88d79028c9b93b-6m30qv-e5a42f22
 embeddings:
-  enabled: false
+  enabled: true
   model_name: intfloat/multilingual-e5-small
 repositories:
 - id: knowledgebase-mcp

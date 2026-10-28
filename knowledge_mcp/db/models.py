@@ -518,6 +518,16 @@ class KnowledgeDB:
         """, (project_id, repo_id, branch, path))
         return cursor.fetchone()
 
+    def has_indexed_files(self, project_id: str, repo_id: str, branch: str) -> bool:
+        """Проверяет, есть ли проиндексированные файлы для указанного проекта, репозитория и ветки."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT 1 FROM files
+            WHERE project_id = ? AND repo_id = ? AND branch = ?
+            LIMIT 1
+        """, (project_id, repo_id, branch))
+        return cursor.fetchone() is not None
+
     def upsert_file(
         self,
         repo_id: str,
@@ -1111,10 +1121,63 @@ class KnowledgeDB:
     ) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()
         
-        visited = set()
+        visited = set([symbol_id])
         queue: deque = deque([(symbol_id, 1)])
         impacted = []
-        
+
+        # Предварительный шаг: связываем интерфейс и реализацию для корневого символа
+        # 1. Если символ реализует интерфейс, добавляем интерфейс и методы интерфейса
+        cursor.execute("SELECT target_id FROM symbol_edges WHERE source_id = ? AND kind = 'IMPLEMENTS'", (symbol_id,))
+        for (iface_id,) in cursor.fetchall():
+            if iface_id not in visited:
+                visited.add(iface_id)
+                queue.append((iface_id, 1))
+            cursor.execute("SELECT id FROM symbols WHERE file_id = (SELECT file_id FROM symbols WHERE id = ?)", (iface_id,))
+            for (m_id,) in cursor.fetchall():
+                if m_id not in visited:
+                    visited.add(m_id)
+                    queue.append((m_id, 1))
+
+        # 2. Если символ это интерфейс, добавляем классы-реализации
+        cursor.execute("SELECT source_id FROM symbol_edges WHERE target_id = ? AND kind = 'IMPLEMENTS'", (symbol_id,))
+        for (impl_id,) in cursor.fetchall():
+            if impl_id not in visited:
+                visited.add(impl_id)
+                queue.append((impl_id, 1))
+
+        # 3. Если символ это метод реализации, находим соответствующий метод интерфейса
+        cursor.execute("""
+            SELECT s2.id 
+            FROM symbols s1
+            JOIN symbol_edges e ON e.source_id = (
+                SELECT s_p.id FROM symbols s_p 
+                WHERE s_p.file_id = s1.file_id AND s_p.kind IN ('class', 'struct') 
+                LIMIT 1
+            )
+            JOIN symbols s2 ON s2.file_id = (SELECT file_id FROM symbols WHERE id = e.target_id) AND s2.name = s1.name
+            WHERE s1.id = ? AND e.kind = 'IMPLEMENTS'
+        """, (symbol_id,))
+        for (iface_m_id,) in cursor.fetchall():
+            if iface_m_id not in visited:
+                visited.add(iface_m_id)
+                queue.append((iface_m_id, 1))
+
+        # 4. Находим поля/параметры внедрения зависимостей (DI) типа данного интерфейса/класса
+        cursor.execute("SELECT name FROM symbols WHERE id = ?", (symbol_id,))
+        s_row = cursor.fetchone()
+        if s_row and s_row[0]:
+            sym_name = s_row[0]
+            if len(sym_name) > 3 and not sym_name.startswith('_'):
+                cursor.execute("""
+                    SELECT DISTINCT id FROM symbols 
+                    WHERE kind IN ('field', 'property', 'parameter') 
+                      AND (signature LIKE ? OR signature LIKE ?)
+                """, (f"%{sym_name}%", f"%I{sym_name}%"))
+                for (di_id,) in cursor.fetchall():
+                    if di_id not in visited:
+                        visited.add(di_id)
+                        queue.append((di_id, 1))
+
         while queue:
             current_id, depth = queue.popleft()
             if depth > max_depth:

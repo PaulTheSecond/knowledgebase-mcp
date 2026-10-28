@@ -1194,7 +1194,8 @@ class Indexer:
                         pass
 
                     target_files = None
-                    if current_sha and not force:
+                    has_files = self.db.has_indexed_files(target.project_id, target.repo_id, target.branch)
+                    if current_sha and has_files and not force:
                         last_sha = self.db.get_indexed_commit(target_key)
                         if last_sha == current_sha:
                             logger.info(f"Target '{target_key}' already up-to-date at SHA {current_sha[:8]}. Skipping.")

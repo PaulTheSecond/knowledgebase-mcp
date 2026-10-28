@@ -118,7 +118,32 @@ class WorkspaceScanner:
                 content = git_target.read_text(encoding="utf-8", errors="ignore").strip()
                 if content.startswith("gitdir:"):
                     raw_gitdir = content[len("gitdir:"):].strip()
-                    git_dir = (repo_path / raw_gitdir).resolve()
+                    clean_raw = raw_gitdir.replace("\\", "/")
+                    cand = (repo_path / raw_gitdir).resolve()
+                    if cand.exists():
+                        git_dir = cand
+                    else:
+                        # Кросс-платформенное сопоставление путей worktrees (Windows <-> Docker Linux)
+                        if "worktrees/" in clean_raw.lower():
+                            tail = clean_raw.lower().split("worktrees/", 1)[-1]
+                            for parent in [repo_path] + list(repo_path.parents):
+                                if parent.name.lower() == "worktrees":
+                                    cand2 = (parent / tail).resolve()
+                                    if cand2.exists():
+                                        git_dir = cand2
+                                        break
+                                elif (parent / "worktrees").exists():
+                                    cand3 = (parent / "worktrees" / tail).resolve()
+                                    if cand3.exists():
+                                        git_dir = cand3
+                                        break
+                        if not git_dir and "repos/" in clean_raw.lower():
+                            rel_tail = clean_raw.lower().split("repos/", 1)[-1].lstrip("/")
+                            for base in [Path("/repos"), Path("C:/Repos"), Path("c:/repos")]:
+                                cand4 = (base / rel_tail).resolve()
+                                if cand4.exists():
+                                    git_dir = cand4
+                                    break
             elif git_target.is_dir():
                 git_dir = git_target
 
