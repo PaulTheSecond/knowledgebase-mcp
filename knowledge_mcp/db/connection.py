@@ -1,6 +1,7 @@
 import sqlite3
 import logging
 import time
+import os
 from pathlib import Path
 import sqlite_vec
 
@@ -22,8 +23,12 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
     path_obj = Path(db_path).absolute()
     
     if read_only:
-        # Для Read-Only режима используем URI (mode=ro с fallback на immutable=1 при блокировках 9p/drvfs)
-        uri_path = f"{path_obj.as_uri()}?mode=ro"
+        # Для Read-Only режима используем URI.
+        # В Windows (NTFS host) открытие WAL-базы в режиме mode=ro удерживает байтовые блокировки
+        # на файле -shm (LockFileEx), что вызывает EIO / "disk I/O error" в WSL2/Docker через 9p/drvfs.
+        # Поэтому на Windows подключаемся сразу с immutable=1, предотвращая любые блокировки -shm/-wal.
+        prefer_immutable = os.name == "nt"
+        uri_path = f"{path_obj.as_uri()}?immutable=1" if prefer_immutable else f"{path_obj.as_uri()}?mode=ro"
         logger.info(f"Opening database in Read-Only mode: {uri_path}")
         conn = sqlite3.connect(uri_path, uri=True, timeout=timeout, check_same_thread=False)
         conn.row_factory = sqlite3.Row
@@ -34,7 +39,7 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
             conn.execute("PRAGMA cache_size = -64000;")
         except sqlite3.OperationalError as e:
             err_str = str(e).lower()
-            if "unable to open" in err_str or "disk i/o error" in err_str or "database is locked" in err_str:
+            if not prefer_immutable and ("unable to open" in err_str or "disk i/o error" in err_str or "database is locked" in err_str):
                 uri_path_imm = f"{path_obj.as_uri()}?immutable=1"
                 logger.warning(
                     f"Read-only mode=ro failed ({e}), likely due to Docker 9p/drvfs WAL lock desync. "
