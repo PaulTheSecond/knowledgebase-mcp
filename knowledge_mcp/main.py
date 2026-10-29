@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from dotenv import load_dotenv
 
 # Принудительно настраиваем UTF-8 кодировку для потоков ввода-вывода
@@ -30,7 +30,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, WebSocket,
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from knowledge_mcp.db.models import KnowledgeDB
 from knowledge_mcp.daemon.auth import verify_basic_auth, generate_temp_token
@@ -722,24 +722,31 @@ def main():
         db.close()
         return
     elif args.command == "mcp":
-        # Проверяем доступность запущенного демона (Docker контейнера)
+        # Проверяем доступность запущенного демона (Docker контейнера) через быстрый HTTP сокет (без накладных расходов urllib на Windows)
         daemon_url = os.environ.get("DAEMON_URL", "http://127.0.0.1:8000")
         is_daemon_alive = False
-        import urllib.request
+        import http.client
+        import urllib.parse
         import time
 
-        # Ждем готовности демона (до 20 попыток по 0.5с = 10 секунд), чтобы не блокировать БД при перезапуске контейнера
-        max_attempts = int(os.environ.get("DAEMON_PROBE_ATTEMPTS", "20"))
+        parsed_url = urllib.parse.urlparse(daemon_url)
+        host = parsed_url.hostname or "127.0.0.1"
+        port = parsed_url.port or (443 if parsed_url.scheme == "https" else 8000)
+
+        max_attempts = int(os.environ.get("DAEMON_PROBE_ATTEMPTS", "10"))
         for attempt in range(max_attempts):
             try:
-                req = urllib.request.Request(f"{daemon_url}/health", headers={"User-Agent": "MCP-Proxy-Probe"})
-                with urllib.request.urlopen(req, timeout=1.0) as resp:
-                    if resp.status == 200:
-                        is_daemon_alive = True
-                        break
+                conn_probe = http.client.HTTPConnection(host, port, timeout=1.0)
+                conn_probe.request("GET", "/health", headers={"User-Agent": "MCP-Proxy-Probe"})
+                resp = conn_probe.getresponse()
+                if resp.status == 200:
+                    is_daemon_alive = True
+                    conn_probe.close()
+                    break
+                conn_probe.close()
             except Exception:
                 if attempt < max_attempts - 1:
-                    time.sleep(0.5)
+                    time.sleep(0.3)
 
         if is_daemon_alive:
             # Запускаем легковесный STDIO <-> SSE прокси, не трогая локальную базу SQLite

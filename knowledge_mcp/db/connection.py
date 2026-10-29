@@ -77,8 +77,8 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
     # Режим WAL, synchronous = NORMAL и auto_vacuum = FULL для пишущих соединений
     if not read_only:
         try:
-            # Настройка auto_vacuum (FULL) для новых баз данных
-            conn.execute("PRAGMA auto_vacuum = FULL;")
+            # Настройка auto_vacuum (INCREMENTAL) для безопасной работы поверх DrvFs/9P
+            conn.execute("PRAGMA auto_vacuum = INCREMENTAL;")
             # Настройка режима WAL
             journal_mode = conn.execute("PRAGMA journal_mode = WAL;").fetchone()[0]
             conn.execute("PRAGMA synchronous = NORMAL;")

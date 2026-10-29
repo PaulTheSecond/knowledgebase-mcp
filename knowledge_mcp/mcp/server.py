@@ -80,10 +80,49 @@ def _is_branch_match(requested_branch: Optional[str], target_branch: Optional[st
     return False
 
 
+def _resolve_project_id(
+    project_id: Optional[str] = None,
+    branch: Optional[str] = None,
+    repo_ids: Optional[List[str]] = None,
+    repo_id: Optional[str] = None
+) -> str:
+    """Автоматически сопоставляет project_id по ветке или repo_ids, если project_id не указан явно."""
+    if project_id and project_id != "default":
+        return project_id
+
+    all_repos = list(repo_ids or [])
+    if repo_id and repo_id not in all_repos:
+        all_repos.append(repo_id)
+
+    try:
+        targets = resolve_workspace_targets(None)
+        if targets:
+            # 1. Точное сопоставление по ветке/ворктри (например feature/ORBIT-1959/develop -> orbita)
+            if branch:
+                for t in targets:
+                    if _is_branch_match(branch, t.get("branch"), t.get("task_name")):
+                        p = t.get("project_id")
+                        if p:
+                            return p
+
+            # 2. Сопоставление по repo_id
+            if all_repos:
+                for t in targets:
+                    if t.get("repo_id") in all_repos:
+                        p = t.get("project_id")
+                        if p:
+                            return p
+    except Exception as e:
+        logger.debug(f"Failed to auto-resolve project_id: {e}")
+
+    return project_id or "default"
+
+
 def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[str] = None) -> Optional[Path]:
     """Находит локальный путь к репозиторию/ворктри на диске."""
+    p_id = _resolve_project_id(project_id, branch, [repo_id] if repo_id else None)
     # 1. Поиск в целевых воркспейсах
-    targets = resolve_workspace_targets(project_id)
+    targets = resolve_workspace_targets(p_id)
     if targets and repo_id:
         for t in targets:
             if t.get("repo_id") == repo_id:
@@ -165,16 +204,17 @@ def _run_jit_check(
     if not db_instance or getattr(db_instance, "read_only", False):
         return 0
     updated_total = 0
+    p_id = _resolve_project_id(project_id, branch, repo_ids)
     try:
         if repo_ids:
             for r_id in repo_ids:
-                p = _find_repo_path(project_id, r_id, branch)
+                p = _find_repo_path(p_id, r_id, branch)
                 if p and p.exists() and p.is_dir():
                     updated_total += jit_engine.ensure_fresh(
-                        p, project_id=project_id, repo_id=r_id, branch=branch, db=db_instance
+                        p, project_id=p_id, repo_id=r_id, branch=branch, db=db_instance
                     )
         else:
-            targets = resolve_workspace_targets(project_id)
+            targets = resolve_workspace_targets(p_id)
             relevant_targets = [
                 t for t in targets
                 if not t.get("is_doc") and _is_branch_match(branch, t.get("branch"), t.get("task_name"))
@@ -185,7 +225,7 @@ def _run_jit_check(
                 b_name = t.get("branch") or branch
                 if p and Path(p).is_dir() and r_id:
                     updated_total += jit_engine.ensure_fresh(
-                        p, project_id=project_id, repo_id=r_id, branch=b_name, db=db_instance
+                        p, project_id=p_id, repo_id=r_id, branch=b_name, db=db_instance
                     )
     except Exception as e:
         logger.debug(f"JIT sync check encountered non-fatal error: {e}")
@@ -488,7 +528,7 @@ def knowledge_search(
     if not db_instance:
         raise RuntimeError("KnowledgeDB is not initialized.")
 
-    p_id = project_id or "default"
+    p_id = _resolve_project_id(project_id, branch, repo_ids)
     b_name = branch or "master"
 
     # JIT-проверка перед поиском
@@ -539,15 +579,17 @@ def knowledge_find_symbol(
     if not db_instance:
         raise RuntimeError("KnowledgeDB is not initialized.")
 
+    p_id = _resolve_project_id(project_id, branch, repo_ids)
+
     # JIT-проверка перед поиском символов
-    _run_jit_check(repo_ids=repo_ids, project_id=project_id, branch=branch, db_instance=db_instance)
+    _run_jit_check(repo_ids=repo_ids, project_id=p_id, branch=branch, db_instance=db_instance)
 
     results = db_instance.find_symbols(
         name_pattern=name_pattern,
         kind=kind,
         repo_ids=repo_ids,
         limit=limit,
-        project_id=project_id,
+        project_id=p_id,
         branch=branch
     )
     results_list = [dict(r) for r in results]
@@ -788,6 +830,7 @@ def knowledge_review_context(
     if not db_instance:
         raise RuntimeError("KnowledgeDB is not initialized.")
 
+    project_id = _resolve_project_id(project_id, branch, [repo_id])
     cursor = db_instance.conn.cursor()
 
     # 1. Определение измененных файлов
@@ -839,7 +882,7 @@ def knowledge_review_context(
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.line_start, s.line_end,
                    s.signature, s.language, f.path, f.repo_id, s.file_id
             FROM symbols s
-            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            JOIN files f ON s.file_id = f.id
             WHERE f.project_id = ? AND f.repo_id = ? AND f.branch = ? AND f.path = ?
         """, (project_id, repo_id, branch, cf))
         # Дедупликация символов по id
@@ -862,6 +905,10 @@ def knowledge_review_context(
             for s in file_symbols:
                 changed_symbols.append(s)
                 changed_sym_ids.add(s['id'])
+
+    # Ограничиваем количество анализируемых символов для гарантии быстрого ответа
+    if len(changed_symbols) > 50:
+        changed_symbols = changed_symbols[:50]
 
     # 3. Построение графа радиуса влияния (blast radius)
     impacted_symbols = []
@@ -904,7 +951,7 @@ def knowledge_review_context(
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
             FROM symbol_edges e
             JOIN symbols s ON e.target_id = s.id
-            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            JOIN files f ON s.file_id = f.id
             WHERE e.source_id = ? AND e.kind = 'TESTED_BY'
         """, (sym_id,))
         for tr in cursor.fetchall():
@@ -926,7 +973,7 @@ def knowledge_review_context(
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
             FROM symbol_edges e
             JOIN symbols s ON e.source_id = s.id
-            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            JOIN files f ON s.file_id = f.id
             WHERE e.target_id = ? AND e.kind = 'TESTED_BY'
         """, (sym_id,))
         for tr in cursor.fetchall():
@@ -948,7 +995,7 @@ def knowledge_review_context(
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
             FROM unresolved_refs u
             JOIN symbols s ON u.source_id = s.id
-            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            JOIN files f ON s.file_id = f.id
             WHERE u.kind = 'TESTED_BY' AND (u.target_qualified_name = ? OR u.target_qualified_name = ?)
         """, (sym_name, sym_qname))
         for tr in cursor.fetchall():
@@ -973,7 +1020,7 @@ def knowledge_review_context(
         cursor.execute("""
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
             FROM symbols s
-            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            JOIN files f ON s.file_id = f.id
             WHERE s.name IN (?, ?, ?, ?, ?, ?)
               AND f.project_id = ?
         """, (*exact_names, project_id))
@@ -996,7 +1043,7 @@ def knowledge_review_context(
             cursor.execute("""
                 SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
                 FROM symbols s
-                JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+                JOIN files f ON s.file_id = f.id
                 WHERE (s.name LIKE ? OR s.name LIKE ? OR s.name LIKE ?)
                   AND (f.path LIKE '%test%' OR f.path LIKE '%Test%')
                   AND f.project_id = ?
@@ -1455,9 +1502,10 @@ async def _handle_search(arguments: dict) -> list[types.TextContent]:
         return _err("Error: 'query' argument is required.")
 
     repo_ids = arguments.get("repo_ids", [])
-    project_id = arguments.get("project_id", "default")
+    raw_project_id = arguments.get("project_id")
     branch = arguments.get("branch", "master")
     limit = arguments.get("limit", 10)
+    project_id = _resolve_project_id(raw_project_id, branch, repo_ids)
 
     try:
         vector = None
@@ -1486,14 +1534,30 @@ async def _handle_search(arguments: dict) -> list[types.TextContent]:
         if not results:
             return _err("No results found in the knowledge base. Try altering your query or removing repo_ids limits.")
 
-        formatted = [
-            f"--- Chunk ID: {r['id']} ---\n"
-            f"**Repository**: `{r['repo_id']}`\n"
-            f"**File**: `{r['path']}` (Lines: {r['line_start']}-{r['line_end']})\n"
-            f"**Context Trust Level**: {r['trust']} (Source: {r['source_kind']})\n\n"
-            f"```\n{r['content']}\n```\n"
-            for r in results
-        ]
+        MAX_CHUNK_LINES = 80
+        MAX_CHUNK_CHARS = 2500
+        formatted = []
+        for r in results:
+            content = r.get("content", "")
+            lines = content.splitlines()
+            if len(lines) > MAX_CHUNK_LINES or len(content) > MAX_CHUNK_CHARS:
+                truncated_content = "\n".join(lines[:MAX_CHUNK_LINES])[:MAX_CHUNK_CHARS]
+                rem_lines = max(0, len(lines) - MAX_CHUNK_LINES)
+                rem_chars = max(0, len(content) - len(truncated_content))
+                content = (
+                    f"{truncated_content}\n\n"
+                    f"... [Truncated {rem_lines} lines ({rem_chars} chars). "
+                    f"Use knowledge_read_file(path='{r.get('path')}', start_line={r.get('line_start')}, end_line={r.get('line_end')}) "
+                    f"or knowledge_get_chunk(chunk_id='{r['id']}') for complete content]"
+                )
+
+            formatted.append(
+                f"--- Chunk ID: {r['id']} ---\n"
+                f"**Repository**: `{r['repo_id']}`\n"
+                f"**File**: `{r['path']}` (Lines: {r.get('line_start')}-{r.get('line_end')})\n"
+                f"**Context Trust Level**: {r.get('trust')} (Source: {r.get('source_kind')})\n\n"
+                f"```\n{content}\n```\n"
+            )
 
         header = f"<!-- context_savings: {json.dumps(savings)} -->\n[Context Savings: {savings['saved_tokens']} tokens saved ({savings['saved_percent']}% reduction)]\n\n"
         return [types.TextContent(type="text", text=header + "\n".join(formatted))]
@@ -1786,7 +1850,7 @@ async def _handle_impact_analysis(arguments: dict) -> list[types.TextContent]:
 async def _handle_review_context(arguments: dict) -> list[types.TextContent]:
     """knowledge_review_context: построение радиуса влияния и анализ рисков для ревьюера."""
     repo_id = arguments.get("repo_id")
-    project_id = arguments.get("project_id", "default")
+    raw_project_id = arguments.get("project_id")
     branch = arguments.get("branch", "master")
     compare_branch = arguments.get("compare_branch", "master")
     changed_files = arguments.get("changed_files")
@@ -1794,6 +1858,7 @@ async def _handle_review_context(arguments: dict) -> list[types.TextContent]:
     if file_path and not changed_files:
         changed_files = [file_path]
     max_depth = arguments.get("max_depth", 2)
+    project_id = _resolve_project_id(raw_project_id, branch, [repo_id] if repo_id else None)
 
     if not repo_id and changed_files:
         targets = resolve_workspace_targets(project_id)
