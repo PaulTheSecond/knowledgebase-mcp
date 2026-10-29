@@ -2013,16 +2013,67 @@ class KnowledgeDB:
             self._auto_commit()
 
     def add_to_queue(self, repo_id: str, changed_files: Optional[List[str]] = None) -> int:
-        """Добавляет репозиторий в очередь на синхронизацию.
+        """Добавляет репозиторий в очередь на синхронизацию с дедупликацией.
+
+        Если в очереди уже ожидает задача для этого repo_id:
+        - Если новая задача - полная синхронизация (changed_files is None),
+          то существующая pending задача обновляется до полной (changed_files = NULL).
+        - Если новая задача точечная (со списком changed_files), и в очереди уже есть точечная,
+          списки изменившихся файлов объединяются.
+        - Если в очереди уже ожидает полная синхронизация, новая точечная задача поглощается ею.
+        Возвращает ID задачи (существующей или вновь созданной).
 
         Args:
             repo_id: Идентификатор репозитория.
-            changed_files: Опциональный список относительных путей измененных файлов из вебхука.
+            changed_files: Опциональный список относительных путей измененных файлов из вебхука или хука.
         """
         import json
-        changed_json = json.dumps(changed_files) if changed_files else None
         with self.lock:
             cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT id, changed_files
+                FROM sync_queue
+                WHERE repo_id = ? AND status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT 1
+            """, (repo_id,))
+            pending_job = cursor.fetchone()
+
+            if pending_job:
+                existing_id, existing_files_json = pending_job
+                # Сценарий 1: Новая задача — полный sync (changed_files is None)
+                if not changed_files:
+                    if existing_files_json is not None:
+                        cursor.execute("""
+                            UPDATE sync_queue
+                            SET changed_files = NULL,
+                                updated_at = datetime('now', 'localtime')
+                            WHERE id = ?
+                        """, (existing_id,))
+                        self._auto_commit()
+                    return existing_id
+
+                # Сценарий 2: Новая задача точечная, но в очереди уже ждет полный sync
+                if existing_files_json is None:
+                    return existing_id
+
+                # Сценарий 3: Обе задачи точечные — объединяем множества файлов
+                try:
+                    existing_list = json.loads(existing_files_json) if existing_files_json else []
+                except Exception:
+                    existing_list = []
+                merged = sorted(list(set(existing_list) | set(changed_files)))
+                cursor.execute("""
+                    UPDATE sync_queue
+                    SET changed_files = ?,
+                        updated_at = datetime('now', 'localtime')
+                    WHERE id = ?
+                """, (json.dumps(merged), existing_id))
+                self._auto_commit()
+                return existing_id
+
+            # Если в pending задач для этого repo_id нет, вставляем новую
+            changed_json = json.dumps(changed_files) if changed_files else None
             cursor.execute("""
                 INSERT INTO sync_queue (repo_id, status, changed_files)
                 VALUES (?, 'pending', ?)
@@ -2034,6 +2085,7 @@ class KnowledgeDB:
         """Извлекает следующую pending задачу по принципу FIFO и переводит ее в processing в IMMEDIATE транзакции.
 
         Учитывает колонку run_at: задачи с run_at в будущем пропускаются (экспоненциальный бэк-офф).
+        При запуске полной синхронизации автоматически очищает накопившиеся дубликаты из очереди.
         """
         with self.lock:
             cursor = self.conn.cursor()
@@ -2060,6 +2112,12 @@ class KnowledgeDB:
                             updated_at = datetime('now', 'localtime')
                         WHERE id = ?
                     """, (job_id,))
+                    # Дедупликация: при старте полного sync удаляем все остальные pending-дубликаты для этого репозитория
+                    if changed_files is None:
+                        cursor.execute("""
+                            DELETE FROM sync_queue
+                            WHERE repo_id = ? AND status = 'pending' AND changed_files IS NULL
+                        """, (repo_id,))
                     self.conn.commit()
                     return {
                         "id": job_id,

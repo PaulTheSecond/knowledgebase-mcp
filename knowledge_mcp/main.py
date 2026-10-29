@@ -128,8 +128,9 @@ indexer = None
 
 class SyncRequest(BaseModel):
     repo_id: str
-    repo_path: str
+    repo_path: Optional[str] = None
     force: bool = False
+    changed_files: Optional[List[str]] = None
 
 def init_components(db_path: str):
     global db, indexer
@@ -165,7 +166,7 @@ async def sync_endpoint(req: SyncRequest):
     if not db:
         raise HTTPException(status_code=500, detail="Components not initialized")
     
-    job_id = await asyncio.to_thread(db.add_to_queue, req.repo_id)
+    job_id = await asyncio.to_thread(db.add_to_queue, req.repo_id, req.changed_files)
     return {"status": "Sync queued", "job_id": job_id, "repo_id": req.repo_id, "background": True}
 
 @app.post("/api/auth/token")
@@ -577,29 +578,44 @@ def main():
             sys.exit(1)
 
         db_path = getattr(args, "db_path", os.environ.get("DB_PATH", "data/knowledge.db"))
-        db = KnowledgeDB(db_path)
 
         if getattr(args, "check_status", False):
+            daemon_url = os.environ.get("DAEMON_URL", "http://127.0.0.1:8000")
+            daemon_alive = False
+            try:
+                import urllib.request
+                req = urllib.request.Request(f"{daemon_url}/health", headers={"User-Agent": "Sync-File-Status"})
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        daemon_alive = True
+            except Exception:
+                daemon_alive = False
+
             from knowledge_mcp.core.config import load_config, get_projects
             cfg = load_config()
             repos_count = len(cfg.get("repositories", []))
             projects_count = len(get_projects())
 
-            cursor = db.conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM files")
-            files_count = cursor.fetchone()[0]
+            # Для чтения статистики открываем БД в Read-Only режиме, не мешая демону
+            from knowledge_mcp.db.connection import get_db_connection
+            try:
+                ro_conn = get_db_connection(db_path, read_only=True)
+                cursor = ro_conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM files")
+                files_count = cursor.fetchone()[0]
+                ro_conn.close()
+            except Exception:
+                files_count = "N/A"
 
-            print("[KnowledgeBase MCP] Status: OK")
+            status_str = "OK (Daemon Active)" if daemon_alive else "OK (Standalone)"
+            print(f"[KnowledgeBase MCP] Status: {status_str}")
             print(f"Database: {db_path} (accessible)")
             print(f"Workspaces: {projects_count} project(s), {repos_count} repository(ies)")
             print(f"Indexed files in CAS: {files_count}")
-            db.close()
             return
 
         target_file = Path(raw_file).resolve()
         from knowledge_mcp.core.workspace_scanner import WorkspaceScanner
-        from knowledge_mcp.core.jit_sync import JITSyncEngine
-        from knowledge_mcp.core.indexer import Indexer
 
         project_id = getattr(args, "project_id", None)
         repo_id = getattr(args, "repo_id", None)
@@ -632,6 +648,59 @@ def main():
                 branch = branch or "master"
                 project_id = project_id or "default"
 
+        rel_path = None
+        if repo_root:
+            try:
+                rel_path = target_file.relative_to(Path(repo_root).resolve()).as_posix()
+            except ValueError:
+                rel_path = target_file.name
+        else:
+            rel_path = target_file.name
+
+        # Проверяем доступность демона (Single-Writer Docker контейнера)
+        daemon_url = os.environ.get("DAEMON_URL", "http://127.0.0.1:8000")
+        daemon_alive = False
+        import urllib.parse
+        parsed = urllib.parse.urlparse(daemon_url)
+        daemon_host = parsed.hostname or "127.0.0.1"
+        daemon_port = parsed.port or 8000
+
+        try:
+            import http.client
+            h_conn = http.client.HTTPConnection(daemon_host, daemon_port, timeout=10.0)
+            h_conn.request("GET", "/health", headers={"User-Agent": "Sync-File-Probe"})
+            h_resp = h_conn.getresponse()
+            if h_resp.status == 200:
+                daemon_alive = True
+            h_conn.close()
+        except Exception:
+            daemon_alive = False
+
+        if daemon_alive:
+            # Отправляем в очередь демона (Single-Writer) по HTTP, исключая конфликты SQLite на NTFS
+            target_repo_id = f"project:{project_id}" if project_id and project_id != "default" else repo_id
+            payload = json.dumps({
+                "repo_id": target_repo_id,
+                "repo_path": str(repo_root or ""),
+                "changed_files": [rel_path]
+            })
+            try:
+                import http.client
+                p_conn = http.client.HTTPConnection(daemon_host, daemon_port, timeout=15.0)
+                p_conn.request("POST", "/sync", payload, {"Content-Type": "application/json"})
+                p_resp = p_conn.getresponse()
+                if p_resp.status == 200:
+                    print(f"[JIT] Notified daemon: sync queued for {target_file.name} in '{target_repo_id}'")
+                    p_conn.close()
+                    return
+                p_conn.close()
+            except Exception as e:
+                logger.warning(f"[JIT] Failed to post to daemon: {e}, falling back to direct local indexing")
+
+        # Fallback: прямое локальное обновление (если демон не запущен)
+        from knowledge_mcp.core.jit_sync import JITSyncEngine
+        from knowledge_mcp.core.indexer import Indexer
+        db = KnowledgeDB(db_path)
         fast_indexer = Indexer(db, use_embeddings=False)
         jit = JITSyncEngine(fast_indexer)
         ok = jit.index_single_file(
@@ -640,7 +709,8 @@ def main():
             repo_id=repo_id,
             branch=branch,
             db=db,
-            repo_root=repo_root
+            repo_root=repo_root,
+            rel_path=rel_path
         )
         if ok:
             action = "Indexed" if target_file.exists() else "Deleted"
