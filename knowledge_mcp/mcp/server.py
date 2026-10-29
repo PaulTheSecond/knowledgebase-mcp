@@ -14,6 +14,7 @@ import mcp.types as types
 
 from knowledge_mcp.db.models import KnowledgeDB
 from knowledge_mcp.core.jit_sync import JITSyncEngine
+from knowledge_mcp.core.git_manager import get_git_cmd_prefix
 from knowledge_mcp.core.config import get_repository_config, resolve_workspace_targets, get_project_config
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,50 @@ def set_db(database: KnowledgeDB) -> None:
 # Вспомогательные функции для токенов, JIT и поиска путей
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _is_branch_match(requested_branch: Optional[str], target_branch: Optional[str], task_name: Optional[str]) -> bool:
+    """Точное и безопасное сопоставление веток и ворктри задач.
+    
+    Предотвращает ложные срабатывания на общих суффиксах вроде 'develop' или 'master'.
+    """
+    if not requested_branch:
+        return True
+    
+    req = requested_branch.strip().lower()
+    tgt = (target_branch or "").strip().lower()
+    task = (task_name or "").strip().lower()
+    
+    if req == tgt:
+        return True
+        
+    req_clean = req.removeprefix("origin/").removeprefix("refs/heads/").removeprefix("dvcn/")
+    tgt_clean = tgt.removeprefix("origin/").removeprefix("refs/heads/").removeprefix("dvcn/")
+    if req_clean == tgt_clean:
+        return True
+        
+    def extract_task_number(text: str) -> Optional[str]:
+        m = re.search(r'(?:orbit|task|issue|feature)[/-]?(\\d+)', text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        m2 = re.search(r'\\b(\\d{3,6})\\b', text)
+        if m2:
+            return m2.group(1)
+        return None
+
+    req_num = extract_task_number(req)
+    tgt_num = extract_task_number(tgt) or (extract_task_number(task) if task else None)
+    
+    if req_num and tgt_num:
+        return req_num == tgt_num
+        
+    if task and (task == req or task == req_clean):
+        return True
+        
+    if req in ("master", "main") and tgt in ("master", "main"):
+        return req == tgt
+        
+    return False
+
+
 def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[str] = None) -> Optional[Path]:
     """Находит локальный путь к репозиторию/ворктри на диске."""
     # 1. Поиск в целевых воркспейсах
@@ -42,18 +87,13 @@ def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[st
     if targets and repo_id:
         for t in targets:
             if t.get("repo_id") == repo_id:
-                t_b = t.get("branch") or ""
-                t_task = t.get("task_name") or ""
-                # Точное совпадение или нечеткое сопоставление имени ветки и ворктри-задачи (например orbit-2045 <-> feature/ORBIT-2045/develop)
-                branch_match = (branch is None or t_b == branch or 
-                                (branch and (branch in t_b or t_b in branch or branch in t_task or t_task in branch or 
-                                             (branch.split('/')[-1] in t_b or (t_task and t_task.replace('orbit-', '') in branch.lower())))))
-                if branch_match:
+                if _is_branch_match(branch, t.get("branch"), t.get("task_name")):
                     abs_p = t.get("absolute_path")
                     if abs_p and Path(abs_p).exists():
                         return Path(abs_p)
+        # Если ветка master или не указана, берем базовый репозиторий
         for t in targets:
-            if t.get("repo_id") == repo_id:
+            if t.get("repo_id") == repo_id and t.get("is_base"):
                 abs_p = t.get("absolute_path")
                 if abs_p and Path(abs_p).exists():
                     return Path(abs_p)
@@ -93,7 +133,7 @@ def _get_changed_line_ranges(repo_path: Path, file_path: str, compare_branch: st
             "HEAD~1"
         ]
         for base in bases:
-            cmd = ["git", "diff", "-U0", base, "--", norm_fp]
+            cmd = get_git_cmd_prefix(repo_path) + ["diff", "-U0", base, "--", norm_fp]
             res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, timeout=5.0)
             if res.returncode == 0 and res.stdout.strip():
                 ranges = []
@@ -121,7 +161,7 @@ def _run_jit_check(
     branch: str,
     db_instance: Optional[KnowledgeDB]
 ) -> int:
-    """Выполняет JIT-проверку для указанных репозиториев перед выполнением поисковых запросов."""
+    """Выполняет быструю JIT-проверку для указанных репозиториев перед выполнением поисковых запросов."""
     if not db_instance or getattr(db_instance, "read_only", False):
         return 0
     updated_total = 0
@@ -129,17 +169,21 @@ def _run_jit_check(
         if repo_ids:
             for r_id in repo_ids:
                 p = _find_repo_path(project_id, r_id, branch)
-                if p and p.exists():
+                if p and p.exists() and p.is_dir():
                     updated_total += jit_engine.ensure_fresh(
                         p, project_id=project_id, repo_id=r_id, branch=branch, db=db_instance
                     )
         else:
             targets = resolve_workspace_targets(project_id)
-            for t in targets:
+            relevant_targets = [
+                t for t in targets
+                if not t.get("is_doc") and _is_branch_match(branch, t.get("branch"), t.get("task_name"))
+            ]
+            for t in relevant_targets[:5]:
                 p = t.get("absolute_path")
                 r_id = t.get("repo_id")
                 b_name = t.get("branch") or branch
-                if p and Path(p).exists() and r_id:
+                if p and Path(p).is_dir() and r_id:
                     updated_total += jit_engine.ensure_fresh(
                         p, project_id=project_id, repo_id=r_id, branch=b_name, db=db_instance
                     )
@@ -386,9 +430,10 @@ _TOOL_SCHEMAS = [
                     "items": {"type": "string"},
                     "description": "Optional explicit list of modified files. If omitted, discovered via git diff or CAS comparison."
                 },
-                "max_depth": {"type": "integer", "description": "Max recursion depth for caller blast radius (default 2)."}
+                "max_depth": {"type": "integer", "description": "Max recursion depth for caller blast radius (default 2)."},
+                "file_path": {"type": "string", "description": "Optional single file to inspect (auto-resolves repo_id)."}
             },
-            "required": ["repo_id"]
+            "required": []
         }
     ),
     types.Tool(
@@ -687,24 +732,37 @@ def knowledge_read_file(
     if not db_instance:
         raise RuntimeError("KnowledgeDB is not initialized.")
 
-    # 1. Первичная попытка: прямое чтение с диска активной рабочей копии (гарантирует полноту импортов и свежесть)
+    norm_path = path.replace('\\', '/').strip('/')
+
+    # 1. Первичная попытка: прямое чтение с диска активной рабочей копии
+    repo_path = None
     if repo_id:
         repo_path = _find_repo_path(project_id, repo_id, branch)
-        if repo_path:
-            file_on_disk = (repo_path / path).resolve()
-            if file_on_disk.is_file():
+    else:
+        # Автоматический поиск репозитория в воркспейсе, если repo_id не передан
+        targets = resolve_workspace_targets(project_id)
+        for t in targets:
+            if not t.get("is_doc") and _is_branch_match(branch, t.get("branch"), t.get("task_name")):
+                cand_root = Path(t["absolute_path"]) if t.get("absolute_path") else None
+                if cand_root and (cand_root / norm_path).is_file():
+                    repo_path = cand_root
+                    break
+
+    if repo_path:
+        file_on_disk = (repo_path / norm_path).resolve()
+        if file_on_disk.is_file():
+            try:
+                text = file_on_disk.read_text(encoding="utf-8", errors="replace")
                 try:
-                    text = file_on_disk.read_text(encoding="utf-8", errors="replace")
-                    try:
-                        db_instance.upsert_file_content(text, language=file_on_disk.suffix.lstrip('.'))
-                    except Exception:
-                        pass
-                    return text
+                    db_instance.upsert_file_content(text, language=file_on_disk.suffix.lstrip('.'))
                 except Exception:
                     pass
+                return text
+            except Exception:
+                pass
 
     # 2. Чтение из CAS таблицы file_contents
-    content = db_instance.get_file_content(path, repo_id=repo_id, project_id=project_id, branch=branch)
+    content = db_instance.get_file_content(norm_path, repo_id=repo_id, project_id=project_id, branch=branch)
     if content is not None:
         if isinstance(content, dict):
             return content.get("content", "")
@@ -779,12 +837,18 @@ def knowledge_review_context(
 
         cursor.execute("""
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.line_start, s.line_end,
-                   s.signature, s.language, f.path, f.repo_id
+                   s.signature, s.language, f.path, f.repo_id, s.file_id
             FROM symbols s
             JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
             WHERE f.project_id = ? AND f.repo_id = ? AND f.branch = ? AND f.path = ?
         """, (project_id, repo_id, branch, cf))
-        file_symbols = [dict(r) for r in cursor.fetchall()]
+        # Дедупликация символов по id
+        seen_syms = set()
+        file_symbols = []
+        for r in cursor.fetchall():
+            if r['id'] not in seen_syms:
+                seen_syms.add(r['id'])
+                file_symbols.append(dict(r))
 
         if diff_ranges:
             for s in file_symbols:
@@ -1001,19 +1065,38 @@ def knowledge_review_context(
     for sym in changed_symbols:
         k_lower = sym['kind'].lower()
         if k_lower in ('method', 'function') and sym['id'] not in tested_symbol_ids:
-            qname = sym.get('qualified_name') or sym['name']
-            test_gaps.append({
-                "id": sym['id'],
-                "name": sym['name'],
-                "qualified_name": qname,
-                "kind": sym['kind'],
-                "file": sym['path']
-            })
+            is_method_tested = False
+            sym_name_clean = sym['name'].lower()
+            for t in related_tests:
+                if t.get('tested_symbol_id') == sym['id'] or (t.get('tested_symbol_name') or '').lower() == sym_name_clean:
+                    is_method_tested = True
+                    break
+                t_name = (t.get('test_name') or '').lower()
+                if (f"test_{sym_name_clean}" in t_name or 
+                    f"test{sym_name_clean}" in t_name or 
+                    f"{sym_name_clean}_" in t_name or 
+                    f"{sym_name_clean}should" in t_name or 
+                    f"{sym_name_clean}when" in t_name or
+                    (sym_name_clean in t_name and not t_name.endswith("tests"))):
+                    is_method_tested = True
+                    break
+
+            if not is_method_tested:
+                qname = sym.get('qualified_name') or sym['name']
+                test_gaps.append({
+                    "id": sym['id'],
+                    "name": sym['name'],
+                    "qualified_name": qname,
+                    "kind": sym['kind'],
+                    "file": sym['path']
+                })
 
     # 5. Расчет скоринга риска
     base_score = len(norm_changed_files) * 5 + len(changed_symbols) * 3
-    blast_score = len(impacted_symbols) * 2
-    test_gap_score = len(test_gaps) * 15
+    direct_impact = sum(1 for s in impacted_symbols if s.get('depth', 1) <= 1)
+    transitive_impact = len(impacted_symbols) - direct_impact
+    blast_score = min(40, direct_impact * 2 + int(transitive_impact * 0.5))
+    test_gap_score = len(test_gaps) * 20
 
     if not norm_changed_files and not changed_symbols:
         risk_score = 0
@@ -1022,8 +1105,10 @@ def knowledge_review_context(
         raw_score = base_score + blast_score + test_gap_score
         # Если гэпов нет и код покрыт тестами, применяем скидку за надежность
         if not test_gaps and related_tests:
-            raw_score = int(raw_score * 0.6)
+            raw_score = int(raw_score * 0.5)
         risk_score = max(10, min(100, raw_score))
+        if test_gaps and risk_score < 30:
+            risk_score = 30
         if risk_score < 30:
             risk_level = "low"
         elif risk_score < 70:
@@ -1071,6 +1156,7 @@ def knowledge_review_context(
         "related_tests": related_tests,
         "test_gaps": test_gaps,
         "risk": risk_level,
+        "risk_level": risk_level,
         "risk_score": risk_score,
         "context_savings": savings
     }
@@ -1383,7 +1469,8 @@ async def _handle_search(arguments: dict) -> list[types.TextContent]:
                 logger.info("Embedder ready!")
             vector = await asyncio.to_thread(_embed_text_sync, embedder, query)
 
-        res = knowledge_search(
+        res = await asyncio.to_thread(
+            knowledge_search,
             query=query,
             repo_ids=repo_ids,
             project_id=project_id,
@@ -1443,7 +1530,7 @@ async def _handle_get_chunk(arguments: dict) -> list[types.TextContent]:
 
 async def _handle_read_file(arguments: dict) -> list[types.TextContent]:
     """knowledge_read_file: получить полный контент файла по пути."""
-    path = arguments.get("path")
+    path = arguments.get("path") or arguments.get("file_path")
     if not path:
         return _err("Error: 'path' argument is required.")
 
@@ -1452,7 +1539,9 @@ async def _handle_read_file(arguments: dict) -> list[types.TextContent]:
     branch = arguments.get("branch", "master")
 
     try:
-        content = knowledge_read_file(path, repo_id=repo_id, project_id=project_id, branch=branch, db=db)
+        content = await asyncio.to_thread(
+            knowledge_read_file, path, repo_id=repo_id, project_id=project_id, branch=branch, db=db
+        )
         if content is None:
             return _err(f"File '{path}' not found in the knowledge base.")
 
@@ -1548,7 +1637,8 @@ async def _handle_find_symbol(arguments: dict) -> list[types.TextContent]:
     limit = arguments.get("limit", 20)
 
     try:
-        res = knowledge_find_symbol(
+        res = await asyncio.to_thread(
+            knowledge_find_symbol,
             name_pattern=pattern,
             kind=kind,
             repo_ids=repo_ids,
@@ -1588,7 +1678,7 @@ async def _handle_get_callers(arguments: dict) -> list[types.TextContent]:
     branch = arguments.get("branch", "master")
 
     try:
-        res = knowledge_get_callers(symbol_id, project_id=project_id, branch=branch, db=db)
+        res = await asyncio.to_thread(knowledge_get_callers, symbol_id, project_id=project_id, branch=branch, db=db)
         results = res.get("callers", [])
         savings = res.get("context_savings", {})
 
@@ -1615,7 +1705,7 @@ async def _handle_get_callees(arguments: dict) -> list[types.TextContent]:
     branch = arguments.get("branch", "master")
 
     try:
-        res = knowledge_get_callees(symbol_id, project_id=project_id, branch=branch, db=db)
+        res = await asyncio.to_thread(knowledge_get_callees, symbol_id, project_id=project_id, branch=branch, db=db)
         results = res.get("callees", [])
         savings = res.get("context_savings", {})
 
@@ -1642,7 +1732,7 @@ async def _handle_get_hierarchy(arguments: dict) -> list[types.TextContent]:
     branch = arguments.get("branch", "master")
 
     try:
-        res = knowledge_get_hierarchy(symbol_id, project_id=project_id, branch=branch, db=db)
+        res = await asyncio.to_thread(knowledge_get_hierarchy, symbol_id, project_id=project_id, branch=branch, db=db)
         results = res.get("hierarchy", [])
         savings = res.get("context_savings", {})
 
@@ -1670,7 +1760,7 @@ async def _handle_impact_analysis(arguments: dict) -> list[types.TextContent]:
     branch = arguments.get("branch", "master")
 
     try:
-        res = knowledge_impact_analysis(symbol_id, max_depth=max_depth, project_id=project_id, branch=branch, db=db)
+        res = await asyncio.to_thread(knowledge_impact_analysis, symbol_id, max_depth=max_depth, project_id=project_id, branch=branch, db=db)
         results = res.get("impacted", [])
         savings = res.get("context_savings", {})
 
@@ -1696,17 +1786,34 @@ async def _handle_impact_analysis(arguments: dict) -> list[types.TextContent]:
 async def _handle_review_context(arguments: dict) -> list[types.TextContent]:
     """knowledge_review_context: построение радиуса влияния и анализ рисков для ревьюера."""
     repo_id = arguments.get("repo_id")
-    if not repo_id:
-        return _err("Error: 'repo_id' is required.")
-
     project_id = arguments.get("project_id", "default")
     branch = arguments.get("branch", "master")
     compare_branch = arguments.get("compare_branch", "master")
     changed_files = arguments.get("changed_files")
+    file_path = arguments.get("file_path") or arguments.get("path")
+    if file_path and not changed_files:
+        changed_files = [file_path]
     max_depth = arguments.get("max_depth", 2)
 
+    if not repo_id and changed_files:
+        targets = resolve_workspace_targets(project_id)
+        for cf in changed_files:
+            cf_norm = cf.replace('\\', '/').strip('/')
+            for t in targets:
+                if not t.get("is_doc") and _is_branch_match(branch, t.get("branch"), t.get("task_name")):
+                    t_root = Path(t["absolute_path"]) if t.get("absolute_path") else None
+                    if t_root and (t_root / cf_norm).exists():
+                        repo_id = t.get("repo_id")
+                        break
+            if repo_id:
+                break
+
+    if not repo_id:
+        return _err("Error: 'repo_id' is required.")
+
     try:
-        res = knowledge_review_context(
+        res = await asyncio.to_thread(
+            knowledge_review_context,
             repo_id=repo_id,
             project_id=project_id,
             branch=branch,
@@ -1732,13 +1839,7 @@ async def _handle_find_tests(arguments: dict) -> list[types.TextContent]:
     branch = arguments.get("branch", "master")
 
     try:
-        res = knowledge_find_tests(
-            target=target,
-            repo_id=repo_id,
-            project_id=project_id,
-            branch=branch,
-            db=db
-        )
+        res = await asyncio.to_thread(knowledge_find_tests, target=target, repo_id=repo_id, project_id=project_id, branch=branch, db=db)
         return [types.TextContent(type="text", text=json.dumps(res, ensure_ascii=False, indent=2))]
     except Exception as e:
         logger.error(f"Find tests failed: {e}")
@@ -1751,11 +1852,7 @@ async def _handle_get_project_rules(arguments: dict) -> list[types.TextContent]:
     project_id = arguments.get("project_id", "default")
 
     try:
-        res = knowledge_get_project_rules(
-            topic=topic,
-            project_id=project_id,
-            db=db
-        )
+        res = await asyncio.to_thread(knowledge_get_project_rules, topic=topic, project_id=project_id, db=db)
         return [types.TextContent(type="text", text=json.dumps(res, ensure_ascii=False, indent=2))]
     except Exception as e:
         logger.error(f"Get project rules failed: {e}")
@@ -1819,13 +1916,16 @@ try:
 
     @fastmcp_server.tool(name="knowledge_review_context")
     def _fastmcp_review_context(
-        repo_id: str,
+        repo_id: Optional[str] = None,
         project_id: str = "default",
         branch: str = "master",
         compare_branch: str = "master",
         changed_files: Optional[list[str]] = None,
+        file_path: Optional[str] = None,
         max_depth: int = 2
     ) -> dict:
+        if file_path and not changed_files:
+            changed_files = [file_path]
         return knowledge_review_context(
             repo_id=repo_id,
             project_id=project_id,
@@ -1871,7 +1971,7 @@ def create_sse_app():
     try:
         from mcp.server.sse import SseServerTransport
         from starlette.applications import Starlette
-        from starlette.routing import Route
+        from starlette.routing import Route, Mount
         from starlette.responses import Response
 
         sse_transport = SseServerTransport("/messages/")
@@ -1885,16 +1985,10 @@ def create_sse_app():
                 )
             return Response()
 
-        async def handle_messages(request):
-            await sse_transport.handle_post_message(
-                request.scope, request.receive, request._send
-            )
-            return Response()
-
         return Starlette(
             routes=[
-                Route("/sse", endpoint=handle_sse),
-                Route("/messages/", endpoint=handle_messages, methods=["POST"]),
+                Route("/sse", endpoint=handle_sse, methods=["GET"]),
+                Mount("/messages/", app=sse_transport.handle_post_message),
             ]
         )
     except Exception as e:

@@ -9,6 +9,8 @@ services:
     volumes:
       # Volume for persisting SQLite DB and repository cache across restarts
       - ./data:/data
+      # Mount code
+      - ./knowledge_mcp:/app/knowledge_mcp
       # Host directory with local source repositories (mounted read-only)
       - ${REPOS_DIR:-./src}:/repos:ro
     env_file:
@@ -42,7 +44,7 @@ services:
 
     # Container health check
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/ -o /dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health -o /dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

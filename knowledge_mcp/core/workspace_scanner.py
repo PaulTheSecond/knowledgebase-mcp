@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union, Set
+from knowledge_mcp.core.git_manager import get_git_cmd_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,9 @@ class WorkspaceScanner:
 
         # 1. Попытка через git CLI
         try:
+            cmd = get_git_cmd_prefix(repo_path) + ["rev-parse", "--abbrev-ref", "HEAD"]
             proc = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cmd,
                 cwd=str(repo_path),
                 capture_output=True,
                 text=True,

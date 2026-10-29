@@ -3,26 +3,31 @@ import time
 import logging
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 
 from knowledge_mcp.db.models import KnowledgeDB
 from knowledge_mcp.core.config import get_repository_config, get_project_config, get_projects
 from knowledge_mcp.core.git_manager import GitManager
 from knowledge_mcp.core.indexer import Indexer
+from knowledge_mcp.core.git_manager import get_git_cmd_prefix
 
 logger = logging.getLogger(__name__)
 
 class DaemonWorker:
     """Фоновый воркер, опрашивающий БД-очередь задач и выполняющий синхронизацию репозиториев."""
 
-    def __init__(self, db_path: str | Path):
-        """Инициализирует воркер.
+    def __init__(self, db_or_path: Union[KnowledgeDB, str, Path]):
+        """Инициализирует воркер с разделяемым экземпляром KnowledgeDB или путем.
 
         Args:
-            db_path: Путь к файлу базы данных SQLite.
+            db_or_path: Экземпляр KnowledgeDB или путь к файлу БД.
         """
-        self.db_path = Path(db_path)
-        self.db = KnowledgeDB(self.db_path)
+        if isinstance(db_or_path, KnowledgeDB):
+            self.db = db_or_path
+            self.db_path = Path(db_or_path.db_path)
+        else:
+            self.db_path = Path(db_or_path)
+            self.db = KnowledgeDB(self.db_path)
         from knowledge_mcp.core.config import load_config
         cfg = load_config()
         use_emb = cfg.get("embeddings", {}).get("enabled", False)
@@ -57,8 +62,9 @@ class DaemonWorker:
             SHA коммита или None, если произошла ошибка.
         """
         try:
+            cmd = get_git_cmd_prefix(repo_path) + ["rev-parse", "HEAD"]
             res = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
+                cmd,
                 cwd=str(repo_path),
                 capture_output=True,
                 text=True,
@@ -250,6 +256,8 @@ class DaemonWorker:
 
     def start(self) -> None:
         """Запускает цикл обработки очереди."""
+        if hasattr(self.db, "register_writer_thread"):
+            self.db.register_writer_thread()
         logger.info("Starting background daemon worker loop...")
         stale_count = self.db.reset_stale_jobs()
         if stale_count > 0:
@@ -266,6 +274,9 @@ class DaemonWorker:
                     continue
 
                 # Извлекаем очередную задачу
+                # Периодически сбрасываем зависшие задачи
+                self.db.reset_stale_jobs(timeout_minutes=20)
+
                 job = self.db.fetch_next_job()
                 if job:
                     self.run_job(job)

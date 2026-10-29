@@ -3,6 +3,19 @@ import yaml
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+import time
+
+_TARGETS_CACHE: Dict[Optional[str], tuple] = {}
+_TARGETS_CACHE_TTL = 30.0
+
+def invalidate_workspace_targets_cache(project_id: Optional[str] = None):
+    global _TARGETS_CACHE
+    if project_id is None:
+        _TARGETS_CACHE.clear()
+    else:
+        _TARGETS_CACHE.pop(project_id, None)
+        _TARGETS_CACHE.pop(None, None)
+
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env
@@ -158,7 +171,13 @@ def delete_project_config(project_id: str) -> bool:
         return True
     return False
 
-def resolve_workspace_targets(project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def resolve_workspace_targets(project_id: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    global _TARGETS_CACHE
+    now = time.time()
+    if not force_refresh and project_id in _TARGETS_CACHE:
+        ts, cached = _TARGETS_CACHE[project_id]
+        if now - ts < _TARGETS_CACHE_TTL:
+            return cached
     """
     Разрешает и возвращает список всех активных целей (ворктри, репозиториев, документации)
     для указанного проекта или для всех настроенных проектов/репозиториев.
@@ -216,6 +235,7 @@ def resolve_workspace_targets(project_id: Optional[str] = None) -> List[Dict[str
             "language": repo.get("language"),
         })
 
+    _TARGETS_CACHE[project_id] = (now, targets)
     return targets
 
 def mask_secret(value: Optional[str]) -> str:

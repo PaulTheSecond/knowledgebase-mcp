@@ -12,6 +12,7 @@ from typing import Optional
 
 from knowledge_mcp.db.models import KnowledgeDB
 from knowledge_mcp.core.indexer import Indexer
+from knowledge_mcp.core.git_manager import get_git_cmd_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ class JITSyncEngine:
 
         # Выполняем быстрый git status
         try:
-            cmd = ["git", "status", "--porcelain", "-uall"]
+            cmd = get_git_cmd_prefix(target_path) + ["status", "--porcelain", "-uall"]
             res = subprocess.run(
                 cmd,
                 cwd=str(target_path),

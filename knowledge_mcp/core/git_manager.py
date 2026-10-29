@@ -3,9 +3,76 @@ import base64
 import subprocess
 import logging
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Union
 
 logger = logging.getLogger(__name__)
+
+def resolve_git_dir(repo_path: Union[str, Path]) -> Optional[Path]:
+    """Разрешает реальный путь к .git директории, включая указатели worktree (gitdir: ...).
+    
+    Поддерживает трансляцию путей между Windows и Docker Linux.
+    """
+    try:
+        repo_p = Path(repo_path).resolve()
+        git_target = repo_p / ".git"
+        if git_target.is_dir():
+            return git_target
+        if git_target.is_file():
+            content = git_target.read_text(encoding="utf-8", errors="ignore").strip()
+            if content.startswith("gitdir:"):
+                raw_gitdir = content[len("gitdir:"):].strip()
+                clean_raw = raw_gitdir.replace("\\", "/")
+                
+                # 1. Прямой путь или относительный путь
+                cand = (repo_p / raw_gitdir).resolve()
+                if cand.exists():
+                    return cand
+                p_raw = Path(raw_gitdir)
+                if p_raw.exists():
+                    return p_raw.resolve()
+                    
+                # 2. Кросс-платформенное сопоставление через worktrees/
+                if "worktrees/" in clean_raw.lower():
+                    tail = clean_raw.lower().split("worktrees/", 1)[-1]
+                    for parent in [repo_p] + list(repo_p.parents):
+                        if parent.name.lower() == "worktrees":
+                            cand2 = (parent / tail).resolve()
+                            if cand2.exists():
+                                return cand2
+                        elif (parent / "worktrees").exists():
+                            cand3 = (parent / "worktrees" / tail).resolve()
+                            if cand3.exists():
+                                return cand3
+                                
+                # 3. Кросс-платформенное сопоставление через repos/
+                if "repos/" in clean_raw.lower():
+                    rel_tail = clean_raw.lower().split("repos/", 1)[-1].lstrip("/")
+                    candidates = []
+                    repos_env = os.environ.get("REPOS_DIR")
+                    if repos_env:
+                        candidates.append(Path(repos_env) / rel_tail)
+                    candidates.extend([Path("/repos") / rel_tail, Path("C:/Repos") / rel_tail, Path("c:/repos") / rel_tail])
+                    for base in candidates:
+                        if base.exists():
+                            return base.resolve()
+    except Exception as e:
+        logger.debug(f"Error resolving git_dir for {repo_path}: {e}")
+    return None
+
+def get_git_cmd_prefix(repo_path: Union[str, Path]) -> List[str]:
+    """Возвращает префикс команды git (с --git-dir и --work-tree при необходимости).
+    
+    Для обычных репозиториев возвращает ['git'].
+    Для worktrees с указателем .git в виде файла возвращает
+    ['git', f'--git-dir={git_dir}', f'--work-tree={repo_path}'].
+    """
+    repo_p = Path(repo_path).resolve()
+    git_dir = resolve_git_dir(repo_p)
+    if git_dir and (repo_p / ".git").is_file():
+        git_dir_str = str(git_dir).replace("\\", "/")
+        repo_p_str = str(repo_p).replace("\\", "/")
+        return ["git", f"--git-dir={git_dir_str}", f"--work-tree={repo_p_str}"]
+    return ["git"]
 
 class GitManager:
     """Управляет безопасным клонированием и обновлением репозиториев Git.

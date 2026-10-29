@@ -34,7 +34,11 @@ class KnowledgeDB:
         if not read_only:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             
-        self.conn = get_db_connection(self.db_path, read_only=read_only)
+        self._local = threading.local()
+        self._writer_thread_id = threading.get_ident()
+        self._open_conns = []
+        self._conns_lock = threading.Lock()
+        self._writer_conn = self._create_conn(read_only=read_only)
         self.vec_dim = 384  # Обновлено: размерность для multilingual-e5-small
         self._in_transaction = False  # Флаг: внутри явной транзакции (skip individual commits)
         self._stats_cache: Dict[tuple, dict] = {}
@@ -43,6 +47,36 @@ class KnowledgeDB:
         self._cas_cache_time: Dict[str, float] = {}
         if not read_only:
             self._apply_migrations()
+
+    def _create_conn(self, read_only: bool) -> sqlite3.Connection:
+        c = get_db_connection(self.db_path, read_only=read_only)
+        with self._conns_lock:
+            self._open_conns.append(c)
+        return c
+
+    def register_writer_thread(self, thread_id: Optional[int] = None):
+        """Регистрирует поток как единственный поток-писатель для пишущего соединения."""
+        self._writer_thread_id = thread_id or threading.get_ident()
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self.read_only:
+            if not hasattr(self._local, "conn") or self._local.conn is None:
+                self._local.conn = self._create_conn(read_only=True)
+            return self._local.conn
+
+        curr_id = threading.get_ident()
+        if curr_id == self._writer_thread_id:
+            return self._writer_conn
+
+        # Если поток удерживает self.lock, отдаем пишущее соединение
+        if getattr(self.lock, "_is_owned", lambda: False)():
+            return self._writer_conn
+
+        # Для других читающих потоков отдаем независимое thread-local RO-соединение
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            self._local.conn = self._create_conn(read_only=True)
+        return self._local.conn
 
 
     def _apply_migrations(self):
@@ -441,8 +475,26 @@ class KnowledgeDB:
                 self.conn.commit()
     
     def close(self):
-        """Закрывает соединение с БД."""
-        self.conn.close()
+        """Закрывает все открытые соединения с БД."""
+        with self._conns_lock:
+            conns = list(self._open_conns)
+            self._open_conns.clear()
+        for c in conns:
+            try:
+                c.close()
+            except Exception:
+                pass
+        if hasattr(self, "_writer_conn") and self._writer_conn:
+            try:
+                self._writer_conn.close()
+            except Exception:
+                pass
+        if hasattr(self, "_local") and hasattr(self._local, "conn") and self._local.conn:
+            try:
+                self._local.conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
 
     def vacuum(self):
         """Выполняет VACUUM для дефрагментации и сжатия файла БД."""
@@ -461,20 +513,20 @@ class KnowledgeDB:
 
     def begin_transaction(self):
         """Начинает явную транзакцию для пакетных операций (избегаем тысяч отдельных commit)."""
-        self.conn.execute("BEGIN")
+        self._writer_conn.execute("BEGIN")
         self._in_transaction = True
 
     def commit_transaction(self):
         """Фиксирует текущую транзакцию."""
         if getattr(self, '_in_transaction', False):
-            self.conn.commit()
+            self._writer_conn.commit()
             self._in_transaction = False
 
     def rollback_transaction(self):
         """Откатывает текущую транзакцию при ошибке."""
         if getattr(self, '_in_transaction', False):
             try:
-                self.conn.rollback()
+                self._writer_conn.rollback()
             except sqlite3.OperationalError:
                 pass
             finally:
@@ -483,7 +535,8 @@ class KnowledgeDB:
     def _auto_commit(self):
         """Вызывает commit() только если мы НЕ внутри явной транзакции."""
         if not self._in_transaction:
-            self.conn.commit()
+            with self.lock:
+                self._writer_conn.commit()
 
     def get_known_files(
         self,
@@ -1163,20 +1216,65 @@ class KnowledgeDB:
                 queue.append((iface_m_id, 1))
 
         # 4. Находим поля/параметры внедрения зависимостей (DI) типа данного интерфейса/класса
-        cursor.execute("SELECT name FROM symbols WHERE id = ?", (symbol_id,))
+        cursor.execute("SELECT name, file_id, kind FROM symbols WHERE id = ?", (symbol_id,))
         s_row = cursor.fetchone()
         if s_row and s_row[0]:
             sym_name = s_row[0]
-            if len(sym_name) > 3 and not sym_name.startswith('_'):
+            class_name = sym_name
+            if s_row[2] in ('method', 'function', 'property'):
+                cursor.execute("SELECT name FROM symbols WHERE file_id = ? AND kind IN ('class', 'struct', 'interface') LIMIT 1", (s_row[1],))
+                p_row = cursor.fetchone()
+                if p_row and p_row[0]:
+                    class_name = p_row[0]
+
+            clean_name = class_name.lstrip('I') if class_name.startswith('I') and len(class_name) > 1 and class_name[1].isupper() else class_name
+            if len(clean_name) > 3 and not clean_name.startswith('_'):
+                patterns = (f"%{clean_name}%", f"%I{clean_name}%")
                 cursor.execute("""
-                    SELECT DISTINCT id FROM symbols 
-                    WHERE kind IN ('field', 'property', 'parameter') 
-                      AND (signature LIKE ? OR signature LIKE ?)
-                """, (f"%{sym_name}%", f"%I{sym_name}%"))
-                for (di_id,) in cursor.fetchall():
+                    SELECT DISTINCT s.id, s.file_id, s.name, s.kind
+                    FROM symbols s
+                    WHERE s.kind IN ('field', 'property', 'parameter') 
+                      AND (s.signature LIKE ? OR s.signature LIKE ?)
+                """, patterns)
+                for di_id, di_file_id, di_name, di_kind in cursor.fetchall():
                     if di_id not in visited:
                         visited.add(di_id)
-                        queue.append((di_id, 1))
+                    cursor.execute("""
+                        SELECT s_parent.id, s_parent.name, s_parent.qualified_name, s_parent.kind,
+                               f.repo_id, f.path, f.project_id, f.branch
+                        FROM symbols s_parent
+                        JOIN files f ON s_parent.file_id = f.id
+                        WHERE s_parent.file_id = ? AND s_parent.kind IN ('class', 'struct')
+                    """, (di_file_id,))
+                    for pr in cursor.fetchall():
+                        parent_id = pr['id']
+                        if parent_id not in visited:
+                            visited.add(parent_id)
+                            impacted.append({
+                                'symbol': dict(pr),
+                                'depth': 1,
+                                'edge_kind': 'USES_DI'
+                            })
+                            queue.append((parent_id, 2))
+
+                cursor.execute("""
+                    SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind,
+                                    f.repo_id, f.path, f.project_id, f.branch
+                    FROM unresolved_refs u
+                    JOIN symbols s ON u.source_id = s.id
+                    JOIN files f ON s.file_id = f.id
+                    WHERE u.target_qualified_name LIKE ? OR u.target_qualified_name LIKE ?
+                """, patterns)
+                for ur in cursor.fetchall():
+                    u_id = ur['id']
+                    if u_id not in visited:
+                        visited.add(u_id)
+                        impacted.append({
+                            'symbol': dict(ur),
+                            'depth': 1,
+                            'edge_kind': 'CALLS_UNRESOLVED'
+                        })
+                        queue.append((u_id, 2))
 
         while queue:
             current_id, depth = queue.popleft()
@@ -1515,22 +1613,26 @@ class KnowledgeDB:
         if getattr(self, "read_only", False):
             return 0
 
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("""
-                INSERT INTO token_savings_log (
-                    tool_name, project_id, repo_id, branch,
-                    baseline_tokens, returned_tokens, saved_tokens, saved_percent
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (tool_name, project_id, repo_id, branch, baseline_tokens, returned_tokens, saved_tokens, saved_percent))
-            self._auto_commit()
-            return cursor.lastrowid
-        except sqlite3.OperationalError as e:
-            if "readonly" in str(e).lower():
-                logger.warning(f"Cannot log token savings: database is read-only: {e}")
+        with self.lock:
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute("""
+                    INSERT INTO token_savings_log (
+                        tool_name, project_id, repo_id, branch,
+                        baseline_tokens, returned_tokens, saved_tokens, saved_percent
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (tool_name, project_id, repo_id, branch, baseline_tokens, returned_tokens, saved_tokens, saved_percent))
+                self._auto_commit()
+                return cursor.lastrowid
+            except sqlite3.OperationalError as e:
+                if "readonly" in str(e).lower() or "locked" in str(e).lower():
+                    logger.warning(f"Cannot log token savings: database issue: {e}")
+                    return 0
+                raise
+            except Exception as e:
+                logger.warning(f"Failed to log token savings: {e}")
                 return 0
-            raise
 
     def get_token_savings_summary(self, days: int = 7, project_id: Optional[str] = None) -> dict:
         """Возвращает сводку телеметрии экономии токенов за указанный период (в днях)."""
@@ -2027,18 +2129,29 @@ class KnowledgeDB:
             """, (attempts, error_message, delay_seconds, job_id))
             self._auto_commit()
 
-    def reset_stale_jobs(self) -> int:
-        """Сбрасывает задачи, оставшиеся в статусе processing при перезапуске сервера/воркера."""
+    def reset_stale_jobs(self, timeout_minutes: Optional[int] = None) -> int:
+        """Сбрасывает задачи, оставшиеся в статусе processing при перезапуске сервера/воркера или по таймауту."""
         with self.lock:
             cursor = self.conn.cursor()
-            cursor.execute("""
-                UPDATE sync_queue
-                SET status = 'failed',
-                    error_message = 'Прервано: перезапуск сервера во время выполнения',
-                    finished_at = datetime('now', 'localtime'),
-                    updated_at = datetime('now', 'localtime')
-                WHERE status = 'processing'
-            """)
+            if timeout_minutes:
+                cursor.execute(f"""
+                    UPDATE sync_queue
+                    SET status = 'failed',
+                        error_message = 'Прервано: превышен таймаут выполнения ({timeout_minutes} мин)',
+                        finished_at = datetime('now', 'localtime'),
+                        updated_at = datetime('now', 'localtime')
+                    WHERE status = 'processing'
+                      AND (started_at IS NULL OR started_at <= datetime('now', 'localtime', '-{timeout_minutes} minutes'))
+                """)
+            else:
+                cursor.execute("""
+                    UPDATE sync_queue
+                    SET status = 'failed',
+                        error_message = 'Прервано: перезапуск сервера во время выполнения',
+                        finished_at = datetime('now', 'localtime'),
+                        updated_at = datetime('now', 'localtime')
+                    WHERE status = 'processing'
+                """)
             count = cursor.rowcount
             self._auto_commit()
             if count > 0:

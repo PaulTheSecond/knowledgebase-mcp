@@ -16,6 +16,7 @@ from knowledge_mcp.db.models import KnowledgeDB
 from .embeddings import LocalEmbedder
 from .code_parser import CodeParser, LANGUAGE_MAP
 from .markdown_parser import MarkdownParser
+from .git_manager import get_git_cmd_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -1183,7 +1184,7 @@ class Indexer:
                     current_sha = None
                     try:
                         res = subprocess.run(
-                            ["git", "rev-parse", "HEAD"],
+                            get_git_cmd_prefix(target.absolute_path) + ["rev-parse", "HEAD"],
                             cwd=str(target.absolute_path),
                             capture_output=True,
                             text=True,
@@ -1204,7 +1205,7 @@ class Indexer:
                         elif last_sha:
                             try:
                                 diff_res = subprocess.run(
-                                    ["git", "diff", f"{last_sha}..{current_sha}", "--name-only"],
+                                    get_git_cmd_prefix(target.absolute_path) + ["diff", f"{last_sha}..{current_sha}", "--name-only"],
                                     cwd=str(target.absolute_path),
                                     capture_output=True,
                                     text=True,

@@ -23,40 +23,30 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
     path_obj = Path(db_path).absolute()
     
     if read_only:
-        # Для Read-Only режима используем URI.
-        # В Windows (NTFS host) открытие WAL-базы в режиме mode=ro удерживает байтовые блокировки
-        # на файле -shm (LockFileEx), что вызывает EIO / "disk I/O error" в WSL2/Docker через 9p/drvfs.
-        # Поэтому на Windows подключаемся сразу с immutable=1, предотвращая любые блокировки -shm/-wal.
-        prefer_immutable = os.name == "nt"
-        uri_path = f"{path_obj.as_uri()}?immutable=1" if prefer_immutable else f"{path_obj.as_uri()}?mode=ro"
+        # Для Read-Only режима используем URI с mode=ro.
+        # Внимание: immutable=1 не используется, так как он отключает отслеживание изменений WAL
+        # и вызывает рассинхронизацию кэша страниц и ошибку "database disk image is malformed".
+        uri_path = f"{path_obj.as_uri()}?mode=ro"
         logger.info(f"Opening database in Read-Only mode: {uri_path}")
-        conn = sqlite3.connect(uri_path, uri=True, timeout=timeout, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA foreign_keys = ON;")
-            conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
-            conn.execute("PRAGMA temp_store = MEMORY;")
-            conn.execute("PRAGMA cache_size = -64000;")
-        except sqlite3.OperationalError as e:
-            err_str = str(e).lower()
-            if not prefer_immutable and ("unable to open" in err_str or "disk i/o error" in err_str or "database is locked" in err_str):
-                uri_path_imm = f"{path_obj.as_uri()}?immutable=1"
-                logger.warning(
-                    f"Read-only mode=ro failed ({e}), likely due to Docker 9p/drvfs WAL lock desync. "
-                    f"Falling back to immutable=1: {uri_path_imm}"
-                )
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                conn = sqlite3.connect(uri_path_imm, uri=True, timeout=timeout, check_same_thread=False)
+        max_retries = 5
+        conn = None
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(uri_path, uri=True, timeout=timeout, check_same_thread=False)
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA foreign_keys = ON;")
                 conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
                 conn.execute("PRAGMA temp_store = MEMORY;")
                 conn.execute("PRAGMA cache_size = -64000;")
-            else:
-                raise
+                break
+            except sqlite3.OperationalError as e:
+                err_str = str(e).lower()
+                if ("disk i/o error" in err_str or "database is locked" in err_str or "unable to open" in err_str) and attempt < max_retries - 1:
+                    wait_sec = (attempt + 1) * 0.5
+                    logger.warning(f"Read-only connection attempt {attempt+1}/{max_retries} failed ({e}). Retrying in {wait_sec}s...")
+                    time.sleep(wait_sec)
+                else:
+                    raise
     else:
         # Режим записи с автоповторами при конфликтах блокировок 9p/drvfs
         logger.info(f"Opening database in Write mode: {path_obj}")

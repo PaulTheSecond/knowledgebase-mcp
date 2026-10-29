@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
         from knowledge_mcp.daemon.worker import DaemonWorker
         from knowledge_mcp.daemon.scheduler import CronScheduler
         
-        worker_instance = DaemonWorker(db.db_path)
+        worker_instance = DaemonWorker(db)
         worker_thread = threading.Thread(target=worker_instance.start, daemon=True, name="DaemonWorkerThread")
         worker_thread.start()
         logger.info("DaemonWorker background thread started.")
@@ -90,6 +90,12 @@ async def lifespan(app: FastAPI):
         event_loop = None
 
 app = FastAPI(title="Knowledge Base Sync Trigger", lifespan=lifespan)
+
+from knowledge_mcp.mcp.server import create_sse_app
+sse_app = create_sse_app()
+if sse_app:
+    app.mount("/mcp", sse_app)
+    logger.info("Mounted MCP SSE server at /mcp/sse")
 
 from knowledge_mcp.daemon.routes.chat import router as chat_router
 from knowledge_mcp.daemon.routes.settings import router as settings_router
@@ -145,6 +151,9 @@ def init_components(db_path: str):
     # Инициализируем и подключаем роутер вебхуков (Story 1.5)
     from knowledge_mcp.daemon.routes.webhooks import init_webhook_router
     app.include_router(init_webhook_router(db))
+
+    from knowledge_mcp.mcp.server import set_db
+    set_db(db)
 
 
 @app.post("/sync")
@@ -244,6 +253,10 @@ def _compute_status_data(db_instance: KnowledgeDB) -> dict:
         "repositories": repos_data,
         "chat_enabled": chat_enabled
     }
+
+@app.get("/health")
+async def health_endpoint():
+    return {"status": "ok"}
 
 @app.get("/api/status")
 async def get_status(username: str = Depends(verify_basic_auth)):
@@ -392,7 +405,7 @@ async def serve_spa_or_static(full_path: str = ""):
     Раздает статические файлы и SPA index.html для роутинга Angular.
     """
     # Не перехватываем обращения к API или WebSocket
-    if full_path.startswith("api/") or full_path.startswith("ws/") or full_path == "sync":
+    if full_path.startswith("api/") or full_path.startswith("ws/") or full_path.startswith("mcp") or full_path == "sync" or full_path == "health":
         raise HTTPException(status_code=404, detail="Not Found")
 
     if angular_dist_dir.exists():
@@ -639,19 +652,39 @@ def main():
         db.close()
         return
     elif args.command == "mcp":
-        # MCP-сервер имеет собственную лёгкую инициализацию (без Indexer/LocalEmbedder),
-        # чтобы handshake проходил мгновенно и не блокировался загрузкой ML-модели.
-        import asyncio
-        from knowledge_mcp.mcp.server import start_mcp_server
-        
-        # Проверка: если БД не существует, MCP сервер может запуститься вхолостую
-        if not os.path.exists(args.db_path):
-            logger.error(f"Database file not found at {args.db_path}. Please check your volume mounts.")
-            # Мы не выходим с ошибкой, так как SQLite создаст пустую БД, 
-            # но мы хотя бы предупреждаем в stderr.
-            
-        use_emb = getattr(args, 'with_embeddings', False)
-        asyncio.run(start_mcp_server(args.db_path, enable_embeddings=use_emb, read_only=getattr(args, "read_only", True)))
+        # Проверяем доступность запущенного демона (Docker контейнера)
+        daemon_url = os.environ.get("DAEMON_URL", "http://127.0.0.1:8000")
+        is_daemon_alive = False
+        import urllib.request
+        import time
+
+        # Ждем готовности демона (до 20 попыток по 0.5с = 10 секунд), чтобы не блокировать БД при перезапуске контейнера
+        max_attempts = int(os.environ.get("DAEMON_PROBE_ATTEMPTS", "20"))
+        for attempt in range(max_attempts):
+            try:
+                req = urllib.request.Request(f"{daemon_url}/health", headers={"User-Agent": "MCP-Proxy-Probe"})
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        is_daemon_alive = True
+                        break
+            except Exception:
+                if attempt < max_attempts - 1:
+                    time.sleep(0.5)
+
+        if is_daemon_alive:
+            # Запускаем легковесный STDIO <-> SSE прокси, не трогая локальную базу SQLite
+            from knowledge_mcp.mcp.proxy import run_stdio_sse_proxy
+            sse_target = f"{daemon_url}/mcp/sse"
+            logger.info(f"Daemon is alive at {daemon_url}. Proxying MCP STDIO to {sse_target} (single-writer mode)")
+            asyncio.run(run_stdio_sse_proxy(sse_target))
+        else:
+            # Демон не запущен — фоллбэк на прямое локальное чтение БД в режиме read_only
+            from knowledge_mcp.mcp.server import start_mcp_server
+            if not os.path.exists(args.db_path):
+                logger.error(f"Database file not found at {args.db_path}. Please check your volume mounts.")
+            use_emb = getattr(args, 'with_embeddings', False)
+            logger.warning(f"Daemon not reachable at {daemon_url}. Running direct read-only MCP server.")
+            asyncio.run(start_mcp_server(args.db_path, enable_embeddings=use_emb, read_only=getattr(args, "read_only", True)))
     else:
         # Для sync и serve нужен полный стек (включая Indexer с эмбеддингами)
         init_components(args.db_path)
