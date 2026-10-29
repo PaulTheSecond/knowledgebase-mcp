@@ -69,8 +69,8 @@ class KnowledgeDB:
         if curr_id == self._writer_thread_id:
             return self._writer_conn
 
-        # Если поток удерживает self.lock, отдаем пишущее соединение
-        if getattr(self.lock, "_is_owned", lambda: False)():
+        # Если поток удерживает self.lock или открыл транзакцию, отдаем пишущее соединение
+        if getattr(self.lock, "_is_owned", lambda: False)() or getattr(self, "_in_transaction", False):
             return self._writer_conn
 
         # Для других читающих потоков отдаем независимое thread-local RO-соединение
@@ -473,6 +473,13 @@ class KnowledgeDB:
                 self.conn.executescript(migration["up"])
                 cursor.execute("INSERT INTO __migrations_history (id) VALUES (?)", (migration["id"],))
                 self.conn.commit()
+
+        # Гарантируем наличие виртуальной таблицы chunks_vec
+        try:
+            cursor.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(embedding float[{self.vec_dim}]);")
+            self.conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to ensure chunks_vec table: {e}")
     
     def close(self):
         """Закрывает все открытые соединения с БД."""

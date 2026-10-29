@@ -34,10 +34,12 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
             try:
                 conn = sqlite3.connect(uri_path, uri=True, timeout=timeout, check_same_thread=False)
                 conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA foreign_keys = ON;")
-                conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
-                conn.execute("PRAGMA temp_store = MEMORY;")
-                conn.execute("PRAGMA cache_size = -64000;")
+                try:
+                    conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
+                    conn.execute("PRAGMA temp_store = MEMORY;")
+                    conn.execute("PRAGMA cache_size = -64000;")
+                except sqlite3.OperationalError:
+                    pass
                 break
             except sqlite3.OperationalError as e:
                 err_str = str(e).lower()
@@ -56,10 +58,12 @@ def get_db_connection(db_path: str | Path, read_only: bool = False, timeout: flo
             try:
                 conn = sqlite3.connect(str(path_obj), timeout=timeout, check_same_thread=False)
                 conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA foreign_keys = ON;")
-                conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
-                conn.execute("PRAGMA temp_store = MEMORY;")
-                conn.execute("PRAGMA cache_size = -64000;")
+                try:
+                    conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)};")
+                    conn.execute("PRAGMA temp_store = MEMORY;")
+                    conn.execute("PRAGMA cache_size = -64000;")
+                except sqlite3.OperationalError:
+                    pass
                 break
             except sqlite3.OperationalError as e:
                 err_str = str(e).lower()

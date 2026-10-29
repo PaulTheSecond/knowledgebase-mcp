@@ -1010,14 +1010,7 @@ class Indexer:
                         else:
                             added_count += 1
 
-                        # Сохраняем сырой контент в CAS таблицу file_contents
-                        try:
-                            content_str = filepath.read_text(encoding='utf-8', errors='replace')
-                        except Exception:
-                            content_str = ""
-                        self.db.upsert_file_content(content_str, language=self._detect_language(filepath))
-
-                        # Проверяем CAS-кэш: есть ли уже чанки для такого file_hash
+                        # Проверяем CAS-кэш: есть ли уже чанки для такого file_hash (дедупликация)
                         cursor = self.db.conn.cursor()
                         cursor.execute("SELECT 1 FROM chunks WHERE content_hash = ? LIMIT 1", (file_hash,))
                         has_chunks = cursor.fetchone() is not None
@@ -1027,6 +1020,13 @@ class Indexer:
                         if has_chunks and not force:
                             sync_buffer[rel_path] = 'completed'
                         else:
+                            # Читаем и сохраняем сырой контент только для реальной дельты (новых/измененных файлов)
+                            try:
+                                content_str = filepath.read_text(encoding='utf-8', errors='replace')
+                            except Exception:
+                                content_str = ""
+                            self.db.upsert_file_content(content_str, language=self._detect_language(filepath))
+
                             self.db.clear_file_chunks(file_id)
                             self.db.clear_file_symbols(file_id)
 

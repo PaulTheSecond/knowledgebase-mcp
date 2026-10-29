@@ -157,16 +157,16 @@ def init_components(db_path: str):
 
 
 @app.post("/sync")
-async def sync_endpoint(req: SyncRequest, background_tasks: BackgroundTasks):
+async def sync_endpoint(req: SyncRequest):
     """
     HTTP/Webhook Триггер. 
-    Выполняет дельта-скан в фоне, не блокируя ответ планировщику (cron/github hooks).
+    Ставит задачу в очередь sync_queue для фонового DaemonWorker (Single-Writer).
     """
-    if not db or not indexer:
+    if not db:
         raise HTTPException(status_code=500, detail="Components not initialized")
     
-    background_tasks.add_task(indexer.sync_repo, req.repo_id, req.repo_path, force=req.force)
-    return {"status": "Sync queued", "repo_id": req.repo_id, "background": True}
+    job_id = await asyncio.to_thread(db.add_to_queue, req.repo_id)
+    return {"status": "Sync queued", "job_id": job_id, "repo_id": req.repo_id, "background": True}
 
 @app.post("/api/auth/token")
 async def get_token(username: str = Depends(verify_basic_auth)):
