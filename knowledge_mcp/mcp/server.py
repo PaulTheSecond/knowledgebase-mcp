@@ -835,19 +835,29 @@ def knowledge_review_context(
 
     # 1. Определение измененных файлов
     if changed_files is None:
-        # Попытка через Git CLI
+        # Попытка через Git CLI с поддержкой worktrees и разных баз сравнения
         repo_path = _find_repo_path(project_id, repo_id, branch)
         if repo_path and repo_path.exists():
             try:
-                cmd = ["git", "diff", "--name-only", f"{compare_branch}...HEAD"]
-                res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5.0)
-                if res.returncode == 0 and res.stdout.strip():
-                    changed_files = [f.strip().replace('\\', '/') for f in res.stdout.splitlines() if f.strip()]
-                else:
-                    cmd2 = ["git", "diff", "--name-only", compare_branch]
-                    res2 = subprocess.run(cmd2, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5.0)
-                    if res2.returncode == 0 and res2.stdout.strip():
-                        changed_files = [f.strip().replace('\\', '/') for f in res2.stdout.splitlines() if f.strip()]
+                prefix = get_git_cmd_prefix(repo_path)
+                bases = [
+                    f"{compare_branch}...HEAD",
+                    compare_branch,
+                    f"dvcn/{compare_branch}...HEAD",
+                    f"origin/{compare_branch}...HEAD",
+                    f"dvcn/{compare_branch}",
+                    f"origin/{compare_branch}",
+                    "HEAD~1"
+                ]
+                for base in bases:
+                    cmd = prefix + ["diff", "--name-only", base]
+                    res = subprocess.run(
+                        cmd, cwd=str(repo_path), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=5.0
+                    )
+                    if res.returncode == 0 and res.stdout.strip():
+                        changed_files = [f.strip().replace('\\', '/') for f in res.stdout.splitlines() if f.strip()]
+                        break
             except Exception as e:
                 logger.debug(f"Git diff determination skipped: {e}")
 
@@ -860,6 +870,9 @@ def knowledge_review_context(
                                   AND f2.branch = ? AND f2.path = f1.path
                 WHERE f1.project_id = ? AND f1.repo_id = ? AND f1.branch = ?
                   AND (f2.id IS NULL OR f1.content_hash != f2.content_hash)
+                  AND f1.path NOT LIKE '.git%'
+                  AND f1.path NOT LIKE '.husky%'
+                  AND f1.path NOT LIKE '%config.json'
             """, (compare_branch, project_id, repo_id, branch))
             changed_files = [r['path'].replace('\\', '/') for r in cursor.fetchall()]
 
@@ -944,10 +957,59 @@ def knowledge_review_context(
     seen_test_keys = set()
     tested_symbol_ids = set()
 
+    COMMON_CODE_STOPWORDS = {
+        't', '_', 'e', 'i', 'j', 'k', 's', 'x', 'y', 'z',
+        'id', 'fn', 'cb', 'res', 'req', 'ctx', 'props', 'state',
+        'item', 'row', 'data', 'val', 'key', 'err', 'opt', 'opts'
+    }
+
+    # 4.1. Поиск связанных тестовых файлов по имени компонента/фичи (e2e и unit тесты)
+    for cf in norm_changed_files:
+        cf_path = Path(cf)
+        stem = cf_path.stem
+        candidates = [stem]
+        if stem in ('index', 'styles', 'types', 'constants', 'utils') or len(stem) < 3:
+            candidates.append(cf_path.parent.name)
+        elif len(cf_path.parts) > 1:
+            candidates.append(cf_path.parent.name)
+
+        for cand in set(candidates):
+            if len(cand) >= 3 and cand.lower() not in COMMON_CODE_STOPWORDS:
+                kebab = re.sub(r'(?<!^)(?=[A-Z])', '-', cand).lower()
+                patterns = [
+                    f"%{cand}%.spec.%",
+                    f"%{cand}%.test.%",
+                    f"%{cand}%Test%",
+                    f"%{kebab}%.spec.%",
+                    f"%{kebab}%.test.%"
+                ]
+                for pat in patterns:
+                    cursor.execute("""
+                        SELECT DISTINCT f.id, f.path, f.repo_id
+                        FROM files f
+                        WHERE f.project_id = ? AND f.branch = ? AND f.path LIKE ?
+                          AND (f.path LIKE '%/test%' OR f.path LIKE '%/Test%' OR f.path LIKE '%.test.%' OR f.path LIKE '%.spec.%' OR f.path LIKE '%Tests.%' OR f.repo_id LIKE '%test%')
+                    """, (project_id, branch, pat))
+                    for tf in cursor.fetchall():
+                        k = tf['id']
+                        if k not in seen_test_keys:
+                            seen_test_keys.add(k)
+                            related_tests.append({
+                                "test_id": tf['id'],
+                                "test_name": Path(tf['path']).name,
+                                "test_file": tf['path'],
+                                "tested_symbol_id": None,
+                                "tested_symbol_name": cand,
+                                "relation": "feature_test_file"
+                            })
+
     for sym in changed_symbols:
         sym_id = sym['id']
         sym_name = sym['name']
         sym_qname = sym.get('qualified_name') or sym_name
+
+        if len(sym_name) < 3 or sym_name.lower() in COMMON_CODE_STOPWORDS:
+            continue
 
         # а) Ребра TESTED_BY (source = тестируемый метод, target = тест)
         cursor.execute("""

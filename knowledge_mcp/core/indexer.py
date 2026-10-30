@@ -638,6 +638,11 @@ class Indexer:
                     source_id = ast_to_sym_id.get(src_key)
                 else:
                     source_id = qname_to_sym_id.get(src_key)
+                    if not source_id and '.' in str(src_key):
+                        for part in reversed(str(src_key).split('.')):
+                            source_id = qname_to_sym_id.get(part)
+                            if source_id:
+                                break
                 if not source_id:
                     continue
 

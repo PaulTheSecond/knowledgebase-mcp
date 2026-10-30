@@ -844,6 +844,11 @@ class CodeParser:
                 if name_node:
                     name = self._get_node_text(name_node, content)
                     current_qualified_name = f"{parent_qualified_name}.{name}" if parent_qualified_name else name
+            elif node.type == 'variable_declarator':
+                name_node = node.child_by_field_name('name')
+                if name_node:
+                    name = self._get_node_text(name_node, content)
+                    current_qualified_name = f"{parent_qualified_name}.{name}" if parent_qualified_name else name
 
             # Детекция TESTED_BY для call_expression describe/it/test
             if node.type == 'call_expression':
