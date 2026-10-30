@@ -447,6 +447,9 @@ class Indexer:
         for edge in edges_ts:
             edges_raw.append((edge.source_name, edge.target_name, edge.kind, False))
 
+        if not chunks_raw:
+            return self._parse_fallback(filepath)
+
         return chunks_raw, symbols_raw, edges_raw
 
     @staticmethod

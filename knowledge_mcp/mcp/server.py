@@ -173,7 +173,7 @@ def _get_changed_line_ranges(repo_path: Path, file_path: str, compare_branch: st
         ]
         for base in bases:
             cmd = get_git_cmd_prefix(repo_path) + ["diff", "-U0", base, "--", norm_fp]
-            res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, timeout=5.0)
+            res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5.0)
             if res.returncode == 0 and res.stdout.strip():
                 ranges = []
                 for line in res.stdout.splitlines():
@@ -840,12 +840,12 @@ def knowledge_review_context(
         if repo_path and repo_path.exists():
             try:
                 cmd = ["git", "diff", "--name-only", f"{compare_branch}...HEAD"]
-                res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, timeout=5.0)
+                res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5.0)
                 if res.returncode == 0 and res.stdout.strip():
                     changed_files = [f.strip().replace('\\', '/') for f in res.stdout.splitlines() if f.strip()]
                 else:
                     cmd2 = ["git", "diff", "--name-only", compare_branch]
-                    res2 = subprocess.run(cmd2, cwd=str(repo_path), capture_output=True, text=True, timeout=5.0)
+                    res2 = subprocess.run(cmd2, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5.0)
                     if res2.returncode == 0 and res2.stdout.strip():
                         changed_files = [f.strip().replace('\\', '/') for f in res2.stdout.splitlines() if f.strip()]
             except Exception as e:
@@ -916,6 +916,9 @@ def knowledge_review_context(
     seen_impacted_ids = set(changed_sym_ids)
 
     for sym in changed_symbols:
+        k_lower = (sym.get('kind') or '').lower()
+        if k_lower not in ('class', 'struct', 'interface', 'method', 'function', 'component', 'styled_component'):
+            continue
         sym_impact = db_instance.get_impact_analysis(
             sym['id'], max_depth=max_depth, project_id=project_id, branch=branch
         )
@@ -1067,7 +1070,7 @@ def knowledge_review_context(
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
             FROM symbol_edges e
             JOIN symbols s ON e.source_id = s.id
-            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            JOIN files f ON s.file_id = f.id
             WHERE e.target_id = ? AND e.kind = 'CALLS'
               AND (f.path LIKE '%test%' OR f.path LIKE '%Test%' OR s.name LIKE '%test%' OR s.name LIKE '%Test%')
         """, (sym_id,))
@@ -1089,7 +1092,7 @@ def knowledge_review_context(
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
             FROM unresolved_refs u
             JOIN symbols s ON u.source_id = s.id
-            JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
+            JOIN files f ON s.file_id = f.id
             WHERE u.kind = 'CALLS' AND (u.target_qualified_name = ? OR u.target_qualified_name = ?)
               AND (f.path LIKE '%test%' OR f.path LIKE '%Test%' OR s.name LIKE '%test%' OR s.name LIKE '%Test%')
         """, (sym_name, sym_qname))

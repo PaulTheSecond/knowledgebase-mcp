@@ -447,6 +447,14 @@ class KnowledgeDB:
         })
 
         migrations.append({
+            "id": "20261104_16_idx_unresolved_refs",
+            "up": """
+                CREATE INDEX IF NOT EXISTS idx_unresolved_refs_target ON unresolved_refs(target_qualified_name, kind);
+                CREATE INDEX IF NOT EXISTS idx_unresolved_refs_source ON unresolved_refs(source_id);
+            """
+        })
+
+        migrations.append({
             "id": "20261103_15_semantic_indexing_status",
             "up": """
                 CREATE TABLE IF NOT EXISTS semantic_indexing_status (
@@ -1235,14 +1243,14 @@ class KnowledgeDB:
                     class_name = p_row[0]
 
             clean_name = class_name.lstrip('I') if class_name.startswith('I') and len(class_name) > 1 and class_name[1].isupper() else class_name
-            if len(clean_name) > 3 and not clean_name.startswith('_'):
-                patterns = (f"%{clean_name}%", f"%I{clean_name}%")
+            if len(clean_name) > 3 and not clean_name.startswith('_') and s_row[2] in ('class', 'interface', 'struct'):
+                targets_to_check = (clean_name, f"I{clean_name}")
                 cursor.execute("""
                     SELECT DISTINCT s.id, s.file_id, s.name, s.kind
                     FROM symbols s
                     WHERE s.kind IN ('field', 'property', 'parameter') 
-                      AND (s.signature LIKE ? OR s.signature LIKE ?)
-                """, patterns)
+                      AND (s.signature = ? OR s.signature = ? OR s.name = ? OR s.name = ?)
+                """, (targets_to_check[0], targets_to_check[1], targets_to_check[0], targets_to_check[1]))
                 for di_id, di_file_id, di_name, di_kind in cursor.fetchall():
                     if di_id not in visited:
                         visited.add(di_id)
@@ -1270,8 +1278,8 @@ class KnowledgeDB:
                     FROM unresolved_refs u
                     JOIN symbols s ON u.source_id = s.id
                     JOIN files f ON s.file_id = f.id
-                    WHERE u.target_qualified_name LIKE ? OR u.target_qualified_name LIKE ?
-                """, patterns)
+                    WHERE u.target_qualified_name = ? OR u.target_qualified_name = ?
+                """, targets_to_check)
                 for ur in cursor.fetchall():
                     u_id = ur['id']
                     if u_id not in visited:

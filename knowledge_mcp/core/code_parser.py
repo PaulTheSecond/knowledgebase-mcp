@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 TS_LANGUAGES = {
     'c_sharp': tree_sitter.Language(tree_sitter_c_sharp.language()),
     'typescript': tree_sitter.Language(tree_sitter_typescript.language_typescript()),
+    'tsx': tree_sitter.Language(tree_sitter_typescript.language_tsx()),
     'javascript': tree_sitter.Language(tree_sitter_javascript.language()),
     'sql': tree_sitter.Language(tree_sitter_sql.language()),
 }
@@ -29,7 +30,7 @@ TS_LANGUAGES = {
 LANGUAGE_MAP = {
     '.cs': 'c_sharp',
     '.ts': 'typescript', 
-    '.tsx': 'typescript',
+    '.tsx': 'tsx',
     '.js': 'javascript', 
     '.jsx': 'javascript',
     '.py': 'python',
@@ -114,7 +115,7 @@ class CodeParser:
             
             if language == 'c_sharp':
                 return self._parse_csharp_symbols(tree, content)
-            elif language in ('typescript', 'javascript'):
+            elif language in ('typescript', 'javascript', 'tsx'):
                 return self._parse_ts_js_symbols(tree, content, language)
             elif language == 'sql':
                 return self._parse_sql_symbols(tree, content)
@@ -144,7 +145,7 @@ class CodeParser:
             
             if language == 'c_sharp':
                 return self._extract_csharp_edges(tree, content)
-            elif language in ('typescript', 'javascript'):
+            elif language in ('typescript', 'javascript', 'tsx'):
                 return self._extract_ts_js_edges(tree, content, language)
             elif language == 'sql':
                 return self._extract_sql_edges(tree, content)
@@ -734,12 +735,12 @@ class CodeParser:
                     ))
             
             elif node.type == 'variable_declarator':
+                name_node = node.child_by_field_name('name')
                 value_node = node.child_by_field_name('value')
-                if value_node and value_node.type == 'arrow_function':
-                    name_node = node.child_by_field_name('name')
-                    if name_node:
-                        name = self._get_node_text(name_node, content)
-                        current_qualified_name = f"{parent_qualified_name}.{name}" if parent_qualified_name else name
+                if name_node and value_node:
+                    name = self._get_node_text(name_node, content)
+                    current_qualified_name = f"{parent_qualified_name}.{name}" if parent_qualified_name else name
+                    if value_node.type in ('arrow_function', 'function_expression'):
                         is_test = name.startswith(('test_', 'Test_')) or name.endswith(('Test', 'Tests'))
                         body_node = value_node.child_by_field_name('body')
                         if body_node:
@@ -754,6 +755,34 @@ class CodeParser:
                             signature=sig, body=self._get_node_text(node, content),
                             is_test=is_test
                         ))
+                    else:
+                        # Детекция верхнеуровневых/экспортируемых констант, styled-компонентов и переменных
+                        is_top_level = True
+                        p = node.parent
+                        while p:
+                            if p.type in ('function_declaration', 'arrow_function', 'method_definition', 'function_expression'):
+                                is_top_level = False
+                                break
+                            p = p.parent
+
+                        if is_top_level:
+                            val_text = self._get_node_text(value_node, content)
+                            kind = 'variable'
+                            if 'styled' in val_text:
+                                kind = 'styled_component'
+                            elif name.isupper():
+                                kind = 'constant'
+                            elif name and name[0].isupper():
+                                kind = 'component'
+
+                            sig_line = self._get_node_text(node, content).splitlines()[0]
+                            symbols.append(Symbol(
+                                name=name, qualified_name=current_qualified_name,
+                                kind=kind, language=language,
+                                line_start=node.start_point[0] + 1, line_end=node.end_point[0] + 1,
+                                signature=sig_line, body=self._get_node_text(node, content),
+                                is_test=False
+                            ))
 
             for child in node.children:
                 traverse(child, current_qualified_name)
@@ -879,6 +908,18 @@ class CodeParser:
                         target_name=target_name,
                         kind='CALLS'
                     ))
+            elif node.type in ('jsx_element', 'jsx_self_closing_element'):
+                opening = node.child_by_field_name('opening_element') if node.type == 'jsx_element' else node
+                if opening:
+                    tag_node = opening.child_by_field_name('name')
+                    if tag_node:
+                        tag_name = self._get_node_text(tag_node, content)
+                        if tag_name and tag_name[0].isupper():
+                            edges.append(SymbolEdge(
+                                source_name=current_qualified_name or "file_level",
+                                target_name=tag_name,
+                                kind='USES'
+                            ))
 
             for child in node.children:
                 traverse(child, current_qualified_name)
