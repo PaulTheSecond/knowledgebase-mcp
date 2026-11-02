@@ -10,7 +10,17 @@ RUN dotnet restore
 COPY RoslynParser/ ./
 RUN dotnet publish -c Release -o /roslyn/out --no-restore
 
-# ── Stage 2: Сборка Angular 21 Frontend ─────────────────────────────────────
+# ── Stage 2: Сборка ts-parser (TypeScript Compiler API, ADR-009) ─────────────
+FROM node:22-alpine AS ts-parser-builder
+
+WORKDIR /tsparser
+COPY TsParser/package*.json ./
+RUN npm ci
+
+COPY TsParser/ ./
+RUN npm run build
+
+# ── Stage 3: Сборка Angular 21 Frontend ─────────────────────────────────────
 FROM node:22-alpine AS frontend-builder
 
 WORKDIR /frontend
@@ -21,13 +31,13 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ── Stage 3: Финальный образ (Python 3.11 Slim Bookworm) ─────────────────────
+# ── Stage 4: Финальный образ (Python 3.11 Slim Bookworm) ─────────────────────
 # Базируемся на легковесном образе (~150 МБ вместо 2.1 ГБ SDK)
 FROM python:3.11-slim-bookworm
 
-# Устанавливаем минимально необходимые runtime-пакеты (libicu72 для Unicode-парсинга Roslyn, git, curl)
+# Устанавливаем минимально необходимые runtime-пакеты (libicu72 для Roslyn, git, curl, nodejs для ts-parser)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libicu72 git curl ca-certificates \
+    libicu72 git curl ca-certificates nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Переносим .NET 8 runtime и MSBuild SDK из stage 1 (без тяжелых шаблонов и powershell)
@@ -62,6 +72,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # ── Код приложения и артефакты сборки ────────────────────────────────────────
 COPY knowledge_mcp/ /app/knowledge_mcp/
 COPY --from=dotnet-builder /roslyn/out /app/RoslynParser/bin/Release/net8.0/
+COPY --from=ts-parser-builder /tsparser/dist/ts-parser.js /app/TsParser/dist/ts-parser.js
 COPY --from=frontend-builder /frontend/dist/dashboard/browser /app/frontend/dist/dashboard/browser
 
 RUN mkdir -p /data

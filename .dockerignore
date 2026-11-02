@@ -25,3 +25,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/.angular/
 .angular/
+
+# TsParser
+TsParser/node_modules/
+TsParser/dist/

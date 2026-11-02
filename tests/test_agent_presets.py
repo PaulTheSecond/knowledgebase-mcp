@@ -143,7 +143,7 @@ class TestPresetAndSyncCLI:
     def test_cli_preset_command_output_dir(self, tmp_path, capsys):
         """Тест CLI-команды `preset all --output-dir <dir>`."""
         test_args = ["main.py", "preset", "all", "--output-dir", str(tmp_path)]
-        with patch.object(sys, "argv", test_args):
+        with patch.object(sys, "argv", test_args), patch("http.client.HTTPConnection", side_effect=ConnectionRefusedError):
             main()
 
         captured = capsys.readouterr()
@@ -157,7 +157,7 @@ class TestPresetAndSyncCLI:
         """Тест CLI-команды `sync-file --check-status`."""
         _, db_path = temp_db
         test_args = ["main.py", "--db-path", str(db_path), "sync-file", "--check-status"]
-        with patch.object(sys, "argv", test_args):
+        with patch.object(sys, "argv", test_args), patch("http.client.HTTPConnection", side_effect=ConnectionRefusedError):
             main()
 
         captured = capsys.readouterr()
@@ -183,7 +183,7 @@ class TestPresetAndSyncCLI:
             "--branch", "main"
         ]
 
-        with patch.object(sys, "argv", test_args):
+        with patch.object(sys, "argv", test_args), patch("http.client.HTTPConnection", side_effect=ConnectionRefusedError):
             main()
 
         captured = capsys.readouterr()
@@ -199,7 +199,7 @@ class TestPresetAndSyncCLI:
         # 2. Удаляем файл и снова вызываем sync-file
         test_file.unlink()
 
-        with patch.object(sys, "argv", test_args):
+        with patch.object(sys, "argv", test_args), patch("http.client.HTTPConnection", side_effect=ConnectionRefusedError):
             main()
 
         captured = capsys.readouterr()
@@ -215,7 +215,7 @@ class TestPresetAndSyncCLI:
         _, db_path = temp_db
         """Проверяет выход с ошибкой, если не передан ни --file, ни --check-status."""
         test_args = ["main.py", "--db-path", str(db_path), "sync-file"]
-        with patch.object(sys, "argv", test_args):
+        with patch.object(sys, "argv", test_args), patch("http.client.HTTPConnection", side_effect=ConnectionRefusedError):
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
@@ -263,7 +263,7 @@ class TestPresetAndSyncCLI:
         """Тест CLI-команды `preset claude --install`."""
         with patch.object(Path, "home", return_value=tmp_path):
             test_args = ["main.py", "preset", "claude", "--install"]
-            with patch.object(sys, "argv", test_args):
+            with patch.object(sys, "argv", test_args), patch("http.client.HTTPConnection", side_effect=ConnectionRefusedError):
                 main()
                 
         captured = capsys.readouterr()

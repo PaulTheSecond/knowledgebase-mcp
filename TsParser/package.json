@@ -1,0 +1,27 @@
+{
+  "name": "ts-parser",
+  "version": "1.0.0",
+  "description": "Compiler-grade semantic dependency and symbol analyzer for TypeScript and React (ADR-009)",
+  "main": "dist/ts-parser.js",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node --test tests/analyzer.test.mjs",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "typescript",
+    "ast",
+    "semantic-analysis",
+    "mcp",
+    "compiler-api"
+  ],
+  "author": "Google Deepmind / KnowledgeBase MCP",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "typescript": "^5.7.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.25.0"
+  }
+}

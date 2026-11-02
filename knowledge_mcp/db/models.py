@@ -1069,7 +1069,9 @@ class KnowledgeDB:
             JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
             WHERE (s.name LIKE ? OR s.qualified_name LIKE ?)
         '''
-        sql_pattern = name_pattern.replace('*', '%')
+        # Защита от переполнения шаблона LIKE в SQLite (OperationalError: LIKE or GLOB pattern too complex)
+        clean_pattern = name_pattern.splitlines()[0][:100] if name_pattern else ""
+        sql_pattern = clean_pattern.replace('*', '%')
         if '%' not in sql_pattern:
             sql_pattern = f"%{sql_pattern}%"
             
@@ -1092,7 +1094,7 @@ class KnowledgeDB:
             sql += " AND f.branch = ?"
             params.append(branch)
             
-        raw_name = name_pattern.replace('*', '').replace('%', '')
+        raw_name = clean_pattern.replace('*', '').replace('%', '')
         sql += """
             ORDER BY 
                 CASE 

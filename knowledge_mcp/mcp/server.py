@@ -16,6 +16,7 @@ from knowledge_mcp.db.models import KnowledgeDB
 from knowledge_mcp.core.jit_sync import JITSyncEngine
 from knowledge_mcp.core.git_manager import get_git_cmd_prefix
 from knowledge_mcp.core.config import get_repository_config, resolve_workspace_targets, get_project_config
+from knowledge_mcp.core.enrichers import TypeScriptSemanticEnricher
 
 logger = logging.getLogger(__name__)
 
@@ -889,10 +890,32 @@ def knowledge_review_context(
 
     norm_changed_files = [p.replace('\\', '/') for p in changed_files]
 
+    # 1.5. Таргетированное компиляторное семантическое обогащение измененных TS/JS файлов (ADR-009)
+    repo_path = _find_repo_path(project_id, repo_id, branch)
+    if repo_path and repo_path.exists() and norm_changed_files:
+        try:
+            ts_enricher = TypeScriptSemanticEnricher(db_instance)
+            if ts_enricher.can_enrich(repo_path):
+                changed_ts = [
+                    repo_path / cf for cf in norm_changed_files
+                    if (repo_path / cf).exists() and Path(cf).suffix.lower() in ts_enricher.target_extensions
+                ]
+                if changed_ts:
+                    ts_enricher.enrich(
+                        repo_path=repo_path,
+                        repo_id=repo_id,
+                        project_id=project_id,
+                        branch=branch,
+                        changed_files=changed_ts,
+                        force=False
+                    )
+                    db_instance.resolve_pending_references()
+        except Exception as e:
+            logger.debug(f"Targeted TS semantic diff enrichment skipped: {e}")
+
     # 2. Поиск измененных символов во всех измененных файлах
     changed_symbols = []
     changed_sym_ids = set()
-    repo_path = _find_repo_path(project_id, repo_id, branch)
 
     for cf in norm_changed_files:
         diff_ranges = None
