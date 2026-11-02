@@ -449,6 +449,13 @@ class KnowledgeDB:
         migrations.append({
             "id": "20261104_16_idx_unresolved_refs",
             "up": """
+                CREATE TABLE IF NOT EXISTS unresolved_refs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL,
+                    target_qualified_name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    FOREIGN KEY(source_id) REFERENCES symbols(id) ON DELETE CASCADE
+                );
                 CREATE INDEX IF NOT EXISTS idx_unresolved_refs_target ON unresolved_refs(target_qualified_name, kind);
                 CREATE INDEX IF NOT EXISTS idx_unresolved_refs_source ON unresolved_refs(source_id);
             """
@@ -1073,8 +1080,24 @@ class KnowledgeDB:
             sql += " AND f.branch = ?"
             params.append(branch)
             
-        sql += " LIMIT ?"
-        params.append(limit)
+        raw_name = name_pattern.replace('*', '').replace('%', '')
+        sql += """
+            ORDER BY 
+                CASE 
+                    WHEN s.name = ? THEN 0
+                    WHEN s.name LIKE ? THEN 1
+                    WHEN s.qualified_name = ? THEN 2
+                    ELSE 3
+                END,
+                CASE 
+                    WHEN s.kind IN ('class', 'function', 'component', 'method') THEN 0
+                    WHEN s.kind IN ('interface', 'type') THEN 1
+                    ELSE 2
+                END,
+                s.id ASC
+            LIMIT ?
+        """
+        params.extend([raw_name, f"{raw_name}%", raw_name, limit])
         
         cursor.execute(sql, params)
         return cursor.fetchall()
@@ -1235,24 +1258,33 @@ class KnowledgeDB:
         s_row = cursor.fetchone()
         if s_row and s_row[0]:
             sym_name = s_row[0]
-            class_name = sym_name
-            if s_row[2] in ('method', 'function', 'property'):
-                cursor.execute("SELECT name FROM symbols WHERE file_id = ? AND kind IN ('class', 'struct', 'interface') LIMIT 1", (s_row[1],))
+            targets_to_check = [sym_name]
+            clean_name = sym_name.lstrip('I') if sym_name.startswith('I') and len(sym_name) > 1 and sym_name[1].isupper() else sym_name
+            if clean_name != sym_name:
+                targets_to_check.append(clean_name)
+            else:
+                targets_to_check.append(f"I{sym_name}")
+
+            # Если метод или свойство определены внутри класса (C# OOP), проверяем DI родительского класса
+            if s_row[2] in ('method', 'property'):
+                cursor.execute("SELECT name FROM symbols WHERE file_id = ? AND kind IN ('class', 'struct') LIMIT 1", (s_row[1],))
                 p_row = cursor.fetchone()
                 if p_row and p_row[0]:
-                    class_name = p_row[0]
+                    cls_name = p_row[0]
+                    cls_clean = cls_name.lstrip('I') if cls_name.startswith('I') and len(cls_name) > 1 and cls_name[1].isupper() else cls_name
+                    targets_to_check.extend([cls_name, cls_clean, f"I{cls_clean}"])
 
-            clean_name = class_name.lstrip('I') if class_name.startswith('I') and len(class_name) > 1 and class_name[1].isupper() else class_name
-            if len(clean_name) > 3 and not clean_name.startswith('_'):
-                targets_to_check = [clean_name]
+            targets_to_check = list(dict.fromkeys(t for t in targets_to_check if len(t) > 2 and not t.startswith('_')))
+            if targets_to_check:
                 if s_row[2] in ('class', 'interface', 'struct'):
-                    targets_to_check.append(f"I{clean_name}")
+                    di_target_1 = targets_to_check[0]
+                    di_target_2 = targets_to_check[1] if len(targets_to_check) > 1 else targets_to_check[0]
                     cursor.execute("""
                         SELECT DISTINCT s.id, s.file_id, s.name, s.kind
                         FROM symbols s
                         WHERE s.kind IN ('field', 'property', 'parameter') 
                           AND (s.signature = ? OR s.signature = ? OR s.name = ? OR s.name = ?)
-                    """, (targets_to_check[0], targets_to_check[1], targets_to_check[0], targets_to_check[1]))
+                    """, (di_target_1, di_target_2, di_target_1, di_target_2))
                     for di_id, di_file_id, di_name, di_kind in cursor.fetchall():
                         if di_id not in visited:
                             visited.add(di_id)

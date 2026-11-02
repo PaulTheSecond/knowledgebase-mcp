@@ -47,6 +47,11 @@ timeline
          : User-scoped and shared LLM provider profiles
          : OpenAI-compatible, Ollama, and local gateway protocols
          : In-dashboard credential management & model auto-discovery
+    v1.9.1 : Compiler-Based Semantic Graph Analysis (ts-parser)
+         : Node.js TS Compiler API in Docker container
+         : Full AST call graph (JSX <Component />, functions, hooks)
+         : 0% node_modules pollution via project root validation
+         : Extensible architecture for Angular Ivy and Vue Volar
     v1.10 : Multi-User Auth & RBAC
          : User accounts & password hashing (Argon2 / JWT)
          : Role-Based Access Control (Admin, Developer, Viewer)
@@ -167,6 +172,30 @@ timeline
 - **Connection Diagnostics & Model Discovery:**
   - Endpoint healthcheck with real-time latency and time-to-first-token (TTFT) benchmarking.
   - Auto-discovery querying standard `/v1/models` endpoints to populate available model names directly in Settings.
+
+---
+
+## v1.9.1: Compiler-Based Semantic Graph Analysis (ts-parser & Angular Ivy) — 📋 *Planned*
+*Target Release: v1.9.1 | Architectural Reference: [ADR-009: Compiler-Based Semantic Analysis (ts-parser)](adr-009-compiler-semantic-analysis-ts-angular.md)*
+
+- **Containerized TypeScript Compiler Engine (`ts-parser`):**
+  - Symmetric companion to `RoslynParser` (.NET) for the JavaScript/TypeScript/React ecosystem.
+  - Packaged and executed strictly inside the `knowledgebase-mcp` Docker image (0 host dependencies for IDE and coding agents).
+  - Built-in TypeScript Compiler API (`ts.createProgram`, `ts.TypeChecker`) replacing heuristic text-based parsing with 100% semantic accuracy.
+- **Deep React & JSX Call Graph Resolution:**
+  - Full visibility into JSX component invocations (`<ApproverMatrixSelectionBar />`), custom hooks (`useApproverMatrix`), and higher-order components.
+  - Native path alias resolution based on `tsconfig.json` (`@components/*`, `@shared/*`) and barrel file re-exports (`index.ts`).
+- **Guaranteed Isolation from External Dependencies (`node_modules`):**
+  - Absolute exclusion of external dependencies via physical declaration file path validation (`Declaration.getSourceFile().fileName`).
+  - Zero pollution in call graph edges and database from standard libraries and third-party packages.
+- **Sub-Second Performance & Targeted Diff Analysis:**
+  - In-memory AST analysis with `noEmit: true`, `skipLibCheck: true`, and incremental caching (`.tsbuildinfo`).
+  - Sub-second execution (~200–350 ms) during pull request reviews via targeted file list analysis (`--files`).
+- **Framework Extensibility (Angular Ivy & Vue Volar):**
+  - Direct integration with `@angular/compiler-cli` (`AngularCompilerHost`) for compiling Angular HTML templates into virtual TypeScript (`.ngtypecheck.ts`), resolving component/directive links without brittle regexes.
+  - Vue SFC template expansion via `@volar/language-core`.
+- **Graceful Fallback:**
+  - Automatic seamless fallback to Tree-sitter AST parser if a repository lacks `tsconfig.json` / `jsconfig.json`.
 
 ---
 

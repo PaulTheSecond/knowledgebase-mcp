@@ -835,29 +835,37 @@ def knowledge_review_context(
 
     # 1. Определение измененных файлов
     if changed_files is None:
-        # Попытка через Git CLI с поддержкой worktrees и разных баз сравнения
+        # Быстрая проверка через Git CLI с поддержкой worktrees и предварительной валидацией рефов
         repo_path = _find_repo_path(project_id, repo_id, branch)
         if repo_path and repo_path.exists():
             try:
                 prefix = get_git_cmd_prefix(repo_path)
-                bases = [
-                    f"{compare_branch}...HEAD",
+                candidate_refs = [
                     compare_branch,
-                    f"dvcn/{compare_branch}...HEAD",
-                    f"origin/{compare_branch}...HEAD",
-                    f"dvcn/{compare_branch}",
                     f"origin/{compare_branch}",
+                    f"dvcn/{compare_branch}",
                     "HEAD~1"
                 ]
-                for base in bases:
-                    cmd = prefix + ["diff", "--name-only", base]
-                    res = subprocess.run(
-                        cmd, cwd=str(repo_path), capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=5.0
+                valid_base = None
+                for ref in candidate_refs:
+                    chk = subprocess.run(
+                        prefix + ["rev-parse", "--verify", ref],
+                        cwd=str(repo_path), capture_output=True, text=True, timeout=1.0
                     )
-                    if res.returncode == 0 and res.stdout.strip():
-                        changed_files = [f.strip().replace('\\', '/') for f in res.stdout.splitlines() if f.strip()]
+                    if chk.returncode == 0:
+                        valid_base = ref
                         break
+
+                if valid_base:
+                    for diff_target in [f"{valid_base}...HEAD", valid_base]:
+                        res = subprocess.run(
+                            prefix + ["diff", "--name-only", diff_target],
+                            cwd=str(repo_path), capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=3.0
+                        )
+                        if res.returncode == 0 and res.stdout.strip():
+                            changed_files = [f.strip().replace('\\', '/') for f in res.stdout.splitlines() if f.strip()]
+                            break
             except Exception as e:
                 logger.debug(f"Git diff determination skipped: {e}")
 
@@ -952,6 +960,62 @@ def knowledge_review_context(
                     "depth": item['depth']
                 })
 
+        # Дополнительный поиск потребителей компонента/функции через git grep в рабочей копии
+        if repo_path and repo_path.exists() and len(sym['name']) >= 3:
+            s_name = sym['name']
+            if k_lower in ('component', 'function', 'class'):
+                try:
+                    prefix = get_git_cmd_prefix(repo_path)
+                    ext_args = ["--", "*.tsx", "*.ts", "*.jsx", "*.js"] if sym.get('language') in ('typescript', 'tsx', 'javascript') else ["--", f"*{Path(sym.get('path', '')).suffix}"]
+                    grep_cmd = prefix + ["grep", "-l", "-E", f"<{s_name}\\b|\\b{s_name}\\b"] + ext_args
+                    res = subprocess.run(grep_cmd, cwd=str(repo_path), capture_output=True, text=True, timeout=1.5)
+                    if res.returncode == 0 and res.stdout.strip():
+                        for match_file in res.stdout.splitlines():
+                            match_file = match_file.strip().replace('\\', '/')
+                            if not match_file or match_file == sym.get('path') or match_file.endswith((f"{s_name}.tsx", f"{s_name}.styles.ts", f"{s_name}/index.ts")):
+                                continue
+                            cursor.execute("""
+                                SELECT s.id, s.name, s.qualified_name, s.kind, f.path, f.repo_id
+                                FROM symbols s
+                                JOIN files f ON s.file_id = f.id
+                                WHERE f.path = ? AND s.kind IN ('component', 'function', 'class')
+                                ORDER BY s.id ASC LIMIT 1
+                            """, (match_file,))
+                            f_sym = cursor.fetchone()
+                            if f_sym:
+                                c_id = f_sym['id']
+                                if c_id not in seen_impacted_ids:
+                                    seen_impacted_ids.add(c_id)
+                                    impacted_files.add(f_sym['path'])
+                                    impacted_symbols.append({
+                                        "id": c_id,
+                                        "name": f_sym['name'],
+                                        "qualified_name": f_sym['qualified_name'],
+                                        "kind": f_sym['kind'],
+                                        "file": f_sym['path'],
+                                        "repo_id": f_sym['repo_id'],
+                                        "edge_kind": "USES",
+                                        "depth": 1
+                                    })
+                            else:
+                                stem_name = Path(match_file).stem
+                                fake_id = f"file:{match_file}"
+                                if fake_id not in seen_impacted_ids:
+                                    seen_impacted_ids.add(fake_id)
+                                    impacted_files.add(match_file)
+                                    impacted_symbols.append({
+                                        "id": fake_id,
+                                        "name": stem_name,
+                                        "qualified_name": stem_name,
+                                        "kind": "component",
+                                        "file": match_file,
+                                        "repo_id": repo_id,
+                                        "edge_kind": "USES",
+                                        "depth": 1
+                                    })
+                except Exception as e:
+                    logger.debug(f"Git grep callers search skipped: {e}")
+
     # 4. Поиск связанных тестов и выявление Test Gaps
     related_tests = []
     seen_test_keys = set()
@@ -973,30 +1037,38 @@ def knowledge_review_context(
         elif len(cf_path.parts) > 1:
             candidates.append(cf_path.parent.name)
 
+        ext = cf_path.suffix.lower()
+        allowed_exts = ('.ts', '.tsx', '.js', '.jsx') if ext in ('.ts', '.tsx', '.js', '.jsx') else (ext,)
+
         for cand in set(candidates):
             if len(cand) >= 3 and cand.lower() not in COMMON_CODE_STOPWORDS:
                 kebab = re.sub(r'(?<!^)(?=[A-Z])', '-', cand).lower()
                 patterns = [
-                    f"%{cand}%.spec.%",
-                    f"%{cand}%.test.%",
-                    f"%{cand}%Test%",
-                    f"%{kebab}%.spec.%",
-                    f"%{kebab}%.test.%"
+                    f"%/{cand}.spec.%",
+                    f"%/{cand}.test.%",
+                    f"%/{cand}Test.%",
+                    f"%/{cand}Tests.%",
+                    f"%/{kebab}.spec.%",
+                    f"%/{kebab}.test.%"
                 ]
                 for pat in patterns:
                     cursor.execute("""
                         SELECT DISTINCT f.id, f.path, f.repo_id
                         FROM files f
-                        WHERE f.project_id = ? AND f.branch = ? AND f.path LIKE ?
-                          AND (f.path LIKE '%/test%' OR f.path LIKE '%/Test%' OR f.path LIKE '%.test.%' OR f.path LIKE '%.spec.%' OR f.path LIKE '%Tests.%' OR f.repo_id LIKE '%test%')
-                    """, (project_id, branch, pat))
+                        WHERE f.project_id = ?
+                          AND (f.repo_id = ? OR f.repo_id LIKE '%test%' OR f.repo_id LIKE '%e2e%')
+                          AND f.path LIKE ?
+                    """, (project_id, repo_id, pat))
                     for tf in cursor.fetchall():
-                        k = tf['id']
+                        tf_path = Path(tf['path'])
+                        if tf_path.suffix.lower() not in allowed_exts:
+                            continue
+                        k = tf['path']
                         if k not in seen_test_keys:
                             seen_test_keys.add(k)
                             related_tests.append({
                                 "test_id": tf['id'],
-                                "test_name": Path(tf['path']).name,
+                                "test_name": tf_path.name,
                                 "test_file": tf['path'],
                                 "tested_symbol_id": None,
                                 "tested_symbol_name": cand,
@@ -1082,14 +1154,20 @@ def knowledge_review_context(
             f"Test{sym_name}", f"{sym_name}Test", f"{sym_name}Tests", f"test_{sym_name.lower()}",
             f"Test_{sym_name}", f"test_{sym_name}"
         )
+        sym_ext = Path(sym.get('path') or sym.get('file') or '').suffix.lower()
+        allowed_test_exts = ('.ts', '.tsx', '.js', '.jsx') if sym_ext in ('.ts', '.tsx', '.js', '.jsx') else (sym_ext,)
+
         cursor.execute("""
             SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
             FROM symbols s
             JOIN files f ON s.file_id = f.id
             WHERE s.name IN (?, ?, ?, ?, ?, ?)
               AND f.project_id = ?
-        """, (*exact_names, project_id))
+              AND (f.repo_id = ? OR f.repo_id LIKE '%test%' OR f.repo_id LIKE '%e2e%')
+        """, (*exact_names, project_id, repo_id))
         for tr in cursor.fetchall():
+            if Path(tr['path']).suffix.lower() not in allowed_test_exts:
+                continue
             tested_symbol_ids.add(sym_id)
             k = (tr['id'], sym_id)
             if k not in seen_test_keys:
@@ -1103,17 +1181,20 @@ def knowledge_review_context(
                     "relation": "naming_pattern"
                 })
 
-        # Для методов/функций проверяем префиксные паттерны xUnit/NUnit (например ResolveAsync_...)
+        # Для методов/функций проверяем префиксные паттерны xUnit/NUnit (например ResolveAsync_...) с экранированием '_'
         if sym.get('kind', '').lower() in ('method', 'function'):
             cursor.execute("""
                 SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
                 FROM symbols s
                 JOIN files f ON s.file_id = f.id
-                WHERE (s.name LIKE ? OR s.name LIKE ? OR s.name LIKE ?)
-                  AND (f.path LIKE '%test%' OR f.path LIKE '%Test%')
+                WHERE (s.name LIKE ? ESCAPE '/' OR s.name LIKE ? OR s.name LIKE ?)
+                  AND (f.path LIKE '%/test/%' OR f.path LIKE '%/tests/%' OR f.path LIKE '%.test.%' OR f.path LIKE '%.spec.%')
                   AND f.project_id = ?
-            """, (f"{sym_name}_%", f"{sym_name}Should%", f"{sym_name}When%", project_id))
+                  AND (f.repo_id = ? OR f.repo_id LIKE '%test%' OR f.repo_id LIKE '%e2e%')
+            """, (f"{sym_name}/_%", f"{sym_name}Should%", f"{sym_name}When%", project_id, repo_id))
             for tr in cursor.fetchall():
+                if Path(tr['path']).suffix.lower() not in allowed_test_exts:
+                    continue
                 tested_symbol_ids.add(sym_id)
                 k = (tr['id'], sym_id)
                 if k not in seen_test_keys:
@@ -1134,9 +1215,12 @@ def knowledge_review_context(
             JOIN symbols s ON e.source_id = s.id
             JOIN files f ON s.file_id = f.id
             WHERE e.target_id = ? AND e.kind = 'CALLS'
-              AND (f.path LIKE '%test%' OR f.path LIKE '%Test%' OR s.name LIKE '%test%' OR s.name LIKE '%Test%')
-        """, (sym_id,))
+              AND (f.path LIKE '%/test/%' OR f.path LIKE '%/tests/%' OR f.path LIKE '%.test.%' OR f.path LIKE '%.spec.%' OR s.name LIKE '%test%' OR s.name LIKE '%Test%')
+              AND (f.repo_id = ? OR f.repo_id LIKE '%test%' OR f.repo_id LIKE '%e2e%')
+        """, (sym_id, repo_id))
         for tr in cursor.fetchall():
+            if Path(tr['path']).suffix.lower() not in allowed_test_exts:
+                continue
             tested_symbol_ids.add(sym_id)
             k = (tr['id'], sym_id)
             if k not in seen_test_keys:
@@ -1156,9 +1240,12 @@ def knowledge_review_context(
             JOIN symbols s ON u.source_id = s.id
             JOIN files f ON s.file_id = f.id
             WHERE u.kind = 'CALLS' AND (u.target_qualified_name = ? OR u.target_qualified_name = ?)
-              AND (f.path LIKE '%test%' OR f.path LIKE '%Test%' OR s.name LIKE '%test%' OR s.name LIKE '%Test%')
-        """, (sym_name, sym_qname))
+              AND (f.path LIKE '%/test/%' OR f.path LIKE '%/tests/%' OR f.path LIKE '%.test.%' OR f.path LIKE '%.spec.%' OR s.name LIKE '%test%' OR s.name LIKE '%Test%')
+              AND (f.repo_id = ? OR f.repo_id LIKE '%test%' OR f.repo_id LIKE '%e2e%')
+        """, (sym_name, sym_qname, repo_id))
         for tr in cursor.fetchall():
+            if Path(tr['path']).suffix.lower() not in allowed_test_exts:
+                continue
             tested_symbol_ids.add(sym_id)
             k = (tr['id'], sym_id)
             if k not in seen_test_keys:
@@ -1172,53 +1259,113 @@ def knowledge_review_context(
                     "relation": "CALLED_BY_TEST"
                 })
 
-    # Выявляем Test Gaps: измененные функции и методы БЕЗ тестов
+    # Выявляем Test Gaps и определяем покрытие E2E тестами
     test_gaps = []
-    for sym in changed_symbols:
-        k_lower = sym['kind'].lower()
-        if k_lower in ('method', 'function') and sym['id'] not in tested_symbol_ids:
-            is_method_tested = False
-            sym_name_clean = sym['name'].lower()
-            for t in related_tests:
-                if t.get('tested_symbol_id') == sym['id'] or (t.get('tested_symbol_name') or '').lower() == sym_name_clean:
-                    is_method_tested = True
-                    break
-                t_name = (t.get('test_name') or '').lower()
-                if (f"test_{sym_name_clean}" in t_name or 
-                    f"test{sym_name_clean}" in t_name or 
-                    f"{sym_name_clean}_" in t_name or 
-                    f"{sym_name_clean}should" in t_name or 
-                    f"{sym_name_clean}when" in t_name or
-                    (sym_name_clean in t_name and not t_name.endswith("tests"))):
-                    is_method_tested = True
-                    break
+    e2e_covered_symbols = []
 
+    # Собираем ключевые слова фич только из сквозных (E2E / feature) тестов
+    feature_test_keywords = set()
+    for t in related_tests:
+        t_file = (t.get('test_file') or '').lower().replace('\\', '/')
+        is_e2e = (
+            '.spec.' in t_file or 
+            '.e2e.' in t_file or 
+            '/e2e/' in t_file or 
+            '/tests/e2e/' in t_file or 
+            '/specs/' in t_file or 
+            'playwright' in t_file or 
+            'cypress' in t_file
+        )
+        if is_e2e:
+            c_name = t.get('tested_symbol_name')
+            if c_name:
+                feature_test_keywords.add(c_name.lower())
+                kebab = re.sub(r'(?<!^)(?=[A-Z])', '-', c_name).lower()
+                feature_test_keywords.add(kebab)
+            t_stem = Path(t_file).stem.lower().replace('.spec', '').replace('.test', '').replace('.e2e', '')
+            if len(t_stem) >= 3:
+                feature_test_keywords.add(t_stem)
+                clean_stem = t_stem.replace('-', '').replace('_', '')
+                if len(clean_stem) >= 3:
+                    feature_test_keywords.add(clean_stem)
+
+    for sym in changed_symbols:
+        k_lower = sym.get('kind', '').lower()
+        if k_lower in ('method', 'function', 'component'):
+            sym_name_clean = sym['name'].lower()
+            sym_file_clean = (sym.get('path') or sym.get('file') or '').lower()
+            
+            is_method_tested = False
+            is_e2e_covered = False
+
+            # Проверка прямого юнит-теста
+            if sym['id'] in tested_symbol_ids:
+                is_method_tested = True
+            else:
+                for t in related_tests:
+                    if t.get('tested_symbol_id') == sym['id'] or (t.get('tested_symbol_name') or '').lower() == sym_name_clean:
+                        is_method_tested = True
+                        break
+                    t_name = (t.get('test_name') or '').lower()
+                    if (f"test_{sym_name_clean}" in t_name or 
+                        f"test{sym_name_clean}" in t_name or 
+                        f"{sym_name_clean}_" in t_name or 
+                        f"{sym_name_clean}should" in t_name or 
+                        f"{sym_name_clean}when" in t_name or
+                        (sym_name_clean in t_name and not t_name.endswith("tests"))):
+                        is_method_tested = True
+                        break
+
+            # Проверка покрытия интеграционным/E2E тестом фичи
             if not is_method_tested:
-                qname = sym.get('qualified_name') or sym['name']
+                for kw in feature_test_keywords:
+                    if kw in sym_file_clean or kw in sym_name_clean:
+                        is_e2e_covered = True
+                        break
+
+            qname = sym.get('qualified_name') or sym['name']
+            if is_e2e_covered:
+                e2e_covered_symbols.append({
+                    "id": sym['id'],
+                    "name": sym['name'],
+                    "qualified_name": qname,
+                    "kind": sym['kind'],
+                    "file": sym.get('path') or sym.get('file'),
+                    "coverage_type": "feature_e2e"
+                })
+            elif not is_method_tested:
                 test_gaps.append({
                     "id": sym['id'],
                     "name": sym['name'],
                     "qualified_name": qname,
                     "kind": sym['kind'],
-                    "file": sym['path']
+                    "file": sym.get('path') or sym.get('file')
                 })
 
-    # 5. Расчет скоринга риска
-    base_score = len(norm_changed_files) * 5 + len(changed_symbols) * 3
+    # 5. Расчет взвешенного скоринга риска
+    logic_symbols = [s for s in changed_symbols if s.get('kind', '').lower() in ('class', 'function', 'component', 'method')]
+    decl_symbols = [s for s in changed_symbols if s.get('kind', '').lower() not in ('class', 'function', 'component', 'method')]
+    symbol_weight = len(logic_symbols) * 1.5 + len(decl_symbols) * 0.2
+
+    complexity_score = min(25, int(symbol_weight * 1.2) + len(norm_changed_files) * 2)
     direct_impact = sum(1 for s in impacted_symbols if s.get('depth', 1) <= 1)
     transitive_impact = len(impacted_symbols) - direct_impact
-    blast_score = min(40, direct_impact * 2 + int(transitive_impact * 0.5))
-    test_gap_score = len(test_gaps) * 20
+    blast_score = min(30, direct_impact * 2 + int(transitive_impact * 0.5))
+    test_gap_score = min(40, len(test_gaps) * 15)
 
     if not norm_changed_files and not changed_symbols:
         risk_score = 0
         risk_level = "low"
     else:
-        raw_score = base_score + blast_score + test_gap_score
-        # Если гэпов нет и код покрыт тестами, применяем скидку за надежность
-        if not test_gaps and related_tests:
+        raw_score = complexity_score + blast_score + test_gap_score
+        if not test_gaps and e2e_covered_symbols:
+            raw_score = int(raw_score * 0.6)
+        elif not test_gaps and related_tests:
             raw_score = int(raw_score * 0.5)
-        risk_score = max(10, min(100, raw_score))
+        elif e2e_covered_symbols:
+            raw_score = int(raw_score * 0.85)
+
+        risk_score = max(5, min(100, raw_score))
         if test_gaps and risk_score < 30:
             risk_score = 30
         if risk_score < 30:
@@ -1267,6 +1414,7 @@ def knowledge_review_context(
         },
         "related_tests": related_tests,
         "test_gaps": test_gaps,
+        "e2e_covered_symbols": e2e_covered_symbols,
         "risk": risk_level,
         "risk_level": risk_level,
         "risk_score": risk_score,
@@ -1386,12 +1534,31 @@ def knowledge_find_tests(
     base_target = Path(target).stem if ('/' in target or '\\' in target) else target
     base_target = base_target.split('.')[-1]
 
-    cursor.execute("""
+    naming_sql = """
         SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.signature, f.path, f.repo_id
         FROM symbols s
         JOIN files f ON (s.file_id = f.id OR (s.content_hash IS NOT NULL AND s.content_hash = f.content_hash))
-        WHERE (s.name LIKE ? OR s.name LIKE ? OR s.name LIKE ? OR s.name LIKE ? OR s.name LIKE ?)
-    """, (f"Test{base_target}%", f"{base_target}Test%", f"{base_target}Tests%", f"test_{base_target.lower()}%", f"%_{base_target}_%"))
+        WHERE (s.name = ? OR s.name = ? OR s.name = ? OR s.name = ? OR s.name = ? OR s.name LIKE ? ESCAPE '/')
+    """
+    naming_params = [
+        f"Test{base_target}",
+        f"{base_target}Test",
+        f"{base_target}Tests",
+        f"test_{base_target.lower()}",
+        f"Test_{base_target}",
+        f"{base_target}/_%"
+    ]
+    if repo_id:
+        naming_sql += " AND (f.repo_id = ? OR f.repo_id LIKE '%test%' OR f.repo_id LIKE '%e2e%')"
+        naming_params.append(repo_id)
+    if project_id is not None:
+        naming_sql += " AND f.project_id = ?"
+        naming_params.append(project_id)
+    if branch is not None:
+        naming_sql += " AND f.branch = ?"
+        naming_params.append(branch)
+
+    cursor.execute(naming_sql, naming_params)
     for tr in cursor.fetchall():
         if tr['id'] not in seen_keys:
             seen_keys.add(tr['id'])
