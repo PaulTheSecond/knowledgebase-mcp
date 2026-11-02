@@ -733,10 +733,10 @@ def main():
         host = parsed_url.hostname or "127.0.0.1"
         port = parsed_url.port or (443 if parsed_url.scheme == "https" else 8000)
 
-        max_attempts = int(os.environ.get("DAEMON_PROBE_ATTEMPTS", "10"))
+        max_attempts = int(os.environ.get("DAEMON_PROBE_ATTEMPTS", "25"))
         for attempt in range(max_attempts):
             try:
-                conn_probe = http.client.HTTPConnection(host, port, timeout=1.0)
+                conn_probe = http.client.HTTPConnection(host, port, timeout=1.5)
                 conn_probe.request("GET", "/health", headers={"User-Agent": "MCP-Proxy-Probe"})
                 resp = conn_probe.getresponse()
                 if resp.status == 200:
@@ -746,7 +746,7 @@ def main():
                 conn_probe.close()
             except Exception:
                 if attempt < max_attempts - 1:
-                    time.sleep(0.3)
+                    time.sleep(0.5)
 
         if is_daemon_alive:
             # Запускаем легковесный STDIO <-> SSE прокси, не трогая локальную базу SQLite

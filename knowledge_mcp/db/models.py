@@ -80,17 +80,29 @@ class KnowledgeDB:
 
 
     def _apply_migrations(self):
-        """EF Core стайл миграции схемы БД."""
+        """EF Core стайл миграции схемы БД с устойчивостью к конфликтам блокировок DrvFs/9P."""
         cursor = self.conn.cursor()
         
-        # Таблица истории миграций
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS __migrations_history (
-                id TEXT PRIMARY KEY,
-                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        self.conn.commit()
+        # Таблица истории миграций с повторными попытками при DrvFs/9P блокировках
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS __migrations_history (
+                        id TEXT PRIMARY KEY,
+                        applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                self.conn.commit()
+                break
+            except sqlite3.OperationalError as e:
+                err_str = str(e).lower()
+                if ("disk i/o error" in err_str or "database is locked" in err_str) and attempt < max_retries - 1:
+                    wait_sec = (attempt + 1) * 0.5
+                    logger.warning(f"Migration history lock contention ({e}). Retrying in {wait_sec}s...")
+                    time.sleep(wait_sec)
+                else:
+                    raise
 
         cursor.execute("SELECT id FROM __migrations_history")
         applied_migrations = {row['id'] for row in cursor.fetchall()}
