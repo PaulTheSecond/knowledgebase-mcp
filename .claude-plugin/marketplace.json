@@ -29,6 +29,25 @@
         "git-review"
       ],
       "category": "development"
+    },
+    {
+      "name": "knowledge-init",
+      "description": "Инициализация и первичное подключение репозитория или рабочей области к Knowledge Base MCP: автоопределение структуры, config.yaml, индексация и настройка пресетов агентов",
+      "version": "1.0.0",
+      "source": "./plugins/knowledge-init",
+      "author": {
+        "name": "PaulTheSecond"
+      },
+      "repository": "https://github.com/PaulTheSecond/knowledgebase-mcp",
+      "license": "MIT",
+      "keywords": [
+        "onboarding",
+        "init",
+        "mcp",
+        "workspace-setup",
+        "indexing"
+      ],
+      "category": "development"
     }
   ]
 }
