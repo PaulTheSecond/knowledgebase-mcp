@@ -1,36 +1,36 @@
-# ts-parser: Компиляторный семантический анализатор TypeScript, React и Angular
+# ts-parser: Compiler-Based Semantic Analyzer for TypeScript, React, and Angular
 
-Выделенный компиляторный парсер семантических связей для экосистемы TypeScript/JavaScript/React в составе `knowledgebase-mcp` (согласно [ADR-009](../docs/adr-009-compiler-semantic-analysis-ts-angular.md)).
+A dedicated compiler-grade semantic dependency analyzer for the TypeScript, JavaScript, and React ecosystem in `knowledgebase-mcp` (per [ADR-009](../docs/adr-009-compiler-semantic-analysis-ts-angular.md)).
 
-Является прямым аналогом `RoslynParser` (.NET) для мира TypeScript: заменяет эвристический текстовый синтаксический анализ Tree-sitter на официальный компиляторный семантический анализ через **TypeScript Compiler API**.
-
----
-
-## 🎯 Решаемые задачи
-
-1. **Семантика вызовов в JSX**: использование компонентов в JSX вида `<ApproverMatrixSelectionBar />` связывается с декларацией компонента как отношение `USES`, устраняя проблему «разрыва цепочки компонентов» при анализе радиуса влияния (blast radius).
-2. **Алиасы путей (`tsconfig.json paths`)**: прозрачное разрешение псевдонимов (`@components/*`, `@shared/*`), реэкспортов через barrel-файлы (`index.ts`) и модулей в монорепозиториях.
-3. **100% изоляция от `node_modules`**: в граф связей попадают **строго** символы и вызовы между файлами репозитория; библиотеки из `node_modules` и системные тайпинги `lib.d.ts` физически отфильтровываются по пути декларации.
-4. **Субсекундный режим diff для PR-ревью**: компилятор работает в оперативной памяти (`noEmit: true`, `skipLibCheck: true`), обеспечивая время отклика ~15–30 мс на 10 файлов.
+`ts-parser` is the direct counterpart to `RoslynParser` (.NET) for the JavaScript/TypeScript ecosystem: it replaces heuristic syntax parsing (Tree-sitter) with authoritative compiler analysis via the **TypeScript Compiler API**.
 
 ---
 
-## 🚀 CLI Контракт
+## 🎯 Key Capabilities
+
+1. **JSX Call & Dependency Semantics:** JSX component usages such as `<ApproverMatrixSelectionBar />` are linked to component declarations as `USES` relationships, eliminating broken component dependency chains in blast radius and impact analysis.
+2. **Path Aliases (`tsconfig.json paths`):** Transparent resolution of path aliases (`@components/*`, `@shared/*`), barrel file re-exports (`index.ts`), and multi-package monorepos.
+3. **100% Isolation from `node_modules`:** Only in-repository symbols and calls are indexed; third-party dependencies (`node_modules`) and runtime typings (`lib.d.ts`) are physically filtered out by declaration source file paths.
+4. **Sub-Second PR Diff Mode:** Operates in memory (`noEmit: true`, `skipLibCheck: true`), delivering sub-second response times (~15–30 ms for 10 files) for pull request reviews.
+
+---
+
+## 🚀 CLI Contract
 
 ```bash
 node dist/ts-parser.js --project <path/to/tsconfig.json> [options]
 
-Параметры:
-  --project <path>    Путь к tsconfig.json / jsconfig.json (обязательный)
-  --root <path>       Корневая директория репозитория (по умолчанию папка tsconfig.json)
-  --files <path>      Файл со списком относительных/абсолютных путей или CSV-список (для diff PR)
-  --mode <full|diff>  Режим анализа: full — полная индексация, diff — инкрементальный анализ
-  --help, -h          Показать справку
+Parameters:
+  --project <path>    Path to tsconfig.json / jsconfig.json (required)
+  --root <path>       Repository root directory (defaults to tsconfig directory)
+  --files <path>      File containing relative/absolute file paths or CSV list (for targeted PR diffs)
+  --mode <full|diff>  Analysis mode: 'full' for complete indexing, 'diff' for incremental analysis
+  --help, -h          Show help message
 ```
 
-### Формат вывода JSON (stdout)
+### JSON Output Schema (stdout)
 
-Полностью совместим со структурой `RoslynParser` и SQLite схемой `knowledgebase-mcp`:
+Fully compatible with `RoslynParser` and the SQLite schema of `knowledgebase-mcp`:
 
 ```json
 {
@@ -68,19 +68,19 @@ node dist/ts-parser.js --project <path/to/tsconfig.json> [options]
 
 ---
 
-## 🛠️ Сборка автономного бандла
+## 🛠️ Building Standalone Bundle
 
-Модуль собирается с помощью `esbuild` в единый автономный JS-файл `dist/ts-parser.js` (~9.5 MB), куда упаковывается TypeScript Compiler API. В рантайме внешний `node_modules` **не требуется**:
+The module is built with `esbuild` into a single standalone bundle, `dist/ts-parser.js` (~9.5 MB), bundling the TypeScript Compiler API. External `node_modules` are **not required** at runtime:
 
 ```bash
-npm run build    # Сборка dist/ts-parser.js через esbuild
-npm test         # Запуск автоматизированных тестов (node:test)
-npm run lint     # Проверка строгой типизации (tsc --noEmit)
+npm run build    # Compile dist/ts-parser.js via esbuild
+npm test         # Run automated tests (node:test)
+npm run lint     # Strict type checking (tsc --noEmit)
 ```
 
 ---
 
-## 📦 Контейнеризация и изоляция
+## 📦 Containerization & Zero Host Footprint
 
-- Node.js рантайм и собранный `dist/ts-parser.js` поставляются **строго внутри Docker-образа** (multi-stage сборка).
-- Пользователям и AI-агентам (Claude Code, Antigravity, Cursor) **не требуется** устанавливать Node.js на хост-машину.
+- The Node.js runtime and built `dist/ts-parser.js` bundle are shipped **strictly inside the Docker image** (via multi-stage build).
+- End users and AI agents (Claude Code, Antigravity, Cursor) **do not require** Node.js installed on the host machine.
