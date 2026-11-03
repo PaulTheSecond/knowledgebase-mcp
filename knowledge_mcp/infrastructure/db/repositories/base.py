@@ -39,6 +39,10 @@ class BaseSqliteRepository:
     def _stats_cache(self):
         return self.db._stats_cache
 
+    @_stats_cache.setter
+    def _stats_cache(self, val):
+        self.db._stats_cache = val
+
     @property
     def _stats_cache_time(self):
         return self.db._stats_cache_time
@@ -51,9 +55,17 @@ class BaseSqliteRepository:
     def _cas_cache(self):
         return self.db._cas_cache
 
+    @_cas_cache.setter
+    def _cas_cache(self, val):
+        self.db._cas_cache = val
+
     @property
     def _cas_cache_time(self):
         return self.db._cas_cache_time
+
+    @_cas_cache_time.setter
+    def _cas_cache_time(self, val):
+        self.db._cas_cache_time = val
 
     def __getattr__(self, name: str) -> Any:
         """Перенаправляет отсутствующие методы и атрибуты на фасад KnowledgeDB."""

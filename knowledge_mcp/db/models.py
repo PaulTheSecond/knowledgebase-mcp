@@ -72,6 +72,26 @@ class KnowledgeDB:
         if not read_only:
             self._apply_migrations()
 
+    @property
+    def documents(self) -> SqliteDocumentRepository:
+        """Репозиторий документов и CAS-контента."""
+        return self._documents
+
+    @property
+    def symbols(self) -> SqliteSymbolRepository:
+        """Репозиторий графа символов и вызовов."""
+        return self._symbols
+
+    @property
+    def vectors(self) -> SqliteVectorRepository:
+        """Репозиторий векторного и полнотекстового поиска."""
+        return self._vectors
+
+    @property
+    def jobs(self) -> SqliteJobQueueRepository:
+        """Репозиторий очередей фоновых задач."""
+        return self._jobs
+
     def _create_conn(self, read_only: bool) -> sqlite3.Connection:
         c = get_db_connection(self.db_path, read_only=read_only)
         with self._conns_lock:
