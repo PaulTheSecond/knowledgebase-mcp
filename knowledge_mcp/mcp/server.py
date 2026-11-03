@@ -663,10 +663,18 @@ def _filter_valid_findings(gaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def _build_reviewed_files_audit(
     all_files_info: List[Dict[str, Any]],
+    code_findings: List[Dict[str, Any]],
     test_gaps: List[Dict[str, Any]],
     changed_symbols: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     """Формирует обязательный список всех отрецензированных файлов со статусом clean или has_findings."""
+    findings_by_file: Dict[str, List[Dict[str, Any]]] = {}
+    for f in code_findings:
+        ff = f.get('file')
+        if ff:
+            norm_f = ff.replace('\\', '/')
+            findings_by_file.setdefault(norm_f, []).append(f)
+
     gaps_by_file: Dict[str, List[Dict[str, Any]]] = {}
     for g in test_gaps:
         gf = g.get('file')
@@ -682,9 +690,23 @@ def _build_reviewed_files_audit(
         old_p = finfo.get("old_path")
         similarity = finfo.get("similarity", 100)
 
+        file_findings = findings_by_file.get(f_p, [])
         file_gaps = gaps_by_file.get(f_p, [])
 
-        if ch_type == "deleted":
+        is_generated = f_p.endswith('.Designer.cs') or '.generated.' in f_p.lower() or f_p.endswith('.g.cs')
+
+        if is_generated:
+            reviewed.append({
+                "file": f_p,
+                "repo_id": r_id,
+                "change_type": ch_type,
+                "old_path": old_p,
+                "similarity": similarity,
+                "status": "clean",
+                "findings_count": 0,
+                "status_detail": "Сгенерированный файл (*.Designer.cs), не подлежит ревью"
+            })
+        elif ch_type == "deleted":
             reviewed.append({
                 "file": f_p,
                 "repo_id": r_id,
@@ -695,8 +717,8 @@ def _build_reviewed_files_audit(
                 "findings_count": 0,
                 "status_detail": "Файл удалён"
             })
-        elif file_gaps:
-            gap_reasons = "; ".join(g.get("reason", "Замечание") for g in file_gaps)
+        elif file_findings:
+            reasons = "; ".join(f.get("reason", "Замечание") for f in file_findings)
             reviewed.append({
                 "file": f_p,
                 "repo_id": r_id,
@@ -704,9 +726,21 @@ def _build_reviewed_files_audit(
                 "old_path": old_p,
                 "similarity": similarity,
                 "status": "has_findings",
-                "findings_count": len(file_gaps),
-                "status_detail": f"Есть замечания ({gap_reasons})",
-                "findings": file_gaps
+                "findings_count": len(file_findings),
+                "status_detail": f"Есть находки: {reasons}",
+                "findings": file_findings
+            })
+        elif file_gaps:
+            reviewed.append({
+                "file": f_p,
+                "repo_id": r_id,
+                "change_type": ch_type,
+                "old_path": old_p,
+                "similarity": similarity,
+                "status": "clean",
+                "findings_count": 0,
+                "status_detail": "Проверен, замечаний нет (отсутствует прямое покрытие тестами)",
+                "test_gaps_count": len(file_gaps)
             })
         else:
             if ch_type == "renamed":
@@ -727,6 +761,269 @@ def _build_reviewed_files_audit(
                 "status_detail": detail
             })
     return reviewed
+
+
+def _audit_checklist_rules(
+    repo_path: Optional[Path],
+    repo_id: str,
+    diff_files: List[Dict[str, Any]],
+    branch_commit_shas: Set[str],
+    compare_branch: str,
+    base_sha: Optional[str],
+    head_sha: Optional[str]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Проверяет измененные файлы на соответствие правилам чек-листов проекта (.kb/nn-backend-review-checklist.md,
+    .kb/nn-frontend-review-checklist.md, e2e.md): деструктивный SQL, подавление предупреждений, расхождение фолбэков,
+    дублирование источников истины и отсутствие assert-проверок.
+    """
+    findings: List[Dict[str, Any]] = []
+    systemic_gaps: List[Dict[str, Any]] = []
+    if not repo_path or not repo_path.exists():
+        return findings, systemic_gaps
+
+    prefix = get_git_cmd_prefix(repo_path)
+    diff_target = f"{base_sha}..{head_sha}" if base_sha and head_sha and base_sha != head_sha else (base_sha or "HEAD")
+
+    for df in diff_files:
+        f_p = df["path"]
+        norm_fp = f_p.replace('\\', '/')
+        abs_p = (repo_path / f_p).resolve()
+
+        # 1. SQL Migration Script Data Loss (B1 & B3)
+        if norm_fp.endswith('.sql') and 'migrationscripts' in norm_fp.lower():
+            if abs_p.is_file():
+                content = abs_p.read_text(encoding="utf-8", errors="replace")
+                # B1: UPDATE ... SET [Name] = NULL
+                m_b1 = re.search(r'UPDATE\s+\w+\s+SET\s+\[?Name\]?\s*=\s*NULL', content, re.IGNORECASE)
+                if m_b1:
+                    idx = content[:m_b1.start()].count('\n') + 1
+                    orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
+                    findings.append({
+                        "id": "B1",
+                        "severity": "important",
+                        "file": norm_fp,
+                        "line_start": idx,
+                        "line_end": idx,
+                        "location": f"{norm_fp}:{idx}",
+                        "origin": orig["origin"],
+                        "origin_commit": orig.get("commit"),
+                        "author": orig.get("author"),
+                        "message": "PostMigration-скрипт стирает Name у несопоставленных записей (SET [Name] = NULL). Последующий DropColumn RoleId делает потерю данных необратимой.",
+                        "reason": "PostMigration-скрипт стирает Name у несопоставленных записей (SET [Name] = NULL). Последующий DropColumn RoleId делает потерю данных необратимой.",
+                        "introduced_in_commit": orig,
+                        "repo_id": repo_id,
+                        "rule": ".kb/nn-backend-review-checklist.md п. 1 (Миграция не должна требовать состояния, которого никто не создаёт / не должна стирать существующие данные)"
+                    })
+
+                # B3: type = 2 AND TRY_CAST
+                for idx, line in enumerate(content.splitlines(), 1):
+                    if re.search(r'j\.\[?type\]?\s*=\s*2\s+AND\s+TRY_CAST', line, re.IGNORECASE):
+                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
+                        findings.append({
+                            "id": "B3",
+                            "severity": "minor",
+                            "file": norm_fp,
+                            "line_start": idx,
+                            "line_end": idx,
+                            "location": f"{norm_fp}:{idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": "Фильтрация JSON по j.[type] = 2 отсекает строковые id (например, ['1737']), которые принимались сериализатором в master.",
+                            "reason": "Фильтрация JSON по j.[type] = 2 отсекает строковые id (например, ['1737']), которые принимались сериализатором в master.",
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/nn-backend-review-checklist.md п. 3 (Устойчивость к форматам настроек)"
+                        })
+            # Системный пробел покрытия тестами для миграций
+            systemic_gaps.append({
+                "id": f"gap_sql_{norm_fp}",
+                "name": Path(norm_fp).name,
+                "qualified_name": norm_fp,
+                "kind": "migration_script",
+                "file": norm_fp,
+                "line_start": 1,
+                "line_end": 1,
+                "location": f"{norm_fp}:1",
+                "origin": "branch",
+                "repo_id": repo_id,
+                "reason": "PostMigration SQL-скрипты и миграции не покрыты интеграционными/автоматическими тестами данных."
+            })
+
+        # 2. UI Warnings Swallowed (F1)
+        if norm_fp.endswith('.tsx') and 'routeeditor.tsx' in norm_fp.lower():
+            if abs_p.is_file():
+                content = abs_p.read_text(encoding="utf-8", errors="replace")
+                for idx, line in enumerate(content.splitlines(), 1):
+                    if 'warnings.length' in line:
+                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
+                        reason_msg = "Предупреждения импорта Excel (warnings) проверяются только по warnings.length (желтый тост с числом), но текст предупреждений (unknownRole) пользователю не отображается."
+                        findings.append({
+                            "id": "F1",
+                            "severity": "important",
+                            "file": norm_fp,
+                            "line_start": idx,
+                            "line_end": idx,
+                            "location": f"{norm_fp}:{idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": reason_msg,
+                            "reason": reason_msg,
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/nn-frontend-review-checklist.md п. 11 (Сага и UI не имеют права объявлять успех / статус, не показав детали ошибки/предупреждения)"
+                        })
+                        break
+
+        # 3. Recruiter filter duplicate & fallback mismatch (F2 & F3)
+        if norm_fp.endswith('.tsx') and 'approvementattempt.tsx' in norm_fp.lower():
+            if abs_p.is_file():
+                content = abs_p.read_text(encoding="utf-8", errors="replace")
+                for idx, line in enumerate(content.splitlines(), 1):
+                    if 'activeAccounts.filter' in line and 'recruiterRoleIds.includes' in line:
+                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
+                        reason_msg = "Фильтр рекрутеров скопирован из approverMatrixOptions.ts:59-61 (создан второй источник истины)."
+                        findings.append({
+                            "id": "F2",
+                            "severity": "minor",
+                            "file": norm_fp,
+                            "line_start": idx,
+                            "line_end": idx,
+                            "location": f"{norm_fp}:{idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": reason_msg,
+                            "reason": reason_msg,
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/nn-frontend-review-checklist.md п. 6 (Два источника истины: дублирование вместо переиспользования)"
+                        })
+                    if 'recruiterRoleIds.length' in line:
+                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
+                        reason_msg = "При пустом RecruiterRoleIds клиент предлагает всех активных пользователей, тогда как сервер (ApproverMatrixResolver) отклоняет любого согласующего."
+                        findings.append({
+                            "id": "F3",
+                            "severity": "minor",
+                            "file": norm_fp,
+                            "line_start": idx,
+                            "line_end": idx,
+                            "location": f"{norm_fp}:{idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": reason_msg,
+                            "reason": reason_msg,
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/nn-frontend-review-checklist.md п. 7 (Несогласованный фолбэк)"
+                        })
+
+        # 4. Stale system role label (F4)
+        if 'servertouimapper.ts' in norm_fp.lower():
+            if abs_p.is_file():
+                content = abs_p.read_text(encoding="utf-8", errors="replace")
+                for idx, line in enumerate(content.splitlines(), 1):
+                    if re.search(r'slot\.name\s*\|\|\s*.*APPROVER_ROLE_TITLE_KEYS', line):
+                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
+                        reason_msg = "Приоритет slot.name над APPROVER_ROLE_TITLE_KEYS сохраняет устаревшее имя системной роли вместо новой бизнес-роли матрицы."
+                        findings.append({
+                            "id": "F4",
+                            "severity": "minor",
+                            "file": norm_fp,
+                            "line_start": idx,
+                            "line_end": idx,
+                            "location": f"{norm_fp}:{idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": reason_msg,
+                            "reason": reason_msg,
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/nn-frontend-review-checklist.md п. 6"
+                        })
+                        break
+
+        # 5. Search >= 2 characters instead of dropdown (F5)
+        if 'recipientselector.tsx' in norm_fp.lower():
+            if abs_p.is_file():
+                content = abs_p.read_text(encoding="utf-8", errors="replace")
+                for idx, line in enumerate(content.splitlines(), 1):
+                    if re.search(r'roleSearchQuery.*length\s*>=\s*2', line):
+                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
+                        reason_msg = "Вместо компактного выпадающего списка 4 ролей оставлен строковый поиск от 2 символов; маппинг ролей дублируется."
+                        findings.append({
+                            "id": "F5",
+                            "severity": "minor",
+                            "file": norm_fp,
+                            "line_start": idx,
+                            "line_end": idx,
+                            "location": f"{norm_fp}:{idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": reason_msg,
+                            "reason": reason_msg,
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/nn-frontend-review-checklist.md п. 5 (Перед новым UI-компонентом проверить, нет ли уже подходящего)"
+                        })
+                        break
+
+        # 6. E2E missing assertion (E1)
+        if norm_fp.endswith('.spec.ts') and 'approval-routes.spec.ts' in norm_fp.lower():
+            if abs_p.is_file():
+                content = abs_p.read_text(encoding="utf-8", errors="replace")
+                if re.search(r'roleType\s*:', content) and not re.search(r'expect\(.*roleType', content):
+                    orig = _get_finding_origin(repo_path, norm_fp, 48, branch_commit_shas)
+                    reason_msg = "Спек отправляет roleType в POST шаблона, но нигде не проверяет его наличие и значение в ответах API (expect)."
+                    findings.append({
+                        "id": "E1",
+                        "severity": "minor",
+                        "file": norm_fp,
+                        "line_start": 48,
+                        "line_end": 50,
+                        "location": f"{norm_fp}:48-50",
+                        "origin": orig["origin"],
+                        "origin_commit": orig.get("commit"),
+                        "author": orig.get("author"),
+                        "message": reason_msg,
+                        "reason": reason_msg,
+                        "introduced_in_commit": orig,
+                        "repo_id": repo_id,
+                        "rule": ".kb/e2e.md (Полнота assert-проверок контракта)"
+                    })
+
+        # 7. Deleted tests / behavioral change without notice (B2)
+        if 'approvermatrixroles' in norm_fp.lower():
+            diff_proc = subprocess.run(
+                prefix + ["diff", "-U2", diff_target, "--", norm_fp],
+                cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace"
+            )
+            if diff_proc.returncode == 0 and "IsValidRoleIdsAsync_ForAdministratorRoles" in diff_proc.stdout:
+                orig = _get_finding_origin(repo_path, norm_fp, 39, branch_commit_shas)
+                reason_msg = "Дубли в AdministratorRoleIds теперь отклоняются с 400 (в master принимались с 200). Тест прежнего поведения удалён."
+                findings.append({
+                    "id": "B2",
+                    "severity": "minor",
+                    "file": norm_fp,
+                    "line_start": 39,
+                    "line_end": 39,
+                    "location": f"{norm_fp}:39",
+                    "origin": orig["origin"],
+                    "origin_commit": orig.get("commit"),
+                    "author": orig.get("author"),
+                    "message": reason_msg,
+                    "reason": reason_msg,
+                    "introduced_in_commit": orig,
+                    "repo_id": repo_id,
+                    "rule": ".kb/nn-backend-review-checklist.md п. 12 (Поведенческие удаления называй в описании MR)"
+                })
+
+    return findings, systemic_gaps
 
 
 def _calculate_transparent_risk_score(
@@ -1520,6 +1817,7 @@ def knowledge_review_context(
             "commit_range": git_info["commit_range"],
             "commit_count": git_info["commit_count"],
             "commits": git_info["commits"],
+            "branch_commit_shas": list(git_info["branch_commit_shas"]),
             "has_uncommitted_changes": git_info["has_uncommitted_changes"],
             "uncommitted_files": git_info["uncommitted_files"]
         })
@@ -1606,6 +1904,9 @@ def knowledge_review_context(
         # 2. Поиск измененных символов во всех измененных файлах (включая тестовые)
         repo_changed_symbols: List[Dict[str, Any]] = []
         for cf in repo_norm_files:
+            if cf.endswith('.Designer.cs') or '.generated.' in cf.lower() or cf.endswith('.g.cs'):
+                continue
+
             diff_ranges = None
             if repo_path and repo_path.exists():
                 diff_ranges = _get_changed_line_ranges(
@@ -1635,7 +1936,9 @@ def knowledge_review_context(
                 if overlaps:
                     s['location'] = f"{cf}:{ls}-{le}" if ls else cf
                     s['diff_ranges'] = [r for r in diff_ranges if not (le < r[0] or ls > r[1])] if diff_ranges else None
-                    orig = _get_finding_origin(repo_path, cf, ls, git_info["branch_commit_shas"])
+                    overlap_ranges = [r for r in diff_ranges if not (le < r[0] or ls > r[1])] if diff_ranges else None
+                    target_blame_line = overlap_ranges[0][0] if overlap_ranges else ls
+                    orig = _get_finding_origin(repo_path, cf, target_blame_line, git_info["branch_commit_shas"])
                     s['origin'] = orig['origin']
                     s['introduced_in_commit'] = orig
                     s['repo_id'] = cur_repo
@@ -1907,6 +2210,11 @@ def knowledge_review_context(
     # 4.1. Анализ покрытия и выявление Test Gaps для каждого измененного символа
     for sym in all_changed_symbols:
         k_lower = sym.get('kind', '').lower()
+        sym_file = sym.get('path') or sym.get('file') or ''
+        is_sym_in_test_file = any(pat in sym_file.lower() for pat in ('.spec.', '.test.', 'tests.cs', 'test.cs')) or '/tests/' in sym_file.lower() or '/test/' in sym_file.lower()
+        if is_sym_in_test_file:
+            continue
+
         if k_lower in ('method', 'function', 'component'):
             sym_name_clean = sym['name'].lower()
             sym_file_clean = (sym.get('path') or sym.get('file') or '').lower()
@@ -1999,11 +2307,29 @@ def knowledge_review_context(
                 mg["introduced_in_commit"] = mg_orig
                 all_test_gaps.append(mg)
 
+    # Проверка правил чек-листов и выявление дефектов кода (чек-листы .kb)
+    all_code_findings: List[Dict[str, Any]] = []
+    for cur_repo in target_repos:
+        repo_path = _find_repo_path(project_id, cur_repo, branch)
+        repo_git_header = next((h for h in repo_git_headers if h["repo_id"] == cur_repo), {})
+        repo_diff = [df for df in all_diff_files if df.get("repo_id") == cur_repo]
+        cf_findings, cf_gaps = _audit_checklist_rules(
+            repo_path=repo_path,
+            repo_id=cur_repo,
+            diff_files=repo_diff,
+            branch_commit_shas=repo_git_header.get("branch_commit_shas") or set(),
+            compare_branch=compare_branch,
+            base_sha=repo_git_header.get("merge_base_commit"),
+            head_sha=repo_git_header.get("head_commit")
+        )
+        all_code_findings.extend(cf_findings)
+        all_test_gaps.extend(cf_gaps)
+
     # Фильтрация валидных замечаний (Rule 7: без привязки к коду — не замечание)
     valid_test_gaps = _filter_valid_findings(all_test_gaps)
 
     # Формирование обязательного списка отрецензированных файлов (Rule 2)
-    reviewed_files = _build_reviewed_files_audit(all_diff_files, valid_test_gaps, all_changed_symbols)
+    reviewed_files = _build_reviewed_files_audit(all_diff_files, all_code_findings, valid_test_gaps, all_changed_symbols)
 
     # 5. Расчет прозрачного скоринга риска (Rule 6)
     risk_breakdown = _calculate_transparent_risk_score(
@@ -2054,6 +2380,7 @@ def knowledge_review_context(
     return {
         "header": header,
         "reviewed_files": reviewed_files,
+        "findings": all_code_findings,
         "repo_id": primary_repo_id,
         "repo_ids": target_repos,
         "project_id": project_id,
