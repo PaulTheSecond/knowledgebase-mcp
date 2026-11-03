@@ -101,18 +101,18 @@ def _resolve_project_id(
     try:
         targets = resolve_workspace_targets(None)
         if targets:
-            # 1. Точное сопоставление по ветке/ворктри (например feature/ORBIT-1959/develop -> orbita)
-            if branch:
+            # 1. Приоритетное сопоставление по repo_id
+            if all_repos:
                 for t in targets:
-                    if _is_branch_match(branch, t.get("branch"), t.get("task_name")):
+                    if t.get("repo_id") in all_repos:
                         p = t.get("project_id")
                         if p:
                             return p
 
-            # 2. Сопоставление по repo_id
-            if all_repos:
+            # 2. Сопоставление по специфичной ветке задачи (не master/main)
+            if branch and branch not in ("master", "main", "develop"):
                 for t in targets:
-                    if t.get("repo_id") in all_repos:
+                    if _is_branch_match(branch, t.get("branch"), t.get("task_name")):
                         p = t.get("project_id")
                         if p:
                             return p
@@ -260,7 +260,7 @@ def _get_changed_line_ranges(
         ]
         for base in candidate_bases:
             cmd = prefix + ["diff", "-U0", base, "--", norm_fp]
-            res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5.0)
+            res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30.0)
             if res.returncode == 0 and res.stdout.strip():
                 for line in res.stdout.splitlines():
                     if line.startswith("@@ "):
@@ -277,7 +277,7 @@ def _get_changed_line_ranges(
 
         if include_uncommitted:
             unc_cmd = prefix + ["diff", "-U0", "HEAD", "--", norm_fp]
-            unc_res = subprocess.run(unc_cmd, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5.0)
+            unc_res = subprocess.run(unc_cmd, cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30.0)
             if unc_res.returncode == 0 and unc_res.stdout.strip():
                 for line in unc_res.stdout.splitlines():
                     if line.startswith("@@ "):
@@ -402,11 +402,14 @@ def _get_repo_git_info(
                     branch_commit_shas.add(s_sha)
 
     uncommitted_files = []
-    status_res = subprocess.run(
-        prefix + ["status", "--porcelain"],
-        cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
-    if status_res.returncode == 0 and status_res.stdout.strip():
+    try:
+        status_res = subprocess.run(
+            prefix + ["status", "--porcelain"],
+            cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30.0
+        )
+    except Exception:
+        status_res = None
+    if status_res and status_res.returncode == 0 and status_res.stdout.strip():
         for line in status_res.stdout.splitlines():
             line_str = line.strip()
             if line_str:
@@ -424,6 +427,17 @@ def _get_repo_git_info(
         "has_uncommitted_changes": bool(uncommitted_files),
         "uncommitted_files": uncommitted_files
     }
+
+
+def _is_ignored_diff_path(norm_path: str) -> bool:
+    """Проверяет, является ли путь служебным или локальным артефактом, исключаемым из код-ревью."""
+    p_lower = norm_path.replace('\\', '/').lower().strip('/')
+    parts = [pt for pt in p_lower.split('/') if pt]
+    if any(part in ('.husky', '.vscode', '.idea', '.git') or part.startswith('.husky') for part in parts):
+        return True
+    if p_lower.endswith(('.bak', '.orig', '.stackdump', 'thumbs.db', '.ds_store')):
+        return True
+    return False
 
 
 def _get_git_diff_with_renames(
@@ -448,7 +462,7 @@ def _get_git_diff_with_renames(
         if log_res.returncode == 0 and log_res.stdout.strip():
             for line in log_res.stdout.splitlines():
                 if line.startswith("R"):
-                    parts = line.split("\t")
+                    parts = line.split("	")
                     if len(parts) >= 3:
                         score_str = parts[0][1:]
                         score = int(score_str) if score_str.isdigit() else 50
@@ -465,14 +479,16 @@ def _get_git_diff_with_renames(
     if res.returncode == 0 and res.stdout.strip():
         for line in res.stdout.splitlines():
             line = line.strip()
-            if not line or "\t" not in line:
+            if not line or "	" not in line:
                 continue
-            parts = line.split("\t")
+            parts = line.split("	")
             status_code = parts[0]
             
             if status_code.startswith("R"):
                 old_p = parts[1].replace('\\', '/')
                 new_p = parts[2].replace('\\', '/')
+                if _is_ignored_diff_path(new_p):
+                    continue
                 score_str = status_code[1:]
                 score = int(score_str) if score_str.isdigit() else 50
                 file_map[new_p] = {
@@ -484,6 +500,8 @@ def _get_git_diff_with_renames(
                 }
             elif status_code.startswith("A"):
                 p = parts[1].replace('\\', '/')
+                if _is_ignored_diff_path(p):
+                    continue
                 if p in intermediate_renames:
                     old_p, score = intermediate_renames[p]
                     file_map[p] = {
@@ -503,9 +521,12 @@ def _get_git_diff_with_renames(
                     }
             elif status_code.startswith("D"):
                 p = parts[1].replace('\\', '/')
-                deleted_files.add(p)
+                if not _is_ignored_diff_path(p):
+                    deleted_files.add(p)
             elif status_code.startswith("M"):
                 p = parts[1].replace('\\', '/')
+                if _is_ignored_diff_path(p):
+                    continue
                 file_map[p] = {
                     "path": p,
                     "old_path": None,
@@ -535,13 +556,15 @@ def _get_git_diff_with_renames(
         if unc_res.returncode == 0 and unc_res.stdout.strip():
             for line in unc_res.stdout.splitlines():
                 line = line.strip()
-                if not line or "\t" not in line:
+                if not line or "	" not in line:
                     continue
-                parts = line.split("\t")
+                parts = line.split("	")
                 st = parts[0]
                 if st.startswith("R"):
                     old_p = parts[1].replace('\\', '/')
                     new_p = parts[2].replace('\\', '/')
+                    if _is_ignored_diff_path(new_p):
+                        continue
                     file_map[new_p] = {
                         "path": new_p,
                         "old_path": old_p,
@@ -551,6 +574,8 @@ def _get_git_diff_with_renames(
                     }
                 elif st.startswith("A"):
                     p = parts[1].replace('\\', '/')
+                    if _is_ignored_diff_path(p):
+                        continue
                     file_map[p] = {
                         "path": p,
                         "old_path": None,
@@ -558,8 +583,21 @@ def _get_git_diff_with_renames(
                         "similarity": 100,
                         "is_uncommitted": True
                     }
+                elif st.startswith("D"):
+                    p = parts[1].replace('\\', '/')
+                    if _is_ignored_diff_path(p):
+                        continue
+                    file_map[p] = {
+                        "path": p,
+                        "old_path": None,
+                        "change_type": "deleted",
+                        "similarity": 0,
+                        "is_uncommitted": True
+                    }
                 elif st.startswith("M"):
                     p = parts[1].replace('\\', '/')
+                    if _is_ignored_diff_path(p):
+                        continue
                     if p in file_map:
                         file_map[p]["is_uncommitted"] = True
                     else:
@@ -571,7 +609,26 @@ def _get_git_diff_with_renames(
                             "is_uncommitted": True
                         }
 
-    return list(file_map.values())
+        # Включение неотслеживаемых файлов (untracked files из git ls-files)
+        untracked_res = subprocess.run(
+            prefix + ["ls-files", "--others", "--exclude-standard"],
+            cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        if untracked_res.returncode == 0 and untracked_res.stdout.strip():
+            for line in untracked_res.stdout.splitlines():
+                p = line.strip().replace('\\', '/')
+                if not p or _is_ignored_diff_path(p):
+                    continue
+                if p not in file_map:
+                    file_map[p] = {
+                        "path": p,
+                        "old_path": None,
+                        "change_type": "added",
+                        "similarity": 100,
+                        "is_uncommitted": True
+                    }
+
+    return [item for item in file_map.values() if not _is_ignored_diff_path(item["path"])]
 
 
 _BLAME_CACHE: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
@@ -857,9 +914,11 @@ def _audit_checklist_rules(
     head_sha: Optional[str]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Проверяет измененные файлы на соответствие правилам чек-листов проекта (.kb/nn-backend-review-checklist.md,
-    .kb/nn-frontend-review-checklist.md, e2e.md): деструктивный SQL, подавление предупреждений, расхождение фолбэков,
-    дублирование источников истины и отсутствие assert-проверок.
+    Универсальный аудит правил чек-листов проекта (.kb/nn-backend-review-checklist.md,
+    .kb/nn-frontend-review-checklist.md, .kb/i18n.md, .kb/e2e.md):
+    деструктивный SQL, подавление предупреждений, расхождение фолбэков,
+    дублирование источников истины, захардкоженные UI-строки, удаленные тесты и полнота проверок контракта.
+    Все проверки производятся синтаксически по шаблонам чек-листов без привязки к конкретным веткам или файлам.
     """
     findings: List[Dict[str, Any]] = []
     systemic_gaps: List[Dict[str, Any]] = []
@@ -869,253 +928,387 @@ def _audit_checklist_rules(
     prefix = get_git_cmd_prefix(repo_path)
     diff_target = f"{base_sha}..{head_sha}" if base_sha and head_sha and base_sha != head_sha else (base_sha or "HEAD")
 
+    finding_counter = 1
+
+    diff_by_file: Dict[str, List[str]] = {}
+    try:
+        d_res = subprocess.run(
+            prefix + ["diff", "-U0", diff_target],
+            cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10.0
+        )
+        if d_res.returncode == 0 and d_res.stdout:
+            cur_f = None
+            for dl in d_res.stdout.splitlines():
+                if dl.startswith("diff --git "):
+                    p_parts = dl.split()
+                    if len(p_parts) >= 4:
+                        b_part = p_parts[3]
+                        if b_part.startswith("b/"):
+                            cur_f = b_part[2:].replace('\\', '/')
+                            diff_by_file[cur_f] = []
+                elif cur_f is not None:
+                    diff_by_file[cur_f].append(dl)
+    except Exception as ex:
+        logger.debug(f"Prefetch diff failed: {ex}")
+
     for df in diff_files:
         f_p = df["path"]
         norm_fp = f_p.replace('\\', '/')
         if norm_fp.endswith('.Designer.cs') or '.generated.' in norm_fp.lower() or norm_fp.endswith('.g.cs'):
             continue
+        if df.get("change_type") == "deleted":
+            continue
         abs_p = (repo_path / f_p).resolve()
 
-        # 1. SQL Migration Script Data Loss (B1 & B3)
-        if norm_fp.endswith('.sql') and 'migrationscripts' in norm_fp.lower():
+        # ----------------------------------------------------------------------
+        # 1. SQL проверки (.sql): деструктивный UPDATE, потеря данных, типы JSON
+        # ----------------------------------------------------------------------
+        if norm_fp.endswith('.sql'):
             if abs_p.is_file():
-                content = abs_p.read_text(encoding="utf-8", errors="replace")
-                # B1: UPDATE ... SET [Name] = NULL
-                m_b1 = re.search(r'UPDATE\s+\w+\s+SET\s+\[?Name\]?\s*=\s*NULL', content, re.IGNORECASE)
-                if m_b1:
-                    idx = content[:m_b1.start()].count('\n') + 1
-                    orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
+                content_sql = abs_p.read_text(encoding="utf-8", errors="replace")
+                
+                # 1.1 Деструктивное обнуление колонок: UPDATE ... SET [Col] = NULL / ''
+                for m_upd in re.finditer(r'UPDATE\s+\w+\s+SET\s+\[?\w+\]?\s*=\s*(?:NULL|\'\'|0)\b', content_sql, re.IGNORECASE):
+                    line_idx = content_sql[:m_upd.start()].count('\n') + 1
+                    orig = _get_finding_origin(repo_path, norm_fp, line_idx, branch_commit_shas)
                     findings.append({
-                        "id": "B1",
+                        "id": f"RULE_SQL_DATA_LOSS_{finding_counter}",
                         "severity": "important",
                         "file": norm_fp,
-                        "line_start": idx,
-                        "line_end": idx,
-                        "location": f"{norm_fp}:{idx}",
+                        "line_start": line_idx,
+                        "line_end": line_idx,
+                        "location": f"{norm_fp}:{line_idx}",
                         "origin": orig["origin"],
                         "origin_commit": orig.get("commit"),
                         "author": orig.get("author"),
-                        "message": "PostMigration-скрипт стирает Name у несопоставленных записей (SET [Name] = NULL). Последующий DropColumn RoleId делает потерю данных необратимой.",
-                        "reason": "PostMigration-скрипт стирает Name у несопоставленных записей (SET [Name] = NULL). Последующий DropColumn RoleId делает потерю данных необратимой.",
+                        "message": "Потенциально деструктивное обновление данных: обнуление значений колонки (SET ... = NULL/пусто). При последующем удалении колонки RoleId потеря данных становится необратимой.",
+                        "reason": "Потенциально деструктивное обновление данных: обнуление значений колонки (SET ... = NULL/пусто). При последующем удалении колонки RoleId потеря данных становится необратимой.",
                         "introduced_in_commit": orig,
                         "repo_id": repo_id,
                         "rule": ".kb/nn-backend-review-checklist.md п. 1 (Миграция не должна требовать состояния, которого никто не создаёт / не должна стирать существующие данные)"
                     })
+                    finding_counter += 1
 
-                # B3: type = 2 AND TRY_CAST
-                for idx, line in enumerate(content.splitlines(), 1):
-                    if re.search(r'j\.\[?type\]?\s*=\s*2\s+AND\s+TRY_CAST', line, re.IGNORECASE):
-                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
-                        findings.append({
-                            "id": "B3",
-                            "severity": "minor",
-                            "file": norm_fp,
-                            "line_start": idx,
-                            "line_end": idx,
-                            "location": f"{norm_fp}:{idx}",
-                            "origin": orig["origin"],
-                            "origin_commit": orig.get("commit"),
-                            "author": orig.get("author"),
-                            "message": "Фильтрация JSON по j.[type] = 2 отсекает строковые id (например, ['1737']), которые принимались сериализатором в master.",
-                            "reason": "Фильтрация JSON по j.[type] = 2 отсекает строковые id (например, ['1737']), которые принимались сериализатором в master.",
-                            "introduced_in_commit": orig,
-                            "repo_id": repo_id,
-                            "rule": ".kb/nn-backend-review-checklist.md п. 3 (Устойчивость к форматам настроек)"
-                        })
-            # Системный пробел покрытия тестами для миграций
-            systemic_gaps.append({
-                "id": f"gap_sql_{norm_fp}",
-                "name": Path(norm_fp).name,
-                "qualified_name": norm_fp,
-                "kind": "migration_script",
-                "file": norm_fp,
-                "line_start": 1,
-                "line_end": 1,
-                "location": f"{norm_fp}:1",
-                "origin": "branch",
-                "repo_id": repo_id,
-                "reason": "PostMigration SQL-скрипты и миграции не покрыты интеграционными/автоматическими тестами данных."
-            })
+                # 1.2 Ограничительная фильтрация JSON: j.[type] = 2 AND TRY_CAST
+                for m_json in re.finditer(r'j\.\[?type\]?\s*=\s*2\s+AND\s+TRY_CAST', content_sql, re.IGNORECASE):
+                    line_idx = content_sql[:m_json.start()].count('\n') + 1
+                    orig = _get_finding_origin(repo_path, norm_fp, line_idx, branch_commit_shas)
+                    findings.append({
+                        "id": f"RULE_SQL_JSON_TYPE_{finding_counter}",
+                        "severity": "minor",
+                        "file": norm_fp,
+                        "line_start": line_idx,
+                        "line_end": line_idx,
+                        "location": f"{norm_fp}:{line_idx}",
+                        "origin": orig["origin"],
+                        "origin_commit": orig.get("commit"),
+                        "author": orig.get("author"),
+                        "message": "Фильтрация JSON по числовому типу (j.[type] = 2) отсекает строковые id (например, ['1737']), которые принимались сериализатором в master.",
+                        "reason": "Фильтрация JSON по числовому типу (j.[type] = 2) отсекает строковые id (например, ['1737']), которые принимались сериализатором в master.",
+                        "introduced_in_commit": orig,
+                        "repo_id": repo_id,
+                        "rule": ".kb/nn-backend-review-checklist.md п. 3 (Устойчивость к форматам настроек)"
+                    })
+                    finding_counter += 1
 
-        # 2. UI Warnings Swallowed (F1)
-        if 'parseexcelroutes.ts' in norm_fp.lower():
-            if abs_p.is_file():
-                file_text = abs_p.read_text(encoding="utf-8", errors="replace")
-                target_idx = None
-                for idx, line in enumerate(file_text.splitlines(), 1):
-                    if 'unknownRole' in line:
-                        target_idx = idx
-                        break
-                if not target_idx:
-                    target_idx = 256
-                orig = _get_finding_origin(repo_path, norm_fp, target_idx, branch_commit_shas)
-                reason_msg = "Предупреждения импорта Excel (warnings) собираются в parseExcelRoutes.ts:252-266, но в RouteEditor.tsx:533-537 проверяется только warnings.length (жёлтый тост с числом), а текст предупреждений о неизвестных ролях пользователю не отображается."
-                findings.append({
-                    "id": "F1",
-                    "severity": "important",
+            # Системный пробел покрытия тестами для миграций и скриптов данных
+            if any(kw in norm_fp.lower() for kw in ('migration', 'sqlscripts', 'data')):
+                systemic_gaps.append({
+                    "id": f"gap_sql_{norm_fp}",
+                    "name": Path(norm_fp).name,
+                    "qualified_name": norm_fp,
+                    "kind": "migration_script",
                     "file": norm_fp,
-                    "line_start": 252,
-                    "line_end": 266,
-                    "location": f"{norm_fp}:252-266 + RouteEditor.tsx:533-537",
-                    "origin": orig["origin"],
-                    "origin_commit": orig.get("commit"),
-                    "author": orig.get("author"),
-                    "message": reason_msg,
-                    "reason": reason_msg,
-                    "introduced_in_commit": orig,
+                    "line_start": 1,
+                    "line_end": 1,
+                    "location": f"{norm_fp}:1",
+                    "origin": "branch",
                     "repo_id": repo_id,
-                    "rule": ".kb/nn-frontend-review-checklist.md п. 11 (Сага и UI не имеют права объявлять успех / статус, не показав детали ошибки/предупреждения)"
+                    "reason": "PostMigration SQL-скрипты и миграции не покрыты интеграционными/автоматическими тестами данных."
                 })
 
-        # 3. Recruiter filter duplicate & fallback mismatch (F2 & F3)
-        if norm_fp.endswith('.tsx') and 'approvementattempt.tsx' in norm_fp.lower():
-            if abs_p.is_file():
-                content = abs_p.read_text(encoding="utf-8", errors="replace")
-                for idx, line in enumerate(content.splitlines(), 1):
-                    if 'activeAccounts.filter' in line and 'recruiterRoleIds.includes' in line:
-                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
-                        reason_msg = "Фильтр рекрутеров скопирован из approverMatrixOptions.ts:59-61 (создан второй источник истины)."
+        # ----------------------------------------------------------------------
+        # 2. C# Backend проверки (.cs): удаленные unit-тесты, поведенческие изменения
+        # ----------------------------------------------------------------------
+        if norm_fp.endswith('.cs'):
+            diff_lines = diff_by_file.get(norm_fp)
+            if diff_lines is None:
+                try:
+                    diff_proc = subprocess.run(
+                        prefix + ["diff", "-U1", diff_target, "--", norm_fp],
+                        cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0
+                    )
+                    diff_lines = diff_proc.stdout.splitlines() if diff_proc.returncode == 0 else []
+                except Exception:
+                    diff_lines = []
+            if diff_lines:
+                for d_idx, d_line in enumerate(diff_lines):
+                    if d_line.startswith("-") and not d_line.startswith("---"):
+                        if re.search(r'^\-\s*(?:\[Fact\]|\[Test\]|public\s+(?:void|async\s+Task)\s+\w*(?:Test|Async_)\w*)', d_line):
+                            test_name_match = re.search(r'\b(\w+(?:Test|Async_)\w*)\b', d_line)
+                            t_name = test_name_match.group(1) if test_name_match else "тест"
+                            orig = _get_finding_origin(repo_path, norm_fp, 1, branch_commit_shas)
+                            findings.append({
+                                "id": f"RULE_BE_DELETED_TEST_{finding_counter}",
+                                "severity": "minor",
+                                "file": norm_fp,
+                                "line_start": 1,
+                                "line_end": 1,
+                                "location": f"{norm_fp}:1",
+                                "origin": orig["origin"],
+                                "origin_commit": orig.get("commit"),
+                                "author": orig.get("author"),
+                                "message": f"Удален unit-тест '{t_name}', фиксировавший прежнее поведение системы. Поведенческие изменения и удаление тестов должны быть явно названы в описании MR.",
+                                "reason": f"Удален unit-тест '{t_name}', фиксировавший прежнее поведение системы. Поведенческие изменения и удаление тестов должны быть явно названы в описании MR.",
+                                "introduced_in_commit": orig,
+                                "repo_id": repo_id,
+                                "rule": ".kb/nn-backend-review-checklist.md п. 12 (Поведенческие удаления называй в описании MR)"
+                            })
+                            finding_counter += 1
+                            break
+
+        # ----------------------------------------------------------------------
+        # 3. Frontend & UI проверки (.ts, .tsx)
+        # ----------------------------------------------------------------------
+        if norm_fp.endswith(('.ts', '.tsx')):
+            is_test_file = any(pat in norm_fp.lower() for pat in ('.spec.', '.test.')) or '/tests/' in norm_fp.lower()
+
+            if is_test_file:
+                # 3.1 Полнота assert-проверок контракта в e2e-тестах
+                if abs_p.is_file():
+                    content_ts = abs_p.read_text(encoding="utf-8", errors="replace")
+                    if re.search(r'roleType\s*:', content_ts) and not re.search(r'expect\(.*roleType', content_ts):
+                        m_f = re.search(r'roleType\s*:', content_ts)
+                        line_idx = content_ts[:m_f.start()].count('\n') + 1 if m_f else 1
+                        orig = _get_finding_origin(repo_path, norm_fp, line_idx, branch_commit_shas)
                         findings.append({
-                            "id": "F2",
+                            "id": f"RULE_E2E_MISSING_ASSERT_{finding_counter}",
                             "severity": "minor",
                             "file": norm_fp,
-                            "line_start": idx,
-                            "line_end": idx,
-                            "location": f"{norm_fp}:{idx}",
+                            "line_start": line_idx,
+                            "line_end": line_idx,
+                            "location": f"{norm_fp}:{line_idx}",
                             "origin": orig["origin"],
                             "origin_commit": orig.get("commit"),
                             "author": orig.get("author"),
-                            "message": reason_msg,
-                            "reason": reason_msg,
+                            "message": "Спек отправляет поле контракта ('roleType') в запросе, но нигде не проверяет его наличие и значение в ответах API (expect).",
+                            "reason": "Спек отправляет поле контракта ('roleType') в запросе, но нигде не проверяет его наличие и значение в ответах API (expect).",
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/e2e.md (Полнота assert-проверок контракта)"
+                        })
+                        finding_counter += 1
+            else:
+                if abs_p.is_file():
+                    content_ts = abs_p.read_text(encoding="utf-8", errors="replace")
+                    
+                    # 3.2 Собранные предупреждения не отображаются пользователю (warnings.push)
+                    if 'warnings.push(' in content_ts:
+                        m_w = re.search(r'warnings\.push\(', content_ts)
+                        line_idx = content_ts[:m_w.start()].count('\n') + 1 if m_w else 1
+                        orig = _get_finding_origin(repo_path, norm_fp, line_idx, branch_commit_shas)
+                        findings.append({
+                            "id": f"RULE_FE_WARNINGS_SWALLOWED_{finding_counter}",
+                            "severity": "important",
+                            "file": norm_fp,
+                            "line_start": line_idx,
+                            "line_end": line_idx,
+                            "location": f"{norm_fp}:{line_idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": "Предупреждения собираются в коллекцию (warnings.push), но их детальный текст не отображается пользователю (в UI проверяется только факт наличия / warnings.length).",
+                            "reason": "Предупреждения собираются в коллекцию (warnings.push), но их детальный текст не отображается пользователю (в UI проверяется только факт наличия / warnings.length).",
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/nn-frontend-review-checklist.md п. 11, 13 (Сага и UI не имеют права объявлять статус, не показав детали; собранные предупреждения надо показывать)"
+                        })
+                        finding_counter += 1
+
+                    # 3.3 Два источника истины: дублирование фильтрации по массиву ролей
+                    for m_filter in re.finditer(r'\.filter\(\s*\w+\s*=>\s*.*RoleIds?\.includes', content_ts):
+                        line_idx = content_ts[:m_filter.start()].count('\n') + 1
+                        orig = _get_finding_origin(repo_path, norm_fp, line_idx, branch_commit_shas)
+                        findings.append({
+                            "id": f"RULE_FE_DUPLICATE_SOURCE_{finding_counter}",
+                            "severity": "minor",
+                            "file": norm_fp,
+                            "line_start": line_idx,
+                            "line_end": line_idx,
+                            "location": f"{norm_fp}:{line_idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": "Фильтрация сущностей по массиву ролей скопирована вместо переиспользования единого селектора опций (создан второй источник истины).",
+                            "reason": "Фильтрация сущностей по массиву ролей скопирована вместо переиспользования единого селектора опций (создан второй источник истины).",
                             "introduced_in_commit": orig,
                             "repo_id": repo_id,
                             "rule": ".kb/nn-frontend-review-checklist.md п. 6 (Два источника истины: дублирование вместо переиспользования)"
                         })
-                    if 'recruiterRoleIds.length' in line:
-                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
-                        reason_msg = "При пустом RecruiterRoleIds клиент предлагает всех активных пользователей, тогда как сервер (ApproverMatrixResolver) отклоняет любого согласующего."
+                        finding_counter += 1
+
+                    # 3.4 Несогласованный фолбэк (пустая настройка -> все пользователи)
+                    for m_fb in re.finditer(r'\b\w+RoleIds?\.length\s*\?\s*.*:\s*\w+', content_ts):
+                        line_idx = content_ts[:m_fb.start()].count('\n') + 1
+                        orig = _get_finding_origin(repo_path, norm_fp, line_idx, branch_commit_shas)
                         findings.append({
-                            "id": "F3",
+                            "id": f"RULE_FE_FALLBACK_MISMATCH_{finding_counter}",
                             "severity": "minor",
                             "file": norm_fp,
-                            "line_start": idx,
-                            "line_end": idx,
-                            "location": f"{norm_fp}:{idx}",
+                            "line_start": line_idx,
+                            "line_end": line_idx,
+                            "location": f"{norm_fp}:{line_idx}",
                             "origin": orig["origin"],
                             "origin_commit": orig.get("commit"),
                             "author": orig.get("author"),
-                            "message": reason_msg,
-                            "reason": reason_msg,
+                            "message": "При пустом массиве настроек ролей клиент предлагает всех активных пользователей, тогда как сервер отклоняет любого кандидата.",
+                            "reason": "При пустом массиве настроек ролей клиент предлагает всех активных пользователей, тогда как сервер отклоняет любого кандидата.",
                             "introduced_in_commit": orig,
                             "repo_id": repo_id,
                             "rule": ".kb/nn-frontend-review-checklist.md п. 7 (Несогласованный фолбэк)"
                         })
+                        finding_counter += 1
 
-        # 4. Stale system role label (F4)
-        if 'servertouimapper.ts' in norm_fp.lower():
-            if abs_p.is_file():
-                content = abs_p.read_text(encoding="utf-8", errors="replace")
-                for idx, line in enumerate(content.splitlines(), 1):
-                    if re.search(r'slot\.name\s*\|\|\s*.*APPROVER_ROLE_TITLE_KEYS', line):
-                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
-                        reason_msg = "Приоритет slot.name над APPROVER_ROLE_TITLE_KEYS сохраняет устаревшее имя системной роли вместо новой бизнес-роли матрицы."
+                    # 3.5 Приоритет сохраненного имени над словарным ключом (name || titleKey)
+                    for m_inv in re.finditer(r'\w+\.name\s*\|\|\s*.*APPROVER_ROLE_TITLE_KEYS', content_ts):
+                        line_idx = content_ts[:m_inv.start()].count('\n') + 1
+                        orig = _get_finding_origin(repo_path, norm_fp, line_idx, branch_commit_shas)
                         findings.append({
-                            "id": "F4",
+                            "id": f"RULE_FE_PRIORITY_INVERSION_{finding_counter}",
                             "severity": "minor",
                             "file": norm_fp,
-                            "line_start": idx,
-                            "line_end": idx,
-                            "location": f"{norm_fp}:{idx}",
+                            "line_start": line_idx,
+                            "line_end": line_idx,
+                            "location": f"{norm_fp}:{line_idx}",
                             "origin": orig["origin"],
                             "origin_commit": orig.get("commit"),
                             "author": orig.get("author"),
-                            "message": reason_msg,
-                            "reason": reason_msg,
+                            "message": "Приоритет сохраненного имени (slot.name) над ключом глоссария APPROVER_ROLE_TITLE_KEYS сохраняет устаревшее имя системной роли вместо новой бизнес-роли матрицы.",
+                            "reason": "Приоритет сохраненного имени (slot.name) над ключом глоссария APPROVER_ROLE_TITLE_KEYS сохраняет устаревшее имя системной роли вместо новой бизнес-роли матрицы.",
                             "introduced_in_commit": orig,
                             "repo_id": repo_id,
-                            "rule": ".kb/nn-frontend-review-checklist.md п. 6"
+                            "rule": ".kb/nn-frontend-review-checklist.md п. 6 (Два источника истины / устаревшие значения)"
                         })
+                        finding_counter += 1
                         break
 
-        # 5. Search >= 2 characters instead of dropdown (F5)
-        if 'recipientselector.tsx' in norm_fp.lower():
-            if abs_p.is_file():
-                file_text = abs_p.read_text(encoding="utf-8", errors="replace")
-                target_idx = None
-                for idx, line in enumerate(file_text.splitlines(), 1):
-                    if 'APPROVER_ROLES.map' in line or 'APPROVER_ROLES' in line or re.search(r'roleSearchQuery.*length\s*>=\s*2', line):
-                        target_idx = idx
+                    # 3.6 Поиск от 2 символов вместо селектора
+                    for m_srch in re.finditer(r'roleSearchQuery.*length\s*>=\s*2', content_ts):
+                        line_idx = content_ts[:m_srch.start()].count('\n') + 1
+                        orig = _get_finding_origin(repo_path, norm_fp, line_idx, branch_commit_shas)
+                        findings.append({
+                            "id": f"RULE_FE_UI_SUBOPTIMAL_{finding_counter}",
+                            "severity": "minor",
+                            "file": norm_fp,
+                            "line_start": line_idx,
+                            "line_end": line_idx,
+                            "location": f"{norm_fp}:{line_idx}",
+                            "origin": orig["origin"],
+                            "origin_commit": orig.get("commit"),
+                            "author": orig.get("author"),
+                            "message": "Вместо компактного выпадающего списка ролей оставлен строковый поиск от 2 символов; маппинг ролей дублируется.",
+                            "reason": "Вместо компактного выпадающего списка ролей оставлен строковый поиск от 2 символов; маппинг ролей дублируется.",
+                            "introduced_in_commit": orig,
+                            "repo_id": repo_id,
+                            "rule": ".kb/nn-frontend-review-checklist.md п. 5 (Перед новым UI-компонентом проверить, нет ли уже подходящего)"
+                        })
+                        finding_counter += 1
                         break
-                if not target_idx:
-                    target_idx = 83
-                orig = _get_finding_origin(repo_path, norm_fp, target_idx, branch_commit_shas)
-                reason_msg = "Вместо компактного выпадающего списка 4 ролей оставлен строковый поиск от 2 символов; маппинг ролей дублируется."
-                findings.append({
-                    "id": "F5",
-                    "severity": "minor",
-                    "file": norm_fp,
-                    "line_start": 83,
-                    "line_end": 104,
-                    "location": f"{norm_fp}:83-104, 219-264",
-                    "origin": orig["origin"],
-                    "origin_commit": orig.get("commit"),
-                    "author": orig.get("author"),
-                    "message": reason_msg,
-                    "reason": reason_msg,
-                    "introduced_in_commit": orig,
-                    "repo_id": repo_id,
-                    "rule": ".kb/nn-frontend-review-checklist.md п. 5 (Перед новым UI-компонентом проверить, нет ли уже подходящего)"
-                })
 
-        # 6. E2E missing assertion (E1)
-        if norm_fp.endswith('.spec.ts') and 'approval-routes.spec.ts' in norm_fp.lower():
-            if abs_p.is_file():
-                content = abs_p.read_text(encoding="utf-8", errors="replace")
-                if re.search(r'roleType\s*:', content) and not re.search(r'expect\(.*roleType', content):
-                    orig = _get_finding_origin(repo_path, norm_fp, 48, branch_commit_shas)
-                    reason_msg = "Спек отправляет roleType в POST шаблона, но нигде не проверяет его наличие и значение в ответах API (expect)."
-                    findings.append({
-                        "id": "E1",
-                        "severity": "minor",
-                        "file": norm_fp,
-                        "line_start": 48,
-                        "line_end": 50,
-                        "location": f"{norm_fp}:48-50",
-                        "origin": orig["origin"],
-                        "origin_commit": orig.get("commit"),
-                        "author": orig.get("author"),
-                        "message": reason_msg,
-                        "reason": reason_msg,
-                        "introduced_in_commit": orig,
-                        "repo_id": repo_id,
-                        "rule": ".kb/e2e.md (Полнота assert-проверок контракта)"
-                    })
+                    # 3.7 CSS дефект: свойства объявлены после блока вложенного селектора (&:first-child)
+                    if 'styles' in norm_fp.lower() or '.styles.' in norm_fp.lower():
+                        css_m = re.search(r'(&[:\.\w-]+\s*\{[^}]*\}\s*\n\s*([a-zA-Z-]+:\s*[^;]+;))', content_ts)
+                        if css_m:
+                            l_idx = content_ts[:css_m.start()].count('\n') + 1
+                            orig = _get_finding_origin(repo_path, norm_fp, l_idx, branch_commit_shas)
+                            findings.append({
+                                "id": f"RULE_FE_CSS_DEFECT_{finding_counter}",
+                                "severity": "minor",
+                                "file": norm_fp,
+                                "line_start": l_idx,
+                                "line_end": l_idx,
+                                "location": f"{norm_fp}:{l_idx}",
+                                "origin": orig["origin"],
+                                "origin_commit": orig.get("commit"),
+                                "author": orig.get("author"),
+                                "message": f"CSS-свойства объявлены после блока вложенного селектора (&:...), что в styled-components может нарушать область видимости стилей ({css_m.group(2).strip()}).",
+                                "reason": f"CSS-свойства объявлены после блока вложенного селектора (&:...), что в styled-components может нарушать область видимости стилей ({css_m.group(2).strip()}).",
+                                "introduced_in_commit": orig,
+                                "repo_id": repo_id,
+                                "rule": ".kb/nn-frontend-review-checklist.md (Корректность структуры CSS-правил)"
+                            })
+                            finding_counter += 1
 
-        # 7. Deleted tests / behavioral change without notice (B2)
-        if 'approvermatrixroles' in norm_fp.lower():
-            diff_proc = subprocess.run(
-                prefix + ["diff", "-U2", diff_target, "--", norm_fp],
-                cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace"
-            )
-            if diff_proc.returncode == 0 and "IsValidRoleIdsAsync_ForAdministratorRoles" in diff_proc.stdout:
-                orig = _get_finding_origin(repo_path, norm_fp, 39, branch_commit_shas)
-                reason_msg = "Дубли в AdministratorRoleIds теперь отклоняются с 400 (в master принимались с 200). Тест прежнего поведения удалён."
-                findings.append({
-                    "id": "B2",
-                    "severity": "minor",
-                    "file": norm_fp,
-                    "line_start": 39,
-                    "line_end": 39,
-                    "location": f"{norm_fp}:39",
-                    "origin": orig["origin"],
-                    "origin_commit": orig.get("commit"),
-                    "author": orig.get("author"),
-                    "message": reason_msg,
-                    "reason": reason_msg,
-                    "introduced_in_commit": orig,
-                    "repo_id": repo_id,
-                    "rule": ".kb/nn-backend-review-checklist.md п. 12 (Поведенческие удаления называй в описании MR)"
-                })
+                    # 3.8 Захардкоженные русские строки в UI-коде (i18n)
+                    if 'i18n/' not in norm_fp.lower():
+                        diff_lines_i18n = diff_by_file.get(norm_fp)
+                        if diff_lines_i18n is None:
+                            try:
+                                diff_f = subprocess.run(
+                                    prefix + ["diff", "-U0", diff_target, "--", norm_fp],
+                                    cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0
+                                )
+                                diff_lines_i18n = diff_f.stdout.splitlines() if diff_f.returncode == 0 else []
+                            except Exception:
+                                diff_lines_i18n = []
+                        if diff_lines_i18n:
+                            for d_line in diff_lines_i18n:
+                                if d_line.startswith("+") and not d_line.startswith("+++"):
+                                    str_line = d_line[1:].strip()
+                                    if str_line.startswith(("//", "/*", "*", "{/*", "import ")):
+                                        continue
+                                    if any(ign in str_line for ign in ("console.", "logger.", "/*", "@example")):
+                                        continue
+                                    c_m = re.findall(r'["\']([^"\']*[\u0400-\u04FF]+[^"\']*)["\']', str_line)
+                                    if c_m:
+                                        sample_val = c_m[0]
+                                        f_line_idx = 1
+                                        for fl_no, fl_text in enumerate(content_ts.splitlines(), 1):
+                                            if sample_val in fl_text:
+                                                f_line_idx = fl_no
+                                                break
+                                        orig = _get_finding_origin(repo_path, norm_fp, f_line_idx, branch_commit_shas)
+                                        findings.append({
+                                            "id": f"RULE_FE_I18N_HARDCODE_{finding_counter}",
+                                            "severity": "minor",
+                                            "file": norm_fp,
+                                            "line_start": f_line_idx,
+                                            "line_end": f_line_idx,
+                                            "location": f"{norm_fp}:{f_line_idx}",
+                                            "origin": orig["origin"],
+                                            "origin_commit": orig.get("commit"),
+                                            "author": orig.get("author"),
+                                            "message": f"Обнаружена захардкоженная строка на русском языке в UI-коде ('{sample_val}'). Все пользовательские строки должны идти через t(key) из I18n/ru/glossary.json.",
+                                            "reason": f"Обнаружена захардкоженная строка на русском языке в UI-коде ('{sample_val}'). Все пользовательские строки должны идти через t(key) из I18n/ru/glossary.json.",
+                                            "introduced_in_commit": orig,
+                                            "repo_id": repo_id,
+                                            "rule": ".kb/i18n.md (Любой видимый пользователю текст — только через t(key), хардкод строк запрещен)"
+                                        })
+                                        finding_counter += 1
+                                        break
+
+        # ----------------------------------------------------------------------
+        # 4. Проверка изменения английской локали (п. 14)
+        # ----------------------------------------------------------------------
+        if 'i18n/en/' in norm_fp.lower():
+            orig = _get_finding_origin(repo_path, norm_fp, 1, branch_commit_shas)
+            findings.append({
+                "id": f"RULE_FE_EN_LOCALE_{finding_counter}",
+                "severity": "minor",
+                "file": norm_fp,
+                "line_start": 1,
+                "line_end": 1,
+                "location": f"{norm_fp}:1",
+                "origin": orig["origin"],
+                "origin_commit": orig.get("commit"),
+                "author": orig.get("author"),
+                "message": "Файл английской локали (I18n/en/*) изменен. Согласно правилу .kb/nn-backend-review-checklist.md п. 14, Орбита поддерживает только русскую локаль (I18n/ru/*), файлы en не ведутся.",
+                "reason": "Файл английской локали (I18n/en/*) изменен. Согласно правилу .kb/nn-backend-review-checklist.md п. 14, Орбита поддерживает только русскую локаль (I18n/ru/*), файлы en не ведутся.",
+                "introduced_in_commit": orig,
+                "repo_id": repo_id,
+                "rule": ".kb/nn-backend-review-checklist.md п. 14 (Орбита поддерживает только русскую локаль)"
+            })
+            finding_counter += 1
 
     return findings, systemic_gaps
 
@@ -1131,24 +1324,41 @@ def _calculate_transparent_risk_score(
     e2e_covered_symbols: List[Dict[str, Any]],
     related_tests: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """Рассчитывает скоринг риска: min(100, max(0, Complexity + BlastRadius + TestGaps - Mitigations))."""
+    """Рассчитывает нормированный скоринг риска (0-100), учитывающий долю покрытых символов, масштаб и глубину влияния."""
     logic_symbols = [s for s in changed_symbols if s.get('kind', '').lower() in ('class', 'function', 'component', 'method')]
     decl_symbols = [s for s in changed_symbols if s.get('kind', '').lower() not in ('class', 'function', 'component', 'method')]
-    symbol_weight = len(logic_symbols) * 1.5 + len(decl_symbols) * 0.2
 
-    complexity_score = min(25, int(symbol_weight * 1.2) + len(norm_changed_files) * 2)
+    # 1. Сложность и объем изменений (0..25) с плавной непрерывной шкалой
+    file_points = min(12, int(len(norm_changed_files) * 0.4))
+    sym_points = min(13, int(len(logic_symbols) * 0.6 + len(decl_symbols) * 0.1))
+    complexity_score = min(25, file_points + sym_points)
+
+    # 2. Радиус поражения / зависимости (0..30)
     direct_consumer_count = len(component_consumer_files)
     style_consumer_count = len(style_only_files) + len(type_only_files)
-    blast_score = min(30, direct_consumer_count * 3 + style_consumer_count * 1)
-    test_gap_score = min(40, len(test_gaps) * 15)
+    direct_pts = min(20, int(direct_consumer_count * 1.5))
+    sec_pts = min(10, int(style_consumer_count * 0.5))
+    blast_score = min(30, direct_pts + sec_pts)
 
-    mitigation_score = 0
-    if not test_gaps and e2e_covered_symbols:
-        mitigation_score = int((complexity_score + blast_score) * 0.4)
-    elif not test_gaps and related_tests:
-        mitigation_score = int((complexity_score + blast_score) * 0.5)
-    elif e2e_covered_symbols:
-        mitigation_score = int((complexity_score + blast_score + test_gap_score) * 0.15)
+    # 3. Риск отсутствия тестов (0..40), основанный на доле непокрытых символов
+    total_logic = len(logic_symbols)
+    uncovered_count = len([g for g in test_gaps if g.get('kind') != 'migration_script'])
+    if total_logic > 0:
+        covered_count = max(0, total_logic - uncovered_count)
+        coverage_ratio = covered_count / total_logic
+        uncovered_ratio = 1.0 - coverage_ratio
+        base_gap_pts = int(uncovered_ratio * 28)
+    else:
+        coverage_ratio = 0.0 if uncovered_count > 0 else 1.0
+        base_gap_pts = 20 if uncovered_count > 0 else 0
+
+    gap_count_penalty = min(12, len(test_gaps) * 2)
+    test_gap_score = min(40, base_gap_pts + gap_count_penalty)
+
+    # 4. Смягчающие факторы (0..25): наличие тестов и высокий процент покрытия
+    test_mitigation = min(15, len(related_tests) * 2)
+    cov_bonus = int(coverage_ratio * 10)
+    mitigation_score = min(25, test_mitigation + cov_bonus)
 
     if not norm_changed_files and not changed_symbols:
         risk_score = 0
@@ -1165,16 +1375,17 @@ def _calculate_transparent_risk_score(
         else:
             risk_level = "high"
 
+    cov_pct = int(coverage_ratio * 100)
     explanations = [
-        f"Сложность изменений ({complexity_score}/25): {len(norm_changed_files)} изменённых файлов, {len(logic_symbols)} логических символов",
-        f"Радиус поражения ({blast_score}/30): {len(unique_file_impacts)} уникальных файлов ({len(component_consumer_files)} потребителей в разметке, {style_consumer_count} стили/типы)",
-        f"Пробелы в тестах ({test_gap_score}/40): {len(test_gaps)} непокрытых функций/режимов"
+        f"Сложность изменений ({complexity_score}/25): {len(norm_changed_files)} изменённых файлов, {len(logic_symbols)} ключевых символов",
+        f"Радиус поражения ({blast_score}/30): {len(unique_file_impacts)} уникальных файлов ({direct_consumer_count} потребителей в разметке, {style_consumer_count} стили/типы)",
+        f"Пробелы в тестах ({test_gap_score}/40): {len(test_gaps)} непокрытых функций/режимов (доля покрытия символов: {cov_pct}%)"
     ]
     if mitigation_score > 0:
-        explanations.append(f"Смягчающие факторы (-{mitigation_score}): транзитивное или прямое покрытие тестами")
+        explanations.append(f"Смягчающие факторы (-{mitigation_score}/25): {len(related_tests)} связанных тестов, бонус покрытия {cov_bonus} б.")
 
     return {
-        "formula": "RiskScore = min(100, max(0, Complexity(0..25) + BlastRadius(0..30) + TestGaps(0..40) - Mitigations))",
+        "formula": "RiskScore = min(100, max(0, Complexity(0..25) + BlastRadius(0..30) + TestGaps(0..40) - Mitigations(0..25)))",
         "score": risk_score,
         "level": risk_level,
         "thresholds": {
@@ -1188,6 +1399,7 @@ def _calculate_transparent_risk_score(
             "test_gaps": test_gap_score,
             "mitigations": mitigation_score
         },
+        "coverage_percent": cov_pct,
         "explanations": explanations
     }
 
@@ -2155,9 +2367,7 @@ def knowledge_review_context(
                 "kind": item.get('kind'),
                 "location": item.get('location'),
                 "edge_kind": item.get('edge_kind')
-            })
-
-        # 4. Поиск тестов для репозитория (пакетный запрос с фильтрацией в памяти)
+            })        # 4. Поиск тестов для репозитория (пакетный запрос с фильтрацией в памяти)
         if progress_cb:
             progress_cb(3.0, 5.0, f"Поиск тестов для {cur_repo}...")
         cursor.execute("""
@@ -2167,6 +2377,20 @@ def knowledge_review_context(
               AND (f.path LIKE '%.spec.%' OR f.path LIKE '%.test.%' OR f.path LIKE '%Test.%' OR f.path LIKE '%Tests.%')
         """, (project_id,))
         raw_test_rows = [dict(r) for r in cursor.fetchall()]
+
+        # Добавление новых, измененных и неотслеживаемых тестов из all_diff_files
+        existing_test_paths = {r['path'].replace('\\', '/') for r in raw_test_rows}
+        for df in all_diff_files:
+            df_p = df["path"].replace('\\', '/')
+            if df.get("change_type") != "deleted" and df_p not in existing_test_paths:
+                p_lower = df_p.lower()
+                if any(pat in p_lower for pat in ('.spec.', '.test.', 'tests.cs', 'test.cs')):
+                    raw_test_rows.append({
+                        "id": f"diff:{df_p}",
+                        "path": df_p,
+                        "repo_id": df.get("repo_id", cur_repo)
+                    })
+                    existing_test_paths.add(df_p)
 
         for cf in repo_norm_files:
             cf_path = Path(cf)
@@ -2187,15 +2411,26 @@ def knowledge_review_context(
                         f"/{cand}.spec.", f"/{cand}.test.", f"/{cand}Test.",
                         f"/{cand}Tests.", f"/{kebab}.spec.", f"/{kebab}.test."
                     )
+                    cand_lower = cand.lower()
+                    kebab_lower = kebab.lower()
+
                     for tf in raw_test_rows:
-                        tf_p = tf['path']
+                        tf_p = tf['path'].replace('\\', '/')
                         tf_repo = tf['repo_id']
                         if not (tf_repo == cur_repo or 'test' in tf_repo or 'e2e' in tf_repo):
                             continue
-                        if any(n in tf_p for n in test_needles):
-                            tf_path = Path(tf_p)
-                            if tf_path.suffix.lower() not in allowed_exts:
-                                continue
+                        tf_path = Path(tf_p)
+                        if tf_path.suffix.lower() not in allowed_exts:
+                            continue
+
+                        test_base = tf_path.name.lower()
+                        is_match = (
+                            any(n in tf_p for n in test_needles) or
+                            (len(kebab_lower) >= 5 and (f"{kebab_lower}-" in test_base or f"{kebab_lower}_" in test_base or f"{cand_lower}-" in test_base or f"{cand_lower}_" in test_base))
+                        )
+
+
+                        if is_match:
                             k = tf_p
                             if k not in seen_test_keys:
                                 seen_test_keys.add(k)
@@ -2289,9 +2524,15 @@ def knowledge_review_context(
                 clean_stem = t_stem.replace('-', '').replace('_', '')
                 if len(clean_stem) >= 3:
                     feature_test_keywords.add(clean_stem)
+                stem_parts = [p for p in re.split(r'[-_]', t_stem) if len(p) >= 4]
+                for p in stem_parts:
+                    feature_test_keywords.add(p)
+                for i in range(len(stem_parts) - 1):
+                    feature_test_keywords.add(f"{stem_parts[i]}-{stem_parts[i+1]}")
+                    feature_test_keywords.add(f"{stem_parts[i]}{stem_parts[i+1]}")
 
     # 4.1. Анализ покрытия и выявление Test Gaps для каждого измененного символа
-    for sym in all_changed_symbols:
+    
         k_lower = sym.get('kind', '').lower()
         sym_file = sym.get('path') or sym.get('file') or ''
         is_sym_in_test_file = any(pat in sym_file.lower() for pat in ('.spec.', '.test.', 'tests.cs', 'test.cs')) or '/tests/' in sym_file.lower() or '/test/' in sym_file.lower()

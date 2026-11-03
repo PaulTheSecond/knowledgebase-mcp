@@ -2,6 +2,11 @@ import argparse
 import json
 import os
 import sys
+
+# Предотвращаем повторный импорт main.py при запуске через `python -m knowledge_mcp.main`
+if __name__ == "__main__":
+    sys.modules["knowledge_mcp.main"] = sys.modules["__main__"]
+
 import logging
 from contextlib import asynccontextmanager
 import uvicorn

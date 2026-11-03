@@ -7,6 +7,30 @@ from typing import Optional, List, Union
 
 logger = logging.getLogger(__name__)
 
+def _resolve_case_insensitive(path: Path) -> Path:
+    """Разрешает путь без учета регистра для кросс-платформенной надежности на Linux в томах NTFS."""
+    if path.exists():
+        return path
+    parts = list(path.parts)
+    if not parts:
+        return path
+    curr = Path(parts[0])
+    for part in parts[1:]:
+        found = False
+        if curr.is_dir():
+            try:
+                for child in curr.iterdir():
+                    if child.name.lower() == part.lower():
+                        curr = child
+                        found = True
+                        break
+            except Exception:
+                pass
+        if not found:
+            curr = curr / part
+    return curr
+
+
 def resolve_git_dir(repo_path: Union[str, Path]) -> Optional[Path]:
     """Разрешает реальный путь к .git директории, включая указатели worktree (gitdir: ...).
     
@@ -39,14 +63,21 @@ def resolve_git_dir(repo_path: Union[str, Path]) -> Optional[Path]:
                             cand2 = (parent / tail).resolve()
                             if cand2.exists():
                                 return cand2
+                            cand2_ci = _resolve_case_insensitive(parent / tail)
+                            if cand2_ci.exists():
+                                return cand2_ci.resolve()
                         elif (parent / "worktrees").exists():
                             cand3 = (parent / "worktrees" / tail).resolve()
                             if cand3.exists():
                                 return cand3
+                            cand3_ci = _resolve_case_insensitive(parent / "worktrees" / tail)
+                            if cand3_ci.exists():
+                                return cand3_ci.resolve()
                                 
                 # 3. Кросс-платформенное сопоставление через repos/
                 if "repos/" in clean_raw.lower():
-                    rel_tail = clean_raw.lower().split("repos/", 1)[-1].lstrip("/")
+                    idx = clean_raw.lower().find("repos/") + len("repos/")
+                    rel_tail = clean_raw[idx:].lstrip("/")
                     candidates = []
                     repos_env = os.environ.get("REPOS_DIR")
                     if repos_env:
@@ -55,6 +86,9 @@ def resolve_git_dir(repo_path: Union[str, Path]) -> Optional[Path]:
                     for base in candidates:
                         if base.exists():
                             return base.resolve()
+                        base_ci = _resolve_case_insensitive(base)
+                        if base_ci.exists():
+                            return base_ci.resolve()
     except Exception as e:
         logger.debug(f"Error resolving git_dir for {repo_path}: {e}")
     return None
