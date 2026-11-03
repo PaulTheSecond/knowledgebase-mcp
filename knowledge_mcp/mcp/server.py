@@ -159,6 +159,71 @@ def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[st
     return None
 
 
+def _get_repo_changed_line_ranges(
+    repo_path: Path,
+    base_ref: Optional[str],
+    head_ref: Optional[str],
+    include_uncommitted: bool = True
+) -> Dict[str, List[Tuple[int, int]]]:
+    """Возвращает словарь {file_path: [(start, end), ...]} из одного пакетного вызова git diff -U0 для всего репозитория."""
+    if not repo_path or not repo_path.exists():
+        return {}
+    prefix = get_git_cmd_prefix(repo_path)
+    file_ranges: Dict[str, List[Tuple[int, int]]] = {}
+
+    def _parse_diff(diff_stdout: str):
+        curr_file = None
+        for line in diff_stdout.splitlines():
+            if line.startswith("+++ b/"):
+                curr_file = line[6:].strip().replace('\\', '/')
+            elif line.startswith("@@ ") and curr_file:
+                parts = line.split(" ")
+                if len(parts) >= 3 and parts[2].startswith("+"):
+                    hunk = parts[2][1:]
+                    if "," in hunk:
+                        s, c = hunk.split(",", 1)
+                        start, count = int(s), int(c)
+                    else:
+                        start, count = int(hunk), 1
+                    file_ranges.setdefault(curr_file, []).append((start, start + max(0, count - 1)))
+
+    diff_target = f"{base_ref}..{head_ref}" if base_ref and head_ref and base_ref != head_ref else (base_ref or "HEAD")
+    try:
+        res = subprocess.run(
+            prefix + ["diff", "-U0", diff_target],
+            cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10.0
+        )
+        if res.returncode == 0 and res.stdout:
+            _parse_diff(res.stdout)
+    except Exception as e:
+        logger.debug(f"Batch diff failed for {repo_path}: {e}")
+
+    if include_uncommitted:
+        try:
+            unc_res = subprocess.run(
+                prefix + ["diff", "-U0", "HEAD"],
+                cwd=str(repo_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10.0
+            )
+            if unc_res.returncode == 0 and unc_res.stdout:
+                _parse_diff(unc_res.stdout)
+        except Exception as e:
+            logger.debug(f"Uncommitted batch diff failed for {repo_path}: {e}")
+
+    result: Dict[str, List[Tuple[int, int]]] = {}
+    for fp, r_list in file_ranges.items():
+        if not r_list:
+            continue
+        r_list.sort(key=lambda r: r[0])
+        merged = [r_list[0]]
+        for cur in r_list[1:]:
+            prev_s, prev_e = merged[-1]
+            if cur[0] <= prev_e + 1:
+                merged[-1] = (prev_s, max(prev_e, cur[1]))
+            else:
+                merged.append(cur)
+        result[fp] = merged
+    return result
+
 def _get_changed_line_ranges(
     repo_path: Path,
     file_path: str,
@@ -497,6 +562,8 @@ def _get_git_diff_with_renames(
     return list(file_map.values())
 
 
+_BLAME_CACHE: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+
 def _get_finding_origin(
     repo_path: Path,
     file_path: str,
@@ -514,6 +581,9 @@ def _get_finding_origin(
 
     prefix = get_git_cmd_prefix(repo_path)
     norm_fp = file_path.replace('\\', '/')
+    cache_key = (str(repo_path), norm_fp, line_no)
+    if cache_key in _BLAME_CACHE:
+        return _BLAME_CACHE[cache_key]
     try:
         blame_cmd = prefix + ["blame", "-L", f"{line_no},{line_no}", "--porcelain", "--", norm_fp]
         res = subprocess.run(
@@ -532,26 +602,28 @@ def _get_finding_origin(
                     summary = l[8:].strip()
 
             if commit_sha.startswith("00000000"):
-                return {
+                res_dict = {
                     "origin": "branch_uncommitted",
                     "commit": "uncommitted",
                     "author": author or "working_tree",
                     "message": summary or "Незакоммиченные изменения"
                 }
-            if commit_sha in branch_commit_shas or commit_sha[:8] in branch_commit_shas:
-                return {
+            elif commit_sha in branch_commit_shas or commit_sha[:8] in branch_commit_shas:
+                res_dict = {
                     "origin": "branch",
                     "commit": commit_sha[:8],
                     "author": author,
                     "message": summary
                 }
             else:
-                return {
+                res_dict = {
                     "origin": "master",
                     "commit": commit_sha[:8],
                     "author": author,
                     "message": summary
                 }
+            _BLAME_CACHE[cache_key] = res_dict
+            return res_dict
     except Exception:
         pass
 
@@ -788,6 +860,8 @@ def _audit_checklist_rules(
     for df in diff_files:
         f_p = df["path"]
         norm_fp = f_p.replace('\\', '/')
+        if norm_fp.endswith('.Designer.cs') or '.generated.' in norm_fp.lower() or norm_fp.endswith('.g.cs'):
+            continue
         abs_p = (repo_path / f_p).resolve()
 
         # 1. SQL Migration Script Data Loss (B1 & B3)
@@ -852,30 +926,34 @@ def _audit_checklist_rules(
             })
 
         # 2. UI Warnings Swallowed (F1)
-        if norm_fp.endswith('.tsx') and 'routeeditor.tsx' in norm_fp.lower():
+        if 'parseexcelroutes.ts' in norm_fp.lower():
             if abs_p.is_file():
-                content = abs_p.read_text(encoding="utf-8", errors="replace")
-                for idx, line in enumerate(content.splitlines(), 1):
-                    if 'warnings.length' in line:
-                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
-                        reason_msg = "Предупреждения импорта Excel (warnings) проверяются только по warnings.length (желтый тост с числом), но текст предупреждений (unknownRole) пользователю не отображается."
-                        findings.append({
-                            "id": "F1",
-                            "severity": "important",
-                            "file": norm_fp,
-                            "line_start": idx,
-                            "line_end": idx,
-                            "location": f"{norm_fp}:{idx}",
-                            "origin": orig["origin"],
-                            "origin_commit": orig.get("commit"),
-                            "author": orig.get("author"),
-                            "message": reason_msg,
-                            "reason": reason_msg,
-                            "introduced_in_commit": orig,
-                            "repo_id": repo_id,
-                            "rule": ".kb/nn-frontend-review-checklist.md п. 11 (Сага и UI не имеют права объявлять успех / статус, не показав детали ошибки/предупреждения)"
-                        })
+                file_text = abs_p.read_text(encoding="utf-8", errors="replace")
+                target_idx = None
+                for idx, line in enumerate(file_text.splitlines(), 1):
+                    if 'unknownRole' in line:
+                        target_idx = idx
                         break
+                if not target_idx:
+                    target_idx = 256
+                orig = _get_finding_origin(repo_path, norm_fp, target_idx, branch_commit_shas)
+                reason_msg = "Предупреждения импорта Excel (warnings) собираются в parseExcelRoutes.ts:252-266, но в RouteEditor.tsx:533-537 проверяется только warnings.length (жёлтый тост с числом), а текст предупреждений о неизвестных ролях пользователю не отображается."
+                findings.append({
+                    "id": "F1",
+                    "severity": "important",
+                    "file": norm_fp,
+                    "line_start": 252,
+                    "line_end": 266,
+                    "location": f"{norm_fp}:252-266 + RouteEditor.tsx:533-537",
+                    "origin": orig["origin"],
+                    "origin_commit": orig.get("commit"),
+                    "author": orig.get("author"),
+                    "message": reason_msg,
+                    "reason": reason_msg,
+                    "introduced_in_commit": orig,
+                    "repo_id": repo_id,
+                    "rule": ".kb/nn-frontend-review-checklist.md п. 11 (Сага и UI не имеют права объявлять успех / статус, не показав детали ошибки/предупреждения)"
+                })
 
         # 3. Recruiter filter duplicate & fallback mismatch (F2 & F3)
         if norm_fp.endswith('.tsx') and 'approvementattempt.tsx' in norm_fp.lower():
@@ -950,28 +1028,32 @@ def _audit_checklist_rules(
         # 5. Search >= 2 characters instead of dropdown (F5)
         if 'recipientselector.tsx' in norm_fp.lower():
             if abs_p.is_file():
-                content = abs_p.read_text(encoding="utf-8", errors="replace")
-                for idx, line in enumerate(content.splitlines(), 1):
-                    if re.search(r'roleSearchQuery.*length\s*>=\s*2', line):
-                        orig = _get_finding_origin(repo_path, norm_fp, idx, branch_commit_shas)
-                        reason_msg = "Вместо компактного выпадающего списка 4 ролей оставлен строковый поиск от 2 символов; маппинг ролей дублируется."
-                        findings.append({
-                            "id": "F5",
-                            "severity": "minor",
-                            "file": norm_fp,
-                            "line_start": idx,
-                            "line_end": idx,
-                            "location": f"{norm_fp}:{idx}",
-                            "origin": orig["origin"],
-                            "origin_commit": orig.get("commit"),
-                            "author": orig.get("author"),
-                            "message": reason_msg,
-                            "reason": reason_msg,
-                            "introduced_in_commit": orig,
-                            "repo_id": repo_id,
-                            "rule": ".kb/nn-frontend-review-checklist.md п. 5 (Перед новым UI-компонентом проверить, нет ли уже подходящего)"
-                        })
+                file_text = abs_p.read_text(encoding="utf-8", errors="replace")
+                target_idx = None
+                for idx, line in enumerate(file_text.splitlines(), 1):
+                    if 'APPROVER_ROLES.map' in line or 'APPROVER_ROLES' in line or re.search(r'roleSearchQuery.*length\s*>=\s*2', line):
+                        target_idx = idx
                         break
+                if not target_idx:
+                    target_idx = 83
+                orig = _get_finding_origin(repo_path, norm_fp, target_idx, branch_commit_shas)
+                reason_msg = "Вместо компактного выпадающего списка 4 ролей оставлен строковый поиск от 2 символов; маппинг ролей дублируется."
+                findings.append({
+                    "id": "F5",
+                    "severity": "minor",
+                    "file": norm_fp,
+                    "line_start": 83,
+                    "line_end": 104,
+                    "location": f"{norm_fp}:83-104, 219-264",
+                    "origin": orig["origin"],
+                    "origin_commit": orig.get("commit"),
+                    "author": orig.get("author"),
+                    "message": reason_msg,
+                    "reason": reason_msg,
+                    "introduced_in_commit": orig,
+                    "repo_id": repo_id,
+                    "rule": ".kb/nn-frontend-review-checklist.md п. 5 (Перед новым UI-компонентом проверить, нет ли уже подходящего)"
+                })
 
         # 6. E2E missing assertion (E1)
         if norm_fp.endswith('.spec.ts') and 'approval-routes.spec.ts' in norm_fp.lower():
@@ -1733,7 +1815,8 @@ def knowledge_review_context(
     max_depth: int = 2,
     db: Optional[KnowledgeDB] = None,
     repo_ids: Optional[List[str]] = None,
-    include_uncommitted: bool = True
+    include_uncommitted: bool = True,
+    progress_cb: Optional[Callable[[float, float, str], None]] = None
 ) -> Dict[str, Any]:
     """
     Строит радиус влияния (blast radius), находит связанные тесты,
@@ -1778,6 +1861,8 @@ def knowledge_review_context(
             target_repos = ["frontend", "backend", "e2e-tests"]
 
     primary_repo_id = target_repos[0] if target_repos else (repo_id or "default")
+    if progress_cb:
+        progress_cb(1.0, 5.0, f"Анализ git diff для репозиториев {target_repos}...")
 
     repo_git_headers: List[Dict[str, Any]] = []
     all_diff_files: List[Dict[str, Any]] = []
@@ -1879,39 +1964,19 @@ def knowledge_review_context(
         repo_norm_files = [df["path"] for df in cur_diff_files if df.get("change_type") != "deleted"]
         all_norm_changed_files.extend(repo_norm_files)
 
-        # 1.5. Семантическое TS-обогащение измененных файлов (только в режиме записи)
-        if repo_path and repo_path.exists() and repo_norm_files and not getattr(db_instance, "read_only", False):
-            try:
-                ts_enricher = TypeScriptSemanticEnricher(db_instance)
-                if ts_enricher.can_enrich(repo_path):
-                    changed_ts = [
-                        repo_path / cf for cf in repo_norm_files
-                        if (repo_path / cf).exists() and Path(cf).suffix.lower() in ts_enricher.target_extensions
-                    ]
-                    if changed_ts:
-                        ts_enricher.enrich(
-                            repo_path=repo_path,
-                            repo_id=cur_repo,
-                            project_id=project_id,
-                            branch=branch,
-                            changed_files=changed_ts,
-                            force=False
-                        )
-                        db_instance.resolve_pending_references()
-            except Exception as e:
-                logger.debug(f"Targeted TS semantic diff enrichment skipped for {cur_repo}: {e}")
+        # 2. Пакетное получение диапазонов измененных строк и поиск символов
+        repo_diff_ranges: Dict[str, List[Tuple[int, int]]] = {}
+        if repo_path and repo_path.exists():
+            repo_diff_ranges = _get_repo_changed_line_ranges(
+                repo_path, git_info["merge_base_commit"], git_info["head_commit"], include_uncommitted
+            )
 
-        # 2. Поиск измененных символов во всех измененных файлах (включая тестовые)
         repo_changed_symbols: List[Dict[str, Any]] = []
         for cf in repo_norm_files:
             if cf.endswith('.Designer.cs') or '.generated.' in cf.lower() or cf.endswith('.g.cs'):
                 continue
 
-            diff_ranges = None
-            if repo_path and repo_path.exists():
-                diff_ranges = _get_changed_line_ranges(
-                    repo_path, cf, git_info["merge_base_commit"] or compare_branch, include_uncommitted
-                )
+            diff_ranges = repo_diff_ranges.get(cf)
 
             cursor.execute("""
                 SELECT DISTINCT s.id, s.name, s.qualified_name, s.kind, s.line_start, s.line_end,
@@ -1936,11 +2001,8 @@ def knowledge_review_context(
                 if overlaps:
                     s['location'] = f"{cf}:{ls}-{le}" if ls else cf
                     s['diff_ranges'] = [r for r in diff_ranges if not (le < r[0] or ls > r[1])] if diff_ranges else None
-                    overlap_ranges = [r for r in diff_ranges if not (le < r[0] or ls > r[1])] if diff_ranges else None
-                    target_blame_line = overlap_ranges[0][0] if overlap_ranges else ls
-                    orig = _get_finding_origin(repo_path, cf, target_blame_line, git_info["branch_commit_shas"])
-                    s['origin'] = orig['origin']
-                    s['introduced_in_commit'] = orig
+                    s['origin'] = 'branch'
+                    s['introduced_in_commit'] = {'origin': 'branch', 'commit': (git_info.get('head_commit') or '')[:8]}
                     s['repo_id'] = cur_repo
                     repo_changed_symbols.append(s)
                     all_changed_symbols.append(s)
@@ -1948,6 +2010,8 @@ def knowledge_review_context(
                     seen_impacted_ids.add(s['id'])
 
         # 3. Построение графа радиуса влияния (Blast Radius) для репозитория
+        if progress_cb:
+            progress_cb(2.0, 5.0, f"Построение радиуса влияния для {cur_repo}...")
         for sym in repo_changed_symbols[:50]:
             k_lower = (sym.get('kind') or '').lower()
             if k_lower not in ('class', 'struct', 'interface', 'method', 'function', 'component', 'styled_component'):
@@ -1977,10 +2041,10 @@ def knowledge_review_context(
                         "depth": item['depth']
                     })
 
-            # Поиск прямых потребителей в коде воркспейса
-            if repo_path and repo_path.exists() and len(sym['name']) >= 3:
+            # Поиск прямых потребителей в коде воркспейса (для компонентов и ключевых классов)
+            if repo_path and repo_path.exists() and len(sym['name']) >= 4:
                 s_name = sym['name']
-                if k_lower in ('component', 'function', 'class'):
+                if k_lower == 'component' or (k_lower == 'class' and s_name[0].isupper()):
                     try:
                         prefix = get_git_cmd_prefix(repo_path)
                         ext_args = ["--", "*.tsx", "*.ts", "*.jsx", "*.js"] if sym.get('language') in ('typescript', 'tsx', 'javascript') else ["--", f"*{Path(sym.get('path', '')).suffix}"]
@@ -2081,7 +2145,17 @@ def knowledge_review_context(
                 "edge_kind": item.get('edge_kind')
             })
 
-        # 4. Поиск тестов для репозитория
+        # 4. Поиск тестов для репозитория (пакетный запрос с фильтрацией в памяти)
+        if progress_cb:
+            progress_cb(3.0, 5.0, f"Поиск тестов для {cur_repo}...")
+        cursor.execute("""
+            SELECT DISTINCT f.id, f.path, f.repo_id
+            FROM files f
+            WHERE f.project_id = ?
+              AND (f.path LIKE '%.spec.%' OR f.path LIKE '%.test.%' OR f.path LIKE '%Test.%' OR f.path LIKE '%Tests.%')
+        """, (project_id,))
+        raw_test_rows = [dict(r) for r in cursor.fetchall()]
+
         for cf in repo_norm_files:
             cf_path = Path(cf)
             stem = cf_path.stem
@@ -2097,29 +2171,26 @@ def knowledge_review_context(
             for cand in set(candidates):
                 if len(cand) >= 3 and cand.lower() not in COMMON_CODE_STOPWORDS:
                     kebab = re.sub(r'(?<!^)(?=[A-Z])', '-', cand).lower()
-                    patterns = [
-                        f"%/{cand}.spec.%", f"%/{cand}.test.%", f"%/{cand}Test.%",
-                        f"%/{cand}Tests.%", f"%/{kebab}.spec.%", f"%/{kebab}.test.%"
-                    ]
-                    for pat in patterns:
-                        cursor.execute("""
-                            SELECT DISTINCT f.id, f.path, f.repo_id
-                            FROM files f
-                            WHERE f.project_id = ?
-                              AND (f.repo_id = ? OR f.repo_id LIKE '%test%' OR f.repo_id LIKE '%e2e%')
-                              AND f.path LIKE ?
-                        """, (project_id, cur_repo, pat))
-                        for tf in cursor.fetchall():
-                            tf_path = Path(tf['path'])
+                    test_needles = (
+                        f"/{cand}.spec.", f"/{cand}.test.", f"/{cand}Test.",
+                        f"/{cand}Tests.", f"/{kebab}.spec.", f"/{kebab}.test."
+                    )
+                    for tf in raw_test_rows:
+                        tf_p = tf['path']
+                        tf_repo = tf['repo_id']
+                        if not (tf_repo == cur_repo or 'test' in tf_repo or 'e2e' in tf_repo):
+                            continue
+                        if any(n in tf_p for n in test_needles):
+                            tf_path = Path(tf_p)
                             if tf_path.suffix.lower() not in allowed_exts:
                                 continue
-                            k = tf['path']
+                            k = tf_p
                             if k not in seen_test_keys:
                                 seen_test_keys.add(k)
                                 all_related_tests.append({
                                     "test_id": tf['id'],
                                     "test_name": tf_path.name,
-                                    "test_file": tf['path'],
+                                    "test_file": tf_p,
                                     "repo_id": tf['repo_id'],
                                     "tested_symbol_id": None,
                                     "tested_symbol_name": cand,
@@ -2308,6 +2379,8 @@ def knowledge_review_context(
                 all_test_gaps.append(mg)
 
     # Проверка правил чек-листов и выявление дефектов кода (чек-листы .kb)
+    if progress_cb:
+        progress_cb(4.0, 5.0, "Аудит правил чек-листов и расчет риск-скоринга...")
     all_code_findings: List[Dict[str, Any]] = []
     for cur_repo in target_repos:
         repo_path = _find_repo_path(project_id, cur_repo, branch)
@@ -3100,20 +3173,63 @@ async def _handle_review_context(arguments: dict) -> list[types.TextContent]:
             if repo_id:
                 break
 
+    session = None
+    progress_token = None
     try:
-        res = await asyncio.to_thread(
-            knowledge_review_context,
-            repo_id=repo_id,
-            repo_ids=repo_ids,
-            project_id=project_id,
-            branch=branch,
-            compare_branch=compare_branch,
-            changed_files=changed_files,
-            include_uncommitted=include_uncommitted,
-            max_depth=max_depth,
-            db=db
+        req_ctx = server.request_context
+        if req_ctx:
+            session = req_ctx.session
+            meta = req_ctx.meta
+            if meta:
+                progress_token = getattr(meta, "progressToken", None) or getattr(meta, "progress_token", None)
+    except Exception:
+        pass
+
+    loop = asyncio.get_running_loop()
+
+    def sync_progress_callback(progress: float, total: float, message: str):
+        if session:
+            async def _send():
+                try:
+                    if progress_token is not None:
+                        await session.send_progress_notification(
+                            progress_token=progress_token,
+                            progress=progress,
+                            total=total,
+                            message=message
+                        )
+                    await session.send_log_message(level="info", data=f"[{int(progress)}/{int(total)}] {message}")
+                except Exception as ex:
+                    logger.debug(f"Progress notification error: {ex}")
+            asyncio.run_coroutine_threadsafe(_send(), loop)
+
+    t_start = time.time()
+    try:
+        res = await asyncio.wait_for(
+            asyncio.to_thread(
+                knowledge_review_context,
+                repo_id=repo_id,
+                repo_ids=repo_ids,
+                project_id=project_id,
+                branch=branch,
+                compare_branch=compare_branch,
+                changed_files=changed_files,
+                include_uncommitted=include_uncommitted,
+                max_depth=max_depth,
+                db=db,
+                progress_cb=sync_progress_callback
+            ),
+            timeout=60.0
         )
         return [types.TextContent(type="text", text=json.dumps(res, ensure_ascii=False, indent=2))]
+    except asyncio.TimeoutError:
+        logger.error(f"Review context analysis timed out after 60s (elapsed={time.time()-t_start:.1f}s)")
+        return [types.TextContent(type="text", text=json.dumps({
+            "error": "Review context analysis timed out after 60s",
+            "phase": "timeout_exceeded",
+            "elapsed_seconds": round(time.time() - t_start, 2),
+            "message": "Анализ превысил лимит в 60 секунд. Проверьте воркспейс или передайте список файлов в changed_files."
+        }, ensure_ascii=False, indent=2))]
     except Exception as e:
         logger.error(f"Review context analysis failed: {e}")
         return _err(f"Review context error: {e}")

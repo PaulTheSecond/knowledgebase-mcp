@@ -25,9 +25,14 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 logger = logging.getLogger(__name__)
 
 def get_config_path() -> Path:
-    """Возвращает путь к файлу конфигурации на основе переменных окружения."""
+    """Возвращает путь к файлу конфигурации на основе переменных окружения с fallback к корню пакета."""
     path_str = os.environ.get("CONFIG_PATH", "data/config.yaml")
-    return Path(path_str)
+    cand = Path(path_str)
+    if not cand.exists():
+        repo_root_cand = Path(__file__).resolve().parents[2] / "data" / "config.yaml"
+        if repo_root_cand.exists():
+            return repo_root_cand
+    return cand
 
 def load_config() -> Dict[str, Any]:
     """Загружает конфигурационный файл config.yaml."""

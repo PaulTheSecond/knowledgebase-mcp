@@ -62,17 +62,17 @@ def resolve_git_dir(repo_path: Union[str, Path]) -> Optional[Path]:
 def get_git_cmd_prefix(repo_path: Union[str, Path]) -> List[str]:
     """Возвращает префикс команды git (с --git-dir и --work-tree при необходимости).
     
-    Для обычных репозиториев возвращает ['git'].
-    Для worktrees с указателем .git в виде файла возвращает
-    ['git', f'--git-dir={git_dir}', f'--work-tree={repo_path}'].
+    Для кросс-платформенной надежности (Windows NTFS в Linux Docker) всегда
+    передаются флаги core.fileMode=false и core.autocrlf=true.
     """
+    base_cmd = ["git", "-c", "core.fileMode=false", "-c", "core.autocrlf=true", "-c", "core.safecrlf=false", "-c", "core.checkStat=minimal", "-c", "core.trustctime=false"]
     repo_p = Path(repo_path).resolve()
     git_dir = resolve_git_dir(repo_p)
     if git_dir and (repo_p / ".git").is_file():
         git_dir_str = str(git_dir).replace("\\", "/")
         repo_p_str = str(repo_p).replace("\\", "/")
-        return ["git", f"--git-dir={git_dir_str}", f"--work-tree={repo_p_str}"]
-    return ["git"]
+        return base_cmd + [f"--git-dir={git_dir_str}", f"--work-tree={repo_p_str}"]
+    return base_cmd
 
 class GitManager:
     """Управляет безопасным клонированием и обновлением репозиториев Git.
