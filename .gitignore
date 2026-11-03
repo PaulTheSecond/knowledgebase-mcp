@@ -43,6 +43,8 @@ test_results.txt
 out.txt
 _test_search_result.txt
 roslyn_test.json
+.coverage
+.pytest_cache/
 
 # .NET Build Artifacts
 bin/

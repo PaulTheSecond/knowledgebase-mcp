@@ -1,0 +1,8 @@
+diff --git a/frontend/pages/Checkout.tsx b/frontend/pages/Checkout.tsx
+index 5555555..6666666 100644
+--- a/frontend/pages/Checkout.tsx
++++ b/frontend/pages/Checkout.tsx
+@@ -88,1 +88,3 @@
++    return (
++      <button>Submit Payment Now</button>
++    );

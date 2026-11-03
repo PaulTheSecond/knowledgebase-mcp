@@ -74,7 +74,9 @@ class WorkspaceFileWatcher:
             self._running = True
 
             try:
+                import sys
                 from watchdog.observers import Observer
+                from watchdog.observers.polling import PollingObserver
                 from watchdog.events import FileSystemEventHandler
 
                 class Handler(FileSystemEventHandler):
@@ -88,7 +90,9 @@ class WorkspaceFileWatcher:
                         src_path = Path(event.src_path)
                         handler_self.watcher._debounce_notify(src_path)
 
-                observer = Observer()
+                # На Python >= 3.14 на Windows WindowsApiObserver временно нестабилен, используем надежный PollingObserver
+                observer_cls = PollingObserver if (sys.platform == "win32" and sys.version_info >= (3, 14)) else Observer
+                observer = observer_cls(timeout=0.1)
                 observer.daemon = True
                 handler = Handler(self)
                 for p in self._paths:

@@ -460,9 +460,10 @@ class TestDaemonWorker(unittest.TestCase):
         self.assertIsNotNone(found["finished_at"])
         self.assertIsNotNone(found["duration"])
 
+    @patch("knowledge_mcp.daemon.worker.Indexer")
     @patch("knowledge_mcp.daemon.worker.get_project_config")
     @patch("knowledge_mcp.daemon.worker.get_projects")
-    def test_worker_project_sync(self, mock_get_projects, mock_get_project_config):
+    def test_worker_project_sync(self, mock_get_projects, mock_get_project_config, mock_indexer_cls):
         mock_get_projects.return_value = [{"id": "orbita"}]
         mock_get_project_config.return_value = {"id": "orbita", "type": "worktree_workspace"}
 

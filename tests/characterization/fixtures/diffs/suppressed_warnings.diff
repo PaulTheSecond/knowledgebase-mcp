@@ -1,0 +1,14 @@
+diff --git a/backend/OrderService.cs b/backend/OrderService.cs
+index 1111111..2222222 100644
+--- a/backend/OrderService.cs
++++ b/backend/OrderService.cs
+@@ -45,1 +45,2 @@
++#pragma warning disable CS8618
++    private string _uninitializedField;
+diff --git a/frontend/components/OrderView.tsx b/frontend/components/OrderView.tsx
+index 3333333..4444444 100644
+--- a/frontend/components/OrderView.tsx
++++ b/frontend/components/OrderView.tsx
+@@ -12,1 +12,2 @@
++// @ts-ignore
++const rawData = response.data.unsafe;

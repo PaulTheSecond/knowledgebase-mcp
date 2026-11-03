@@ -26,8 +26,9 @@ logger = logging.getLogger(__name__)
 
 def get_config_path() -> Path:
     """Возвращает путь к файлу конфигурации на основе переменных окружения с fallback к корню пакета."""
-    path_str = os.environ.get("CONFIG_PATH", "data/config.yaml")
-    cand = Path(path_str)
+    if "CONFIG_PATH" in os.environ:
+        return Path(os.environ["CONFIG_PATH"])
+    cand = Path("data/config.yaml")
     if not cand.exists():
         repo_root_cand = Path(__file__).resolve().parents[2] / "data" / "config.yaml"
         if repo_root_cand.exists():
@@ -162,6 +163,7 @@ def add_or_update_project(project_dict: Dict[str, Any]) -> None:
         projects.append(project_dict)
         
     save_config(config)
+    invalidate_workspace_targets_cache(project_id)
 
 def delete_project_config(project_id: str) -> bool:
     """Удаляет конфигурацию проекта из config.yaml по ID."""
@@ -173,6 +175,7 @@ def delete_project_config(project_id: str) -> bool:
     if len(projects) < initial_len:
         config["projects"] = projects
         save_config(config)
+        invalidate_workspace_targets_cache(project_id)
         return True
     return False
 

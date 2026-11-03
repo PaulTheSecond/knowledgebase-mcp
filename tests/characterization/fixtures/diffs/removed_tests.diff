@@ -1,0 +1,11 @@
+diff --git a/backend/OrderServiceTests.cs b/backend/OrderServiceTests.cs
+index 7777777..8888888 100644
+--- a/backend/OrderServiceTests.cs
++++ b/backend/OrderServiceTests.cs
+@@ -102,8 +102,0 @@
+-[Test]
+-public void ProcessPayment_WithZeroBalance_ThrowsException()
+-{
+-    var service = new OrderService();
+-    Assert.Throws<InvalidOperationException>(() => service.ProcessPayment(0));
+-}
