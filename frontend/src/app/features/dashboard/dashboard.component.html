@@ -137,21 +137,21 @@
 
         <div class="cas-summary-banner">
           <div class="banner-stat">
-            <span class="stat-label">{{ i18n.t('dashboard.real_db_size') }}</span>
-            <span class="stat-value">{{ formatBytes(data.cas.real_size_bytes) }}</span>
-            <span class="stat-sub">SQLite на диске</span>
+            <span class="stat-label">{{ i18n.t('dashboard.virtual_db_size') }}</span>
+            <span class="stat-value text-muted">{{ formatBytes(data.cas.virtual_size_bytes) }}</span>
+            <span class="stat-sub">{{ i18n.t('dashboard.virtual_db_sub') }}</span>
           </div>
           <div class="banner-divider">vs</div>
           <div class="banner-stat">
-            <span class="stat-label">{{ i18n.t('dashboard.virtual_db_size') }}</span>
-            <span class="stat-value text-muted">{{ formatBytes(data.cas.virtual_size_bytes) }}</span>
-            <span class="stat-sub">Без дедупликации</span>
+            <span class="stat-label">{{ i18n.t('dashboard.real_db_size') }}</span>
+            <span class="stat-value">{{ formatBytes(data.cas.real_size_bytes) }}</span>
+            <span class="stat-sub">{{ i18n.t('dashboard.real_db_sub') }}</span>
           </div>
           <div class="banner-divider">=</div>
           <div class="banner-stat banner-stat--highlight">
             <span class="stat-label">{{ i18n.t('dashboard.disk_saved') }}</span>
-            <span class="stat-value text-success">-{{ formatBytes(data.cas.saved_size_bytes) }}</span>
-            <span class="badge-status success" style="margin-top: 4px;">{{ formatPercent(data.cas.saved_percent) }} экономии</span>
+            <span class="stat-value text-success">{{ data.cas.saved_size_bytes > 0 ? '-' : '' }}{{ formatBytes(data.cas.saved_size_bytes) }}</span>
+            <span class="badge-status success" style="margin-top: 4px;">{{ formatPercent(data.cas.saved_percent) }} {{ i18n.t('dashboard.savings_suffix') }}</span>
           </div>
         </div>
 
@@ -159,7 +159,7 @@
         <div class="cas-progress-section">
           <div class="progress-labels">
             <span>{{ i18n.t('dashboard.disk_savings_percent') }}: <strong>{{ formatPercent(data.cas.saved_percent) }}</strong></span>
-            <span class="text-secondary">Сэкономлено: {{ formatBytes(data.cas.saved_size_bytes) }} / Всего: {{ formatBytes(data.cas.virtual_size_bytes) }}</span>
+            <span class="text-secondary">{{ i18n.t('dashboard.saved_label') }}: {{ formatBytes(data.cas.saved_size_bytes) }} / {{ i18n.t('dashboard.total_label') }}: {{ formatBytes(data.cas.virtual_size_bytes) }}</span>
           </div>
           <div class="progress-track">
             <div class="progress-fill" [style.width.%]="data.cas.saved_percent || 0"></div>
@@ -169,15 +169,15 @@
         <!-- Дополнительные параметры дедупликации -->
         <div class="cas-stats-grid">
           <div class="stat-pill">
-            <span class="pill-label">Логических файлов:</span>
+            <span class="pill-label">{{ i18n.t('dashboard.logical_files_label') }}</span>
             <span class="pill-value">{{ data.cas.logical_files_count || 0 }}</span>
           </div>
           <div class="stat-pill">
-            <span class="pill-label">Уникальных контентов:</span>
+            <span class="pill-label">{{ i18n.t('dashboard.unique_blobs_label') }}</span>
             <span class="pill-value">{{ data.cas.unique_contents_count || 0 }}</span>
           </div>
           <div class="stat-pill">
-            <span class="pill-label">Коэффициент сжатия:</span>
+            <span class="pill-label">{{ i18n.t('dashboard.dedup_ratio_label') }}</span>
             <span class="pill-value text-success font-semibold">{{ casDeduplicationRatio() }}</span>
           </div>
         </div>

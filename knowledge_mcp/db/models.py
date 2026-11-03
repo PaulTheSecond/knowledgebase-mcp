@@ -1622,9 +1622,12 @@ class KnowledgeDB:
                 virtual_size = row_files['virtual_size']
 
                 cursor.execute("""
-                    SELECT COUNT(*) as contents_count,
-                           COALESCE(SUM(size), 0) as real_size
+                    SELECT COUNT(DISTINCT fc.hash) as contents_count,
+                           COALESCE(SUM(fc.size), 0) as real_size
                     FROM file_contents fc INDEXED BY idx_file_contents_hash_size
+                    WHERE fc.hash IN (
+                        SELECT content_hash FROM files WHERE content_hash IS NOT NULL
+                    )
                 """)
                 row_contents = cursor.fetchone()
                 unique_contents = row_contents['contents_count']
