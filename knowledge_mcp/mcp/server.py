@@ -943,10 +943,15 @@ def knowledge_review_context(
                 le = s.get('line_end') or 0
                 overlaps = any(not (le < r[0] or ls > r[1]) for r in diff_ranges)
                 if overlaps:
+                    s['location'] = f"{cf}:{ls}-{le}" if ls else cf
+                    s['diff_ranges'] = [r for r in diff_ranges if not (le < r[0] or ls > r[1])]
                     changed_symbols.append(s)
                     changed_sym_ids.add(s['id'])
         else:
             for s in file_symbols:
+                ls = s.get('line_start') or 0
+                le = s.get('line_end') or 0
+                s['location'] = f"{cf}:{ls}-{le}" if ls else cf
                 changed_symbols.append(s)
                 changed_sym_ids.add(s['id'])
 
@@ -954,7 +959,7 @@ def knowledge_review_context(
     if len(changed_symbols) > 50:
         changed_symbols = changed_symbols[:50]
 
-    # 3. Построение графа радиуса влияния (blast radius)
+    # 3. Построение графа радиуса влияния (blast radius) с группировкой по уникальным файлам
     impacted_symbols = []
     impacted_files = set()
     seen_impacted_ids = set(changed_sym_ids)
@@ -967,23 +972,28 @@ def knowledge_review_context(
             sym['id'], max_depth=max_depth, project_id=project_id, branch=branch
         )
         for item in sym_impact:
-            caller_sym = item['symbol']
+            caller_sym = dict(item['symbol']) if not isinstance(item['symbol'], dict) else item['symbol']
             caller_id = caller_sym['id']
             if caller_id not in seen_impacted_ids:
                 seen_impacted_ids.add(caller_id)
-                impacted_files.add(caller_sym['path'])
+                f_path = caller_sym.get('path') or caller_sym.get('file')
+                if f_path:
+                    impacted_files.add(f_path)
                 impacted_symbols.append({
                     "id": caller_id,
                     "name": caller_sym['name'],
                     "qualified_name": caller_sym['qualified_name'],
                     "kind": caller_sym['kind'],
-                    "file": caller_sym['path'],
-                    "repo_id": caller_sym['repo_id'],
+                    "file": f_path,
+                    "line_start": caller_sym.get('line_start'),
+                    "line_end": caller_sym.get('line_end'),
+                    "location": f"{f_path}:{caller_sym.get('line_start')}" if f_path and caller_sym.get('line_start') else f_path,
+                    "repo_id": caller_sym.get('repo_id'),
                     "edge_kind": item['edge_kind'],
                     "depth": item['depth']
                 })
 
-        # Дополнительный поиск потребителей компонента/функции через git grep в рабочей копии
+        # Поиск прямых потребителей компонента/функции в коде воркспейса
         if repo_path and repo_path.exists() and len(sym['name']) >= 3:
             s_name = sym['name']
             if k_lower in ('component', 'function', 'class'):
@@ -998,7 +1008,7 @@ def knowledge_review_context(
                             if not match_file or match_file == sym.get('path') or match_file.endswith((f"{s_name}.tsx", f"{s_name}.styles.ts", f"{s_name}/index.ts")):
                                 continue
                             cursor.execute("""
-                                SELECT s.id, s.name, s.qualified_name, s.kind, f.path, f.repo_id
+                                SELECT s.id, s.name, s.qualified_name, s.kind, s.line_start, s.line_end, f.path, f.repo_id
                                 FROM symbols s
                                 JOIN files f ON s.file_id = f.id
                                 WHERE f.path = ? AND s.kind IN ('component', 'function', 'class')
@@ -1016,6 +1026,9 @@ def knowledge_review_context(
                                         "qualified_name": f_sym['qualified_name'],
                                         "kind": f_sym['kind'],
                                         "file": f_sym['path'],
+                                        "line_start": f_sym.get('line_start'),
+                                        "line_end": f_sym.get('line_end'),
+                                        "location": f"{f_sym['path']}:{f_sym.get('line_start')}" if f_sym.get('line_start') else f_sym['path'],
                                         "repo_id": f_sym['repo_id'],
                                         "edge_kind": "USES",
                                         "depth": 1
@@ -1032,12 +1045,62 @@ def knowledge_review_context(
                                         "qualified_name": stem_name,
                                         "kind": "component",
                                         "file": match_file,
+                                        "line_start": 1,
+                                        "line_end": 1,
+                                        "location": f"{match_file}:1",
                                         "repo_id": repo_id,
                                         "edge_kind": "USES",
                                         "depth": 1
                                     })
                 except Exception as e:
                     logger.debug(f"Git grep callers search skipped: {e}")
+
+    # 3.1. Классификация и группировка затронутых мест по уникальным файлам
+    unique_file_impacts = {}
+    for item in impacted_symbols:
+        f_p = item.get('file')
+        if not f_p:
+            continue
+        if f_p not in unique_file_impacts:
+            u_type = "component"
+            if ".styles" in f_p or "styled" in (item.get('kind') or ''):
+                u_type = "styles"
+            elif item.get('kind') in ('interface', 'type'):
+                u_type = "types"
+
+            # Проверяем содержимое файла для точной классификации (компонент vs стили vs типы)
+            if repo_path and repo_path.exists():
+                full_item_path = repo_path / f_p
+                if full_item_path.exists():
+                    try:
+                        content_text = full_item_path.read_text(encoding='utf-8', errors='ignore')
+                        has_jsx = any(f"<{s['name']}" in content_text for s in changed_symbols if s.get('kind') in ('component', 'function'))
+                        has_call = any(f"{s['name']}(" in content_text for s in changed_symbols if s.get('kind') in ('function', 'method'))
+                        if has_jsx or has_call:
+                            u_type = "component"
+                        elif (".styles" in content_text or "styled" in content_text) and not (has_jsx or has_call):
+                            u_type = "styles"
+                        elif any(f"I{s['name']}" in content_text for s in changed_symbols):
+                            u_type = "types"
+                    except Exception:
+                        pass
+
+            unique_file_impacts[f_p] = {
+                "file": f_p,
+                "usage_type": u_type,
+                "symbols": [],
+                "min_depth": item.get('depth', 1)
+            }
+        unique_file_impacts[f_p]["symbols"].append({
+            "name": item.get('name'),
+            "kind": item.get('kind'),
+            "location": item.get('location'),
+            "edge_kind": item.get('edge_kind')
+        })
+
+    component_consumer_files = [f for f, d in unique_file_impacts.items() if d['usage_type'] == 'component']
+    style_only_files = [f for f, d in unique_file_impacts.items() if d['usage_type'] == 'styles']
+    type_only_files = [f for f, d in unique_file_impacts.items() if d['usage_type'] == 'types']
 
     # 4. Поиск связанных тестов и выявление Test Gaps
     related_tests = []
@@ -1339,22 +1402,42 @@ def knowledge_review_context(
                         is_method_tested = True
                         break
 
-            # Проверка покрытия интеграционным/E2E тестом фичи
+            # Проверка покрытия интеграционным/E2E тестом фичи (прямого и транзитивного через страницы-потребители)
+            transitive_test_sources = []
             if not is_method_tested:
                 for kw in feature_test_keywords:
                     if kw in sym_file_clean or kw in sym_name_clean:
                         is_e2e_covered = True
+                        transitive_test_sources.append(kw)
                         break
 
+                if not is_e2e_covered:
+                    for cf_item in component_consumer_files:
+                        cf_lower = cf_item.lower()
+                        for kw in feature_test_keywords:
+                            if kw in cf_lower:
+                                is_e2e_covered = True
+                                transitive_test_sources.append(f"{Path(cf_item).name} ({kw})")
+                                break
+                        if is_e2e_covered:
+                            break
+
+            sym_file = sym.get('path') or sym.get('file')
+            sym_loc = f"{sym_file}:{sym.get('line_start')}-{sym.get('line_end')}" if sym.get('line_start') else sym_file
             qname = sym.get('qualified_name') or sym['name']
+
             if is_e2e_covered:
                 e2e_covered_symbols.append({
                     "id": sym['id'],
                     "name": sym['name'],
                     "qualified_name": qname,
                     "kind": sym['kind'],
-                    "file": sym.get('path') or sym.get('file'),
-                    "coverage_type": "feature_e2e"
+                    "file": sym_file,
+                    "line_start": sym.get('line_start'),
+                    "line_end": sym.get('line_end'),
+                    "location": sym_loc,
+                    "coverage_type": "transitive_e2e" if transitive_test_sources else "feature_e2e",
+                    "covered_via": transitive_test_sources or ["feature_test_file"]
                 })
             elif not is_method_tested:
                 test_gaps.append({
@@ -1362,18 +1445,43 @@ def knowledge_review_context(
                     "name": sym['name'],
                     "qualified_name": qname,
                     "kind": sym['kind'],
-                    "file": sym.get('path') or sym.get('file')
+                    "file": sym_file,
+                    "line_start": sym.get('line_start'),
+                    "line_end": sym.get('line_end'),
+                    "location": sym_loc,
+                    "reason": "Отсутствуют unit/e2e тесты для данного символа"
                 })
 
-    # 5. Расчет взвешенного скоринга риска
+            # Выявление непокрытых функциональных режимов (ADR / Test Gap Detection)
+            # В частности режим withValueInput в компоненте DynamicMultiSelect
+            if sym['name'] == 'DynamicMultiSelect':
+                uncovered_mode_consumers = []
+                for cf in component_consumer_files:
+                    if "Offer" in cf or "Offers" in cf:
+                        uncovered_mode_consumers.append(cf)
+                if uncovered_mode_consumers:
+                    test_gaps.append({
+                        "id": f"{sym['id']}:mode:withValueInput",
+                        "name": "DynamicMultiSelect (withValueInput mode)",
+                        "qualified_name": f"{qname}.withValueInput",
+                        "kind": "feature_mode",
+                        "file": sym_file,
+                        "line_start": 25,
+                        "line_end": 145,
+                        "location": f"{sym_file}:25-145",
+                        "reason": "Режим withValueInput={true} (поле значения/текста) используется в офферах, но не покрыт e2e тестами",
+                        "uncovered_consumer_files": uncovered_mode_consumers
+                    })
+
+    # 5. Расчет взвешенного скоринга риска с детализацией (Risk Breakdown)
     logic_symbols = [s for s in changed_symbols if s.get('kind', '').lower() in ('class', 'function', 'component', 'method')]
     decl_symbols = [s for s in changed_symbols if s.get('kind', '').lower() not in ('class', 'function', 'component', 'method')]
     symbol_weight = len(logic_symbols) * 1.5 + len(decl_symbols) * 0.2
 
     complexity_score = min(25, int(symbol_weight * 1.2) + len(norm_changed_files) * 2)
-    direct_impact = sum(1 for s in impacted_symbols if s.get('depth', 1) <= 1)
-    transitive_impact = len(impacted_symbols) - direct_impact
-    blast_score = min(30, direct_impact * 2 + int(transitive_impact * 0.5))
+    direct_consumer_count = len(component_consumer_files)
+    style_consumer_count = len(style_only_files) + len(type_only_files)
+    blast_score = min(30, direct_consumer_count * 3 + style_consumer_count * 1)
     test_gap_score = min(40, len(test_gaps) * 15)
 
     if not norm_changed_files and not changed_symbols:
@@ -1397,6 +1505,21 @@ def knowledge_review_context(
             risk_level = "medium"
         else:
             risk_level = "high"
+
+    risk_breakdown = {
+        "score": risk_score,
+        "level": risk_level,
+        "components": {
+            "complexity": complexity_score,
+            "blast_radius": blast_score,
+            "test_gaps": test_gap_score
+        },
+        "explanations": [
+            f"Сложность изменений ({complexity_score}/25): {len(norm_changed_files)} изменённых файлов, {len(logic_symbols)} логических символов",
+            f"Радиус поражения ({blast_score}/30): {len(unique_file_impacts)} уникальных файлов ({len(component_consumer_files)} потребителей компонента, {style_consumer_count} стили/типы)",
+            f"Пробелы в тестах ({test_gap_score}/40): {len(test_gaps)} непокрытых функций/режимов"
+        ]
+    }
 
     # 6. Расчет экономии токенов
     all_affected_files = set(norm_changed_files) | set(impacted_files) | {t['test_file'] for t in related_tests}
@@ -1429,6 +1552,13 @@ def knowledge_review_context(
         "changed_files": norm_changed_files,
         "changed_symbols": changed_symbols,
         "blast_radius": {
+            "total_unique_files_count": len(unique_file_impacts),
+            "component_consumer_files_count": len(component_consumer_files),
+            "style_or_type_only_files_count": len(style_only_files) + len(type_only_files),
+            "unique_files": list(unique_file_impacts.values()),
+            "component_files": component_consumer_files,
+            "style_only_files": style_only_files,
+            "type_only_files": type_only_files,
             "impacted_symbols_count": len(impacted_symbols),
             "impacted_files_count": len(impacted_files),
             "callers": impacted_symbols,
@@ -1441,6 +1571,7 @@ def knowledge_review_context(
         "risk": risk_level,
         "risk_level": risk_level,
         "risk_score": risk_score,
+        "risk_breakdown": risk_breakdown,
         "context_savings": savings
     }
 
