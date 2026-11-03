@@ -1,6 +1,6 @@
 # Knowledge MCP
 
-![Version v1.8.0](https://img.shields.io/badge/version-v1.8.0-blue.svg)
+![Version v1.9.1](https://img.shields.io/badge/version-v1.9.1-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg)
 ![SQLite-vec](https://img.shields.io/badge/SQLite--vec-WAL%20enabled-orange.svg)
@@ -424,4 +424,6 @@ Or when running via Docker:
 - [ADR-006: FTS5 External Content, Storage Optimization & Batching](docs/adr-006-fts5-external-content-and-large-repo-batching.md)
 - [ADR-007: Interactive Chat Doc Inspector, Mermaid & Formatting](docs/adr-007-interactive-chat-doc-inspector-and-mermaid.md)
 - [ADR-008: Multi-Worktree Architecture, CAS Deduplication & Hybrid Sync Engine](docs/adr-008-multi-worktree-cas-and-hybrid-sync.md)
+- [ADR-009: Compiler-Based Semantic Graph Analysis for TypeScript, React, and Angular](docs/adr-009-compiler-semantic-analysis-ts-angular.md)
+- [ts-parser: TypeScript & React Compiler Semantic Analyzer Guide](TsParser/README.md)
 - [Zero-Footprint Agent Integration Guide (Claude, Antigravity, Cursor, Codex)](docs/agent-integration-guide.md)
