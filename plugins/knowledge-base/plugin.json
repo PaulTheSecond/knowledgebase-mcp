@@ -1,0 +1,11 @@
+{
+  "name": "knowledge-base",
+  "description": "Официальный плагин Knowledge Base MCP: инициализация воркспейсов, многорепозиторное ревью кода, расчет Blast Radius и семантический поиск.",
+  "version": "1.0.0",
+  "author": "PaulTheSecond",
+  "suggestedPrompts": [
+    "Проведи ревью ветки feature/ORBIT-2045/develop против master",
+    "Инициализируй текущий воркспейс в базе знаний",
+    "Оцени радиус влияния (Blast Radius) и Test Gaps по задаче"
+  ]
+}

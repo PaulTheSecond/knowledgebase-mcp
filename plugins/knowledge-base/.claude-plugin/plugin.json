@@ -1,0 +1,8 @@
+{
+  "name": "knowledge-base",
+  "description": "Официальный плагин Knowledge Base MCP: инициализация воркспейсов, многорепозиторное ревью кода, расчет Blast Radius и семантический поиск",
+  "version": "1.0.0",
+  "author": {
+    "name": "PaulTheSecond"
+  }
+}

@@ -1,8 +1,0 @@
-{
-  "name": "knowledge-review",
-  "description": "Автоматизированное многорепозиторное ревью кода, аудит дефектов по чек-листам и расчет Blast Radius через Knowledge Base MCP",
-  "version": "1.0.0",
-  "author": {
-    "name": "PaulTheSecond"
-  }
-}

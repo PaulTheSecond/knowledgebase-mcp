@@ -6,46 +6,28 @@
     "url": "https://github.com/PaulTheSecond"
   },
   "metadata": {
-    "description": "Официальный маркетплейс Knowledge Base MCP: инструменты, ревью-скиллы и плагины",
+    "description": "Официальный маркетплейс Knowledge Base MCP: инструменты, ревью-скиллы и онбординг воркспейсов",
     "version": "1.0.0"
   },
   "plugins": [
     {
-      "name": "knowledge-review",
-      "description": "Автоматизированное многорепозиторное ревью кода, аудит дефектов по чек-листам и расчет Blast Radius через Knowledge Base MCP",
+      "name": "knowledge-base",
+      "description": "Единый плагин Knowledge Base MCP: многорепозиторное ревью кода (kb-review), инициализация воркспейсов (kb-init), Blast Radius и MCP-инструменты",
       "version": "1.0.0",
-      "source": "./plugins/knowledge-review",
+      "source": "./plugins/knowledge-base",
       "author": {
         "name": "PaulTheSecond"
       },
       "repository": "https://github.com/PaulTheSecond/knowledgebase-mcp",
       "license": "MIT",
       "keywords": [
-        "code-review",
-        "mcp",
         "knowledge-base",
-        "blast-radius",
-        "ast",
-        "git-review"
-      ],
-      "category": "development"
-    },
-    {
-      "name": "knowledge-init",
-      "description": "Инициализация и первичное подключение репозитория или рабочей области к Knowledge Base MCP: автоопределение структуры, config.yaml, индексация и настройка пресетов агентов",
-      "version": "1.0.0",
-      "source": "./plugins/knowledge-init",
-      "author": {
-        "name": "PaulTheSecond"
-      },
-      "repository": "https://github.com/PaulTheSecond/knowledgebase-mcp",
-      "license": "MIT",
-      "keywords": [
+        "code-review",
         "onboarding",
         "init",
         "mcp",
-        "workspace-setup",
-        "indexing"
+        "blast-radius",
+        "ast"
       ],
       "category": "development"
     }
