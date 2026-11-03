@@ -1,0 +1,34 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "knowledgebase-mcp",
+  "owner": {
+    "name": "PaulTheSecond",
+    "url": "https://github.com/PaulTheSecond"
+  },
+  "metadata": {
+    "description": "Официальный маркетплейс Knowledge Base MCP: инструменты, ревью-скиллы и плагины",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "knowledge-review",
+      "description": "Автоматизированное многорепозиторное ревью кода, аудит дефектов по чек-листам и расчет Blast Radius через Knowledge Base MCP",
+      "version": "1.0.0",
+      "source": "./plugins/knowledge-review",
+      "author": {
+        "name": "PaulTheSecond"
+      },
+      "repository": "https://github.com/PaulTheSecond/knowledgebase-mcp",
+      "license": "MIT",
+      "keywords": [
+        "code-review",
+        "mcp",
+        "knowledge-base",
+        "blast-radius",
+        "ast",
+        "git-review"
+      ],
+      "category": "development"
+    }
+  ]
+}
