@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, List
 import time
 
 _TARGETS_CACHE: Dict[Optional[str], tuple] = {}
-_TARGETS_CACHE_TTL = 30.0
+_TARGETS_CACHE_TTL = 300.0
 
 def invalidate_workspace_targets_cache(project_id: Optional[str] = None):
     global _TARGETS_CACHE
@@ -216,6 +216,7 @@ def resolve_workspace_targets(project_id: Optional[str] = None, force_refresh: b
                     "is_doc": False,
                     "language": repo.get("language"),
                 })
+        _TARGETS_CACHE[project_id] = (now, targets)
         return targets
 
     # 2. Если project_id не указан (все проекты и репозитории)

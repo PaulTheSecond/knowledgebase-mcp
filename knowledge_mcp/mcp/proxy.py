@@ -12,7 +12,7 @@ async def run_stdio_sse_proxy(sse_url: str):
     маршрутизируя все запросы MCP клиентов (Claude Code, Antigravity) в единый демон-писатель.
     """
     async with stdio_server() as (stdio_read, stdio_write):
-        async with sse_client(sse_url) as (sse_read, sse_write):
+        async with sse_client(sse_url, timeout=60.0, sse_read_timeout=1800.0) as (sse_read, sse_write):
             async with anyio.create_task_group() as tg:
                 async def forward_stdio_to_sse():
                     try:

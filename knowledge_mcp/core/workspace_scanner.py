@@ -89,29 +89,13 @@ class WorkspaceScanner:
     @staticmethod
     def get_git_branch(repo_path: Path, default_branch: str = "master") -> str:
         """
-        Надежно определяет ветку через subprocess git rev-parse --abbrev-ref HEAD
-        с fallback на разбор файла .git/HEAD или .git ссылки ворктри.
+        Быстро и надежно определяет ветку:
+        1. Сначала прямое чтение файлов .git/HEAD или ссылки worktree (микросекунды).
+        2. Fallback на git CLI rev-parse, если HEAD detached или файл не прочитан.
         """
         repo_path = Path(repo_path).resolve()
 
-        # 1. Попытка через git CLI
-        try:
-            cmd = get_git_cmd_prefix(repo_path) + ["rev-parse", "--abbrev-ref", "HEAD"]
-            proc = subprocess.run(
-                cmd,
-                cwd=str(repo_path),
-                capture_output=True,
-                text=True,
-                timeout=3,
-            )
-            if proc.returncode == 0:
-                branch = proc.stdout.strip()
-                if branch and branch != "HEAD":
-                    return branch
-        except Exception as e:
-            logger.debug(f"Git CLI недоступен или вернул ошибку для {repo_path}: {e}")
-
-        # 2. Fallback на прямое чтение файлов .git
+        # 1. Быстрое прямое чтение файлов .git / worktrees HEAD
         try:
             git_target = repo_path / ".git"
             git_dir = None
@@ -154,11 +138,28 @@ class WorkspaceScanner:
                 if head_file.exists():
                     head_content = head_file.read_text(encoding="utf-8", errors="ignore").strip()
                     if head_content.startswith("ref: refs/heads/"):
-                        return head_content[len("ref: refs/heads/"):].strip()
-                    elif head_content:
-                        return head_content
+                        branch_name = head_content[len("ref: refs/heads/"):].strip()
+                        if branch_name:
+                            return branch_name
         except Exception as e:
             logger.debug(f"Ошибка прямого чтения .git для {repo_path}: {e}")
+
+        # 2. Fallback на git CLI
+        try:
+            cmd = get_git_cmd_prefix(repo_path) + ["rev-parse", "--abbrev-ref", "HEAD"]
+            proc = subprocess.run(
+                cmd,
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if proc.returncode == 0:
+                branch = proc.stdout.strip()
+                if branch and branch != "HEAD":
+                    return branch
+        except Exception as e:
+            logger.debug(f"Git CLI недоступен или вернул ошибку для {repo_path}: {e}")
 
         return default_branch
 

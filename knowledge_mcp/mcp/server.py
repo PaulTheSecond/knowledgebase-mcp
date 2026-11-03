@@ -122,8 +122,15 @@ def _resolve_project_id(
     return project_id or "default"
 
 
+_REPO_PATH_CACHE: Dict[Tuple[str, Optional[str], Optional[str]], Optional[Path]] = {}
+
 def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[str] = None) -> Optional[Path]:
-    """Находит локальный путь к репозиторию/ворктри на диске."""
+    """Находит локальный путь к репозиторию/ворктри на диске с мгновенным in-memory кэшированием."""
+    cache_key = (project_id, repo_id, branch)
+    if cache_key in _REPO_PATH_CACHE:
+        cached = _REPO_PATH_CACHE[cache_key]
+        if cached and cached.exists():
+            return cached
     p_id = _resolve_project_id(project_id, branch, [repo_id] if repo_id else None)
     # 1. Поиск в целевых воркспейсах
     targets = resolve_workspace_targets(p_id)
@@ -133,12 +140,14 @@ def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[st
                 if _is_branch_match(branch, t.get("branch"), t.get("task_name")):
                     abs_p = t.get("absolute_path")
                     if abs_p and Path(abs_p).exists():
-                        return Path(abs_p)
+                        _REPO_PATH_CACHE[cache_key] = Path(abs_p)
+                    return Path(abs_p)
         # Если ветка master или не указана, берем базовый репозиторий
         for t in targets:
             if t.get("repo_id") == repo_id and t.get("is_base"):
                 abs_p = t.get("absolute_path")
                 if abs_p and Path(abs_p).exists():
+                    _REPO_PATH_CACHE[cache_key] = Path(abs_p)
                     return Path(abs_p)
 
     # 2. Поиск в одиночных репозиториях по repo_id
@@ -155,8 +164,10 @@ def _find_repo_path(project_id: str, repo_id: Optional[str], branch: Optional[st
         from knowledge_mcp.core.workspace_scanner import resolve_workspace_root
         p = resolve_workspace_root(proj_cfg["workspace_root"])
         if p and p.exists():
+            _REPO_PATH_CACHE[cache_key] = p
             return p
 
+    _REPO_PATH_CACHE[cache_key] = None
     return None
 
 
@@ -2374,7 +2385,8 @@ def knowledge_review_context(
                 code_parser=code_parser
             )
             for mg in mode_gaps:
-                mg_orig = _get_finding_origin(s_repo_path, mg["file"], mg.get("line_start"), set())
+                mg_hdr = next((h for h in repo_git_headers if h["repo_id"] == sym_repo), {})
+                mg_orig = _get_finding_origin(s_repo_path, mg["file"], mg.get("line_start"), set(mg_hdr.get("branch_commit_shas") or []))
                 mg["origin"] = mg_orig["origin"]
                 mg["introduced_in_commit"] = mg_orig
                 all_test_gaps.append(mg)
@@ -3220,16 +3232,16 @@ async def _handle_review_context(arguments: dict) -> list[types.TextContent]:
                 db=db,
                 progress_cb=sync_progress_callback
             ),
-            timeout=60.0
+            timeout=600.0
         )
         return [types.TextContent(type="text", text=json.dumps(res, ensure_ascii=False, indent=2))]
     except asyncio.TimeoutError:
-        logger.error(f"Review context analysis timed out after 60s (elapsed={time.time()-t_start:.1f}s)")
+        logger.error(f"Review context analysis timed out after 600s (elapsed={time.time()-t_start:.1f}s)")
         return [types.TextContent(type="text", text=json.dumps({
-            "error": "Review context analysis timed out after 60s",
+            "error": "Review context analysis timed out after 600s",
             "phase": "timeout_exceeded",
             "elapsed_seconds": round(time.time() - t_start, 2),
-            "message": "Анализ превысил лимит в 60 секунд. Проверьте воркспейс или передайте список файлов в changed_files."
+            "message": "Анализ превысил лимит в 600 секунд. Проверьте воркспейс или передайте список файлов в changed_files."
         }, ensure_ascii=False, indent=2))]
     except Exception as e:
         logger.error(f"Review context analysis failed: {e}")
