@@ -18,9 +18,10 @@ Now includes **Multi-Worktree & Repo-Group Support**, **Content-Addressable Stor
      - **Full-Text Search (FTS5 External Content)**: Zero text duplication (`content='chunks'`), auto-vacuum (`FULL`), and instant keyword/symbol search saving ~50% database storage.
      - **Semantic Vector Search (`sqlite-vec`)**: High-accuracy conceptual matching with multilingual embeddings (`intfloat/multilingual-e5-small`).
      - **Graph-Based Retrieval**: 2x relevance boost to actual code definitions and call chains.
-2. **Deep Structural & Semantic Indexing**:
+2. **Deep Structural & Semantic Indexing (Two-Phase Strategy Pipeline)**:
    - **C# / .NET**: Native **Roslyn** workspace analysis extracting full symbol hierarchies and method invocations across large `.sln` solutions.
-   - **Polyglot Code**: **Tree-sitter** engine for Python, TypeScript, JavaScript, Go, Rust, and more.
+   - **TypeScript / JavaScript / React**: Native compiler-grade **`ts-parser`** (TypeScript Compiler API) resolving JSX component invocation chains (`<Component />`), React hooks (`use*`), path aliases (`tsconfig.json paths`), and type inheritance with 100% isolation from `node_modules`.
+   - **Polyglot Code (Fallback)**: **Tree-sitter** engine for Python, Go, Rust, SQL, and non-configured JS.
    - **Markdown**: Section-aware chunking for architecture decisions and guides.
 3. **Autonomous Background Lifecycle & Queue**:
    - In-database SQLite FIFO queue (`sync_queue`) ensuring persistent state across restarts.
@@ -321,6 +322,7 @@ When commits are pushed, Knowledge MCP extracts the touched files and performs t
 > **Initial Synchronization (Cold Start)**:
 > When initially adding a repository or project, Knowledge MCP conducts **deep compiler-grade semantic analysis**:
 > - **C# / .NET Projects**: The native **Roslyn** compiler engine (MSBuildWorkspace) compiles syntax trees, fully resolves type FQDNs, generic type arguments, interface implementations (DI / MassTransit / EF Core), and constructs complete call graphs (`symbol_edges`). For large enterprise monorepos (e.g. ~5,000 C# files), initial compilation takes **~1.5–2 hours**.
+> - **TypeScript / React / Angular Projects**: The native **`ts-parser`** compiler engine compiles AST through the TypeScript Compiler API, resolves JSX component linkages and custom hooks, and operates with sub-second delta analysis (~15–30 ms) for pull request reviews.
 > - **Full-Text Search**: SQLite FTS5 tokenizes and constructs an inverted morphological index for every chunk.
 >
 > **Subsequent Synchronizations (Warm Delta Sync — Seconds)**:
@@ -333,6 +335,7 @@ When commits are pushed, Knowledge MCP extracts the touched files and performs t
 | Feature / Metric | Knowledge MCP | Lightweight Graph Tools (CodeGraphReview) |
 | :--- | :--- | :--- |
 | **C# Analysis Depth** | Full **Roslyn SemanticModel** (exact FQDNs, parameter types, invocations, DI interfaces) | Shallow Tree-sitter / Regex (function names only without type semantics) |
+| **TypeScript / React Depth** | Full **TypeScript Compiler API** (`ts-parser`: exact JSX component linkages, hook references, `tsconfig` path aliases) | Shallow Tree-sitter (JSX tags parsed as markup, path aliases broken) |
 | **Initial Sync Time** | ~1.5–2 hours for 5,000 C# files (complete MSBuild compilation) | ~2–5 minutes (syntax parsing without compiler) |
 | **Subsequent (Delta) Sync** | **1–3 seconds** (CAS cache completely skips unchanged C# files) | Repeated file traversal / mtime polling |
 | **Database Footprint** | **~790 MB** across 10,000+ files and 100,000 chunks (CAS deduplication + FTS5 external content) | **3–5+ GB** (bloated Neo4j graph pointers / unnormalized JSON) |

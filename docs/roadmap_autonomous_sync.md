@@ -175,8 +175,8 @@ timeline
 
 ---
 
-## v1.9.1: Compiler-Based Semantic Graph Analysis (ts-parser & Angular Ivy) — 📋 *Planned*
-*Target Release: v1.9.1 | Architectural Reference: [ADR-009: Compiler-Based Semantic Analysis (ts-parser)](adr-009-compiler-semantic-analysis-ts-angular.md)*
+## v1.9.1: Compiler-Based Semantic Graph Analysis (ts-parser & Angular Ivy) — ✅ *Completed*
+*Target Release: v1.9.1 | Status: Completed | Architectural Reference: [ADR-009: Compiler-Based Semantic Analysis (ts-parser)](adr-009-compiler-semantic-analysis-ts-angular.md)*
 
 - **Containerized TypeScript Compiler Engine (`ts-parser`):**
   - Symmetric companion to `RoslynParser` (.NET) for the JavaScript/TypeScript/React ecosystem.

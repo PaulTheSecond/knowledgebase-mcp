@@ -8,6 +8,7 @@ This document outlines the container distribution strategy for `knowledgebase-mc
 
 The knowledge base server is packaged as a self-contained multi-stage Docker image containing:
 - .NET 8.0 SDK & RoslynParser binaries
+- Node.js runtime & standalone `ts-parser` bundle (TypeScript Compiler API for TS/React semantic analysis)
 - Angular 21 Single Page Application Web Dashboard
 - Python 3.11 with PyTorch (CPU) & pre-cached Hugging Face embedding model (`intfloat/multilingual-e5-small`)
 
